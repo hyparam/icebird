@@ -1,0 +1,41 @@
+{
+  "name": "hyparquet-iceberg",
+  "version": "0.1.0",
+  "description": "Apache Iceberg client for javascript",
+  "author": "Hyperparam",
+  "homepage": "https://hyperparam.app",
+  "keywords": [
+    "hyparquet",
+    "iceberg",
+    "parquet",
+    "parquetjs",
+    "parser",
+    "snappy",
+    "thrift"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hyparam/hyparquet-iceberg.git"
+  },
+  "main": "src/iceberg.js",
+  "type": "module",
+  "scripts": {
+    "coverage": "vitest run --coverage --coverage.include=src",
+    "lint": "eslint",
+    "lint:fix": "eslint --fix",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "hyparquet": "1.9.0",
+    "hyparquet-compressors": "1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.13.10",
+    "@vitest/coverage-v8": "3.0.8",
+    "eslint": "9.22.0",
+    "eslint-plugin-jsdoc": "50.6.6",
+    "typescript": "5.8.2",
+    "vitest": "3.0.8"
+  }
+}
