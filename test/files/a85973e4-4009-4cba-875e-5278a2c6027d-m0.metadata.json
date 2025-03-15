@@ -1,0 +1,583 @@
+{
+  "metadata": {
+    "avro.codec": "deflate",
+    "avro.schema": {
+      "fields": [
+        {
+          "field-id": 0,
+          "name": "status",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "field-id": 1,
+          "name": "snapshot_id",
+          "type": [
+            "null",
+            "long"
+          ]
+        },
+        {
+          "default": null,
+          "field-id": 3,
+          "name": "sequence_number",
+          "type": [
+            "null",
+            "long"
+          ]
+        },
+        {
+          "default": null,
+          "field-id": 4,
+          "name": "file_sequence_number",
+          "type": [
+            "null",
+            "long"
+          ]
+        },
+        {
+          "field-id": 2,
+          "name": "data_file",
+          "type": {
+            "fields": [
+              {
+                "doc": "Contents of the file: 0=data, 1=position deletes, 2=equality deletes",
+                "field-id": 134,
+                "name": "content",
+                "type": "int"
+              },
+              {
+                "doc": "Location URI with FS scheme",
+                "field-id": 100,
+                "name": "file_path",
+                "type": "string"
+              },
+              {
+                "doc": "File format name: avro, orc, or parquet",
+                "field-id": 101,
+                "name": "file_format",
+                "type": "string"
+              },
+              {
+                "doc": "Partition data tuple, schema based on the partition spec",
+                "field-id": 102,
+                "name": "partition",
+                "type": {
+                  "fields": [],
+                  "name": "r102",
+                  "type": "record"
+                }
+              },
+              {
+                "doc": "Number of records in the file",
+                "field-id": 103,
+                "name": "record_count",
+                "type": "long"
+              },
+              {
+                "doc": "Total file size in bytes",
+                "field-id": 104,
+                "name": "file_size_in_bytes",
+                "type": "long"
+              },
+              {
+                "default": null,
+                "doc": "Map of column id to total size on disk",
+                "field-id": 108,
+                "name": "column_sizes",
+                "type": [
+                  "null",
+                  {
+                    "items": {
+                      "fields": [
+                        {
+                          "field-id": 117,
+                          "name": "key",
+                          "type": "int"
+                        },
+                        {
+                          "field-id": 118,
+                          "name": "value",
+                          "type": "long"
+                        }
+                      ],
+                      "name": "k117_v118",
+                      "type": "record"
+                    },
+                    "logicalType": "map",
+                    "type": "array"
+                  }
+                ]
+              },
+              {
+                "default": null,
+                "doc": "Map of column id to total count, including null and NaN",
+                "field-id": 109,
+                "name": "value_counts",
+                "type": [
+                  "null",
+                  {
+                    "items": {
+                      "fields": [
+                        {
+                          "field-id": 119,
+                          "name": "key",
+                          "type": "int"
+                        },
+                        {
+                          "field-id": 120,
+                          "name": "value",
+                          "type": "long"
+                        }
+                      ],
+                      "name": "k119_v120",
+                      "type": "record"
+                    },
+                    "logicalType": "map",
+                    "type": "array"
+                  }
+                ]
+              },
+              {
+                "default": null,
+                "doc": "Map of column id to null value count",
+                "field-id": 110,
+                "name": "null_value_counts",
+                "type": [
+                  "null",
+                  {
+                    "items": {
+                      "fields": [
+                        {
+                          "field-id": 121,
+                          "name": "key",
+                          "type": "int"
+                        },
+                        {
+                          "field-id": 122,
+                          "name": "value",
+                          "type": "long"
+                        }
+                      ],
+                      "name": "k121_v122",
+                      "type": "record"
+                    },
+                    "logicalType": "map",
+                    "type": "array"
+                  }
+                ]
+              },
+              {
+                "default": null,
+                "doc": "Map of column id to number of NaN values in the column",
+                "field-id": 137,
+                "name": "nan_value_counts",
+                "type": [
+                  "null",
+                  {
+                    "items": {
+                      "fields": [
+                        {
+                          "field-id": 138,
+                          "name": "key",
+                          "type": "int"
+                        },
+                        {
+                          "field-id": 139,
+                          "name": "value",
+                          "type": "long"
+                        }
+                      ],
+                      "name": "k138_v139",
+                      "type": "record"
+                    },
+                    "logicalType": "map",
+                    "type": "array"
+                  }
+                ]
+              },
+              {
+                "default": null,
+                "doc": "Map of column id to lower bound",
+                "field-id": 125,
+                "name": "lower_bounds",
+                "type": [
+                  "null",
+                  {
+                    "items": {
+                      "fields": [
+                        {
+                          "field-id": 126,
+                          "name": "key",
+                          "type": "int"
+                        },
+                        {
+                          "field-id": 127,
+                          "name": "value",
+                          "type": "bytes"
+                        }
+                      ],
+                      "name": "k126_v127",
+                      "type": "record"
+                    },
+                    "logicalType": "map",
+                    "type": "array"
+                  }
+                ]
+              },
+              {
+                "default": null,
+                "doc": "Map of column id to upper bound",
+                "field-id": 128,
+                "name": "upper_bounds",
+                "type": [
+                  "null",
+                  {
+                    "items": {
+                      "fields": [
+                        {
+                          "field-id": 129,
+                          "name": "key",
+                          "type": "int"
+                        },
+                        {
+                          "field-id": 130,
+                          "name": "value",
+                          "type": "bytes"
+                        }
+                      ],
+                      "name": "k129_v130",
+                      "type": "record"
+                    },
+                    "logicalType": "map",
+                    "type": "array"
+                  }
+                ]
+              },
+              {
+                "default": null,
+                "doc": "Encryption key metadata blob",
+                "field-id": 131,
+                "name": "key_metadata",
+                "type": [
+                  "null",
+                  "bytes"
+                ]
+              },
+              {
+                "default": null,
+                "doc": "Splittable offsets",
+                "field-id": 132,
+                "name": "split_offsets",
+                "type": [
+                  "null",
+                  {
+                    "element-id": 133,
+                    "items": "long",
+                    "type": "array"
+                  }
+                ]
+              },
+              {
+                "default": null,
+                "doc": "Equality comparison field IDs",
+                "field-id": 135,
+                "name": "equality_ids",
+                "type": [
+                  "null",
+                  {
+                    "element-id": 136,
+                    "items": "int",
+                    "type": "array"
+                  }
+                ]
+              },
+              {
+                "default": null,
+                "doc": "Sort order ID",
+                "field-id": 140,
+                "name": "sort_order_id",
+                "type": [
+                  "null",
+                  "int"
+                ]
+              }
+            ],
+            "name": "r2",
+            "type": "record"
+          }
+        }
+      ],
+      "name": "manifest_entry",
+      "type": "record"
+    },
+    "content": "data",
+    "format-version": "2",
+    "iceberg.schema": {
+      "fields": [
+        {
+          "id": 0,
+          "name": "status",
+          "required": true,
+          "type": "int"
+        },
+        {
+          "id": 1,
+          "name": "snapshot_id",
+          "required": false,
+          "type": "long"
+        },
+        {
+          "id": 3,
+          "name": "sequence_number",
+          "required": false,
+          "type": "long"
+        },
+        {
+          "id": 4,
+          "name": "file_sequence_number",
+          "required": false,
+          "type": "long"
+        },
+        {
+          "id": 2,
+          "name": "data_file",
+          "required": true,
+          "type": {
+            "fields": [
+              {
+                "doc": "Contents of the file: 0=data, 1=position deletes, 2=equality deletes",
+                "id": 134,
+                "name": "content",
+                "required": true,
+                "type": "int"
+              },
+              {
+                "doc": "Location URI with FS scheme",
+                "id": 100,
+                "name": "file_path",
+                "required": true,
+                "type": "string"
+              },
+              {
+                "doc": "File format name: avro, orc, or parquet",
+                "id": 101,
+                "name": "file_format",
+                "required": true,
+                "type": "string"
+              },
+              {
+                "doc": "Partition data tuple, schema based on the partition spec",
+                "id": 102,
+                "name": "partition",
+                "required": true,
+                "type": {
+                  "fields": [],
+                  "type": "struct"
+                }
+              },
+              {
+                "doc": "Number of records in the file",
+                "id": 103,
+                "name": "record_count",
+                "required": true,
+                "type": "long"
+              },
+              {
+                "doc": "Total file size in bytes",
+                "id": 104,
+                "name": "file_size_in_bytes",
+                "required": true,
+                "type": "long"
+              },
+              {
+                "doc": "Map of column id to total size on disk",
+                "id": 108,
+                "name": "column_sizes",
+                "required": false,
+                "type": {
+                  "key": "int",
+                  "key-id": 117,
+                  "type": "map",
+                  "value": "long",
+                  "value-id": 118,
+                  "value-required": true
+                }
+              },
+              {
+                "doc": "Map of column id to total count, including null and NaN",
+                "id": 109,
+                "name": "value_counts",
+                "required": false,
+                "type": {
+                  "key": "int",
+                  "key-id": 119,
+                  "type": "map",
+                  "value": "long",
+                  "value-id": 120,
+                  "value-required": true
+                }
+              },
+              {
+                "doc": "Map of column id to null value count",
+                "id": 110,
+                "name": "null_value_counts",
+                "required": false,
+                "type": {
+                  "key": "int",
+                  "key-id": 121,
+                  "type": "map",
+                  "value": "long",
+                  "value-id": 122,
+                  "value-required": true
+                }
+              },
+              {
+                "doc": "Map of column id to number of NaN values in the column",
+                "id": 137,
+                "name": "nan_value_counts",
+                "required": false,
+                "type": {
+                  "key": "int",
+                  "key-id": 138,
+                  "type": "map",
+                  "value": "long",
+                  "value-id": 139,
+                  "value-required": true
+                }
+              },
+              {
+                "doc": "Map of column id to lower bound",
+                "id": 125,
+                "name": "lower_bounds",
+                "required": false,
+                "type": {
+                  "key": "int",
+                  "key-id": 126,
+                  "type": "map",
+                  "value": "binary",
+                  "value-id": 127,
+                  "value-required": true
+                }
+              },
+              {
+                "doc": "Map of column id to upper bound",
+                "id": 128,
+                "name": "upper_bounds",
+                "required": false,
+                "type": {
+                  "key": "int",
+                  "key-id": 129,
+                  "type": "map",
+                  "value": "binary",
+                  "value-id": 130,
+                  "value-required": true
+                }
+              },
+              {
+                "doc": "Encryption key metadata blob",
+                "id": 131,
+                "name": "key_metadata",
+                "required": false,
+                "type": "binary"
+              },
+              {
+                "doc": "Splittable offsets",
+                "id": 132,
+                "name": "split_offsets",
+                "required": false,
+                "type": {
+                  "element": "long",
+                  "element-id": 133,
+                  "element-required": true,
+                  "type": "list"
+                }
+              },
+              {
+                "doc": "Equality comparison field IDs",
+                "id": 135,
+                "name": "equality_ids",
+                "required": false,
+                "type": {
+                  "element": "int",
+                  "element-id": 136,
+                  "element-required": true,
+                  "type": "list"
+                }
+              },
+              {
+                "doc": "Sort order ID",
+                "id": 140,
+                "name": "sort_order_id",
+                "required": false,
+                "type": "int"
+              }
+            ],
+            "type": "struct"
+          }
+        }
+      ],
+      "schema-id": 0,
+      "type": "struct"
+    },
+    "partition-spec": "[]",
+    "partition-spec-id": "0",
+    "schema": {
+      "fields": [
+        {
+          "id": 1,
+          "name": "Breed Name",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "id": 2,
+          "name": "Average Weight",
+          "required": false,
+          "type": "double"
+        },
+        {
+          "id": 3,
+          "name": "Fur Length",
+          "required": false,
+          "type": "double"
+        },
+        {
+          "id": 4,
+          "name": "Lifespan",
+          "required": false,
+          "type": "long"
+        },
+        {
+          "id": 5,
+          "name": "Origin Country",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "id": 6,
+          "name": "Ear Type",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "id": 7,
+          "name": "Temperament",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "id": 8,
+          "name": "Popularity Rank",
+          "required": false,
+          "type": "long"
+        }
+      ],
+      "schema-id": 0,
+      "type": "struct"
+    }
+  },
+  "syncMarker": [
+    30, 64, 70, 114, 5, 206, 106, 190, 15, 38, 233, 46, 246, 13, 7, 21
+  ]
+}
