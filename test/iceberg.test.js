@@ -40,4 +40,20 @@ describe('readIcebergData', () => {
       })
     })
   })
+
+  it('reads data v2 with deleted rows', async () => {
+    const data = await readIcebergData({ tableUrl, rowStart: 0, rowEnd: 10, metadataFileName: 'v3.metadata.json' })
+
+    // Verify first row has expected structure
+    expect(data[0]).toMatchObject({
+      Breed_x20Name: 'Netherland Dwarf',
+      Average_x20Weight: 0.9,
+      Fur_x20Length: 2.5,
+      Lifespan: 10n,
+      Origin_x20Country: 'Netherlands',
+      Ear_x20Type: 'Erect',
+      Temperament: 'Shy',
+      Popularity_x20Rank: 2n,
+    })
+  })
 })
