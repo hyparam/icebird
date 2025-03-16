@@ -1,6 +1,8 @@
 import { asyncBufferFromUrl, parquetReadObjects } from 'hyparquet'
 import { decompress as ZSTD } from 'fzstd'
-import { fetchAvroRecords, fetchDataFilesFromManifests, fetchIcebergMetadata, translateS3Url } from './iceberg.fetch.js'
+import {
+  fetchAvroRecords, fetchDataFilesFromManifests, fetchIcebergMetadata, fetchSnapshotVersion, translateS3Url,
+} from './iceberg.fetch.js'
 
 /**
  * Returns manifest URLs for the current snapshot separated into data and delete manifests.
@@ -72,7 +74,7 @@ async function readParquetFile(url) {
  */
 function equalityMatch(row, deletePredicate) {
   for (const key in deletePredicate) {
-    if (key === 'file_path' || key === 'filePath' || key === 'pos') continue
+    if (key === 'file_path' || key === 'pos') continue
     if (row[key] !== deletePredicate[key]) return false
   }
   return true
@@ -92,10 +94,15 @@ function equalityMatch(row, deletePredicate) {
  * @param {string} options.tableUrl - Base S3 URL of the table.
  * @param {number} [options.rowStart] - The starting global row index to fetch (inclusive).
  * @param {number} [options.rowEnd] - The ending global row index to fetch (exclusive).
- * @param {string} [options.metadataFileName='v1.metadata.json'] - Name of the Iceberg metadata file.
+ * @param {string} [options.metadataFileName] - Name of the Iceberg metadata file.
  * @returns {Promise<Array<Record<string, any>>>} Array of data records.
  */
-export async function readIcebergData({ tableUrl, rowStart, rowEnd, metadataFileName = 'v1.metadata.json' }) {
+export async function readIcebergData({ tableUrl, rowStart, rowEnd, metadataFileName }) {
+  // Find the latest snapshot version.
+  if (!metadataFileName) {
+    const version = await fetchSnapshotVersion(tableUrl)
+    metadataFileName = `v${version}.metadata.json`
+  }
   // Fetch table metadata and validate key fields.
   const metadata = await fetchIcebergMetadata(tableUrl, metadataFileName)
 

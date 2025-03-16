@@ -5,7 +5,7 @@ describe('readIcebergData', () => {
   const tableUrl = 'https://s3.amazonaws.com/hyperparam-iceberg/warehouse/bunnies'
 
   it('reads data from Iceberg table with row limits', async () => {
-    const data = await readIcebergData({ tableUrl, rowStart: 0, rowEnd: 10 })
+    const data = await readIcebergData({ tableUrl, rowStart: 0, rowEnd: 10, metadataFileName: 'v1.metadata.json' })
 
     // Verify we got correct number of rows
     expect(data).toBeInstanceOf(Array)

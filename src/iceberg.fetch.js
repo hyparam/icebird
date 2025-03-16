@@ -22,6 +22,18 @@ export function translateS3Url(url) {
 }
 
 /**
+ * Fetches the Iceberg table snapshot version from S3 using the version hint file.
+ *
+ * @param {string} tableBaseUrl - Base S3 URL of the table (e.g. "s3://my-bucket/path/to/table")
+ * @returns {Promise<number>} The snapshot version
+ */
+export function fetchSnapshotVersion(tableBaseUrl) {
+  const url = `${tableBaseUrl}/metadata/version-hint.text`
+  const safeUrl = translateS3Url(url)
+  return fetch(safeUrl).then(res => res.text()).then(text => parseInt(text))
+}
+
+/**
  * Fetches the Iceberg table metadata JSON from S3
  *
  * @import {IcebergMetadata} from './types.js'
@@ -30,7 +42,7 @@ export function translateS3Url(url) {
  * @returns {Promise<IcebergMetadata>} The table metadata as a JSON object
  */
 export function fetchIcebergMetadata(tableBaseUrl, metadataFileName) {
-  const url = `${tableBaseUrl.replace(/\/$/, '')}/metadata/${metadataFileName}`
+  const url = `${tableBaseUrl}/metadata/${metadataFileName}`
   const safeUrl = translateS3Url(url)
   return fetch(safeUrl).then(res => res.json())
 }
