@@ -66,7 +66,7 @@ export async function readIcebergData({ tableUrl, rowStart, rowEnd, metadataFile
   let fileIndex = 0
   let skipRows = start
   while (fileIndex < dataFiles.length && skipRows >= dataFiles[fileIndex].record_count) {
-    skipRows -= dataFiles[fileIndex].record_count
+    skipRows -= Number(dataFiles[fileIndex].record_count)
     fileIndex++
   }
 
@@ -79,7 +79,7 @@ export async function readIcebergData({ tableUrl, rowStart, rowEnd, metadataFile
     // Calculate file-specific row range to read
     // For the first file, we might need to skip initial rows
     const fileRowStart = i === fileIndex ? skipRows : 0
-    const availableRows = fileInfo.record_count - fileRowStart
+    const availableRows = Number(fileInfo.record_count) - fileRowStart
     const rowsToRead = rowsNeeded === Infinity ? availableRows : Math.min(rowsNeeded, availableRows)
 
     // Skip if there are no rows to read from this file

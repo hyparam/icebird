@@ -1,0 +1,18 @@
+[
+  {
+    "added_data_files_count": 1,
+    "added_rows_count": 21,
+    "added_snapshot_id": 8656952484400131000,
+    "content": 0,
+    "deleted_data_files_count": 0,
+    "deleted_rows_count": 0,
+    "existing_data_files_count": 0,
+    "existing_rows_count": 0,
+    "manifest_length": 7211,
+    "manifest_path": "s3a://hyperparam-iceberg/warehouse/bunnies/metadata/a85973e4-4009-4cba-875e-5278a2c6027d-m0.avro",
+    "min_sequence_number": 1,
+    "partition_spec_id": 0,
+    "partitions": [],
+    "sequence_number": 1
+  }
+]

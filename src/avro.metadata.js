@@ -1,10 +1,8 @@
 /**
- * REMOVE ME WHEN HYPARQUET EXPORTS
- *
  * @param {DataReader} reader
  * @returns {number} value
  */
-function readZigZag(reader) {
+export function readZigZag(reader) {
   let result = 0
   let shift = 0
   while (true) {
@@ -15,6 +13,24 @@ function readZigZag(reader) {
       return result >>> 1 ^ -(result & 1)
     }
     shift += 7
+  }
+}
+
+/**
+ * @param {DataReader} reader
+ * @returns {bigint} value
+ */
+export function readZigZagBigInt(reader) {
+  let result = 0n
+  let shift = 0n
+  while (true) {
+    const byte = reader.view.getUint8(reader.offset++)
+    result |= BigInt(byte & 0x7f) << shift
+    if (!(byte & 0x80)) {
+      // convert zigzag to int
+      return result >> 1n ^ -(result & 1n)
+    }
+    shift += 7n
   }
 }
 

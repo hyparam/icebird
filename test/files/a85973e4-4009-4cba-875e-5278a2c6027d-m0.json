@@ -1,0 +1,155 @@
+[
+  {
+    "data_file": {
+      "column_sizes": [
+        { "key": 1, "value": 249 },
+        { "key": 2, "value": 128 },
+        { "key": 3, "value": 128 },
+        { "key": 4, "value": 104 },
+        { "key": 5, "value": 171 },
+        { "key": 6, "value": 87 },
+        { "key": 7, "value": 209 },
+        { "key": 8, "value": 107 }
+      ],
+      "content": 0,
+      "equality_ids": null,
+      "file_format": "PARQUET",
+      "file_path": "s3a://hyperparam-iceberg/warehouse/bunnies/data/00000-1-ab020707-f0e6-43c8-98ed-5643ba60e97c-00001.parquet",
+      "file_size_in_bytes": 3224,
+      "key_metadata": null,
+      "lower_bounds": [
+        {
+          "key": 1,
+          "value": [
+            65, 109, 101, 114, 105, 99, 97, 110,
+            32, 70, 117, 122, 122, 121, 32, 76
+          ]
+        },
+        {
+          "key": 2,
+          "value": [
+            205, 204, 204, 204, 204, 204, 236, 63
+          ]
+        },
+        {
+          "key": 3,
+          "value": [
+            0, 0, 0, 0, 0, 0, 248, 63
+          ]
+        },
+        {
+          "key": 4,
+          "value": [
+            5, 0, 0, 0, 0, 0, 0, 0
+          ]
+        },
+        {
+          "key": 5,
+          "value": [
+            66, 101, 108, 103, 105, 117, 109
+          ]
+        },
+        {
+          "key": 6,
+          "value": [
+            69, 114, 101, 99, 116
+          ]
+        },
+        {
+          "key": 7,
+          "value": [
+            65, 99, 116, 105, 118, 101
+          ]
+        },
+        {
+          "key": 8,
+          "value": [
+            1, 0, 0, 0, 0, 0, 0, 0
+          ]
+        }
+      ],
+      "nan_value_counts": [
+        { "key": 2, "value": 0 },
+        { "key": 3, "value": 0 }
+      ],
+      "null_value_counts": [
+        { "key": 1, "value": 0 },
+        { "key": 2, "value": 0 },
+        { "key": 3, "value": 0 },
+        { "key": 4, "value": 0 },
+        { "key": 5, "value": 0 },
+        { "key": 6, "value": 0 },
+        { "key": 7, "value": 0 },
+        { "key": 8, "value": 0 }
+      ],
+      "partition": {},
+      "record_count": 21,
+      "sort_order_id": 0,
+      "split_offsets": [4],
+      "upper_bounds": [
+        {
+          "key": 1,
+          "value": [
+            84, 104, 114, 105, 97, 110, 116, 97
+          ]
+        },
+        {
+          "key": 2,
+          "value": [
+            0, 0, 0, 0, 0, 0, 18, 64
+          ]
+        },
+        {
+          "key": 3,
+          "value": [
+            0, 0, 0, 0, 0, 0, 38, 64
+          ]
+        },
+        {
+          "key": 4,
+          "value": [
+            12, 0, 0, 0, 0, 0, 0, 0
+          ]
+        },
+        {
+          "key": 5,
+          "value": [
+            85, 83, 65
+          ]
+        },
+        {
+          "key": 6,
+          "value": [
+            76, 111, 112
+          ]
+        },
+        {
+          "key": 7,
+          "value": [
+            83, 119, 101, 101, 116
+          ]
+        },
+        {
+          "key": 8,
+          "value": [
+            21, 0, 0, 0, 0, 0, 0, 0
+          ]
+        }
+      ],
+      "value_counts": [
+        { "key": 1, "value": 21 },
+        { "key": 2, "value": 21 },
+        { "key": 3, "value": 21 },
+        { "key": 4, "value": 21 },
+        { "key": 5, "value": 21 },
+        { "key": 6, "value": 21 },
+        { "key": 7, "value": 21 },
+        { "key": 8, "value": 21 }
+      ]
+    },
+    "file_sequence_number": null,
+    "sequence_number": null,
+    "snapshot_id": 8656952484400131532,
+    "status": 1
+  }
+]

@@ -55,7 +55,7 @@ export interface DataFile {
   content: 0 | 1 | 2
   file_path: string
   file_format: string
-  record_count: number
-  file_size_in_bytes: number
+  record_count: bigint
+  file_size_in_bytes: bigint
   equality_ids: any[]
 }
