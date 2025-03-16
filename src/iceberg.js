@@ -1,7 +1,6 @@
 import { asyncBufferFromUrl, parquetReadObjects } from 'hyparquet'
 import { decompress as ZSTD } from 'fzstd'
-import { fetchDataFilesFromManifests, fetchIcebergMetadata, translateS3Url } from './iceberg.fetch.js'
-import { decodeAvroRecords } from './avro.js'
+import { fetchAvroRecords, fetchDataFilesFromManifests, fetchIcebergMetadata, translateS3Url } from './iceberg.fetch.js'
 
 /**
  * Returns a list of manifest file URLs for the current snapshot from the table metadata
@@ -21,7 +20,7 @@ async function getManifestUrls(metadata) {
   }
   if (snapshot['manifest-list']) {
     const manifestListUrl = snapshot['manifest-list']
-    const records = await decodeAvroRecords(manifestListUrl)
+    const records = await fetchAvroRecords(manifestListUrl)
     return records.map(rec => rec.manifest_path)
   } else if (snapshot.manifests) {
     return snapshot.manifests.map(m => m.manifest_path)

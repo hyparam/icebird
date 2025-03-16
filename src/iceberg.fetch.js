@@ -1,4 +1,5 @@
-import { decodeAvroRecords } from './avro.js'
+import { avroData } from './avro.data.js'
+import { avroMetadata } from './avro.metadata.js'
 
 /**
  * Translates an S3A URL to an HTTPS URL for direct access to the object.
@@ -45,10 +46,24 @@ export async function fetchDataFilesFromManifests(manifestUrls) {
   /** @type {DataFile[]} */
   const files = []
   for (const url of manifestUrls) {
-    const records = await decodeAvroRecords(url)
+    const records = await fetchAvroRecords(url)
     for (const rec of records) {
       files.push(rec.data_file)
     }
   }
   return files
+}
+
+/**
+ * Decodes Avro records from a url.
+ *
+ * @param {string} manifestUrl - The URL of the manifest file
+ * @returns {Promise<Record<string, any>[]>} The decoded Avro records
+ */
+export async function fetchAvroRecords(manifestUrl) {
+  const safeUrl = translateS3Url(manifestUrl)
+  const buffer = await fetch(safeUrl).then(res => res.arrayBuffer())
+  const reader = { view: new DataView(buffer), offset: 0 }
+  const { metadata, syncMarker } = await avroMetadata(reader)
+  return await avroData({ reader, metadata, syncMarker })
 }
