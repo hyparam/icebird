@@ -30,6 +30,7 @@ export function translateS3Url(url) {
 export function fetchSnapshotVersion(tableBaseUrl) {
   const url = `${tableBaseUrl}/metadata/version-hint.text`
   const safeUrl = translateS3Url(url)
+  // TODO: If version-hint is not found, try listing or binary search.
   return fetch(safeUrl).then(res => res.text()).then(text => parseInt(text))
 }
 

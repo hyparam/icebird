@@ -84,7 +84,7 @@ function equalityMatch(row, deletePredicate) {
  * Reads data from the Iceberg table with optional row-level delete processing.
  * Row indices are zero-based and rowEnd is inclusive.
  *
- * This updated implementation:
+ * This function:
  *   1. Loads metadata and verifies format-version and table-uuid.
  *   2. Separates manifest URLs into data and delete manifests.
  *   3. Reads delete files from delete manifests and groups them by target data file.

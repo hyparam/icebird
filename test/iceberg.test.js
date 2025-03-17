@@ -12,7 +12,7 @@ describe('readIcebergData', () => {
     expect(data.length).toBe(10)
 
     // Verify first row has expected structure
-    expect(data[0]).toMatchObject({
+    expect(data[0]).toEqual({
       Breed_x20Name: 'Holland Lop',
       Average_x20Weight: 1.8,
       Fur_x20Length: 3,
@@ -41,11 +41,11 @@ describe('readIcebergData', () => {
     })
   })
 
-  it('reads data v2 with deleted rows', async () => {
+  it('reads data v3 with deleted rows', async () => {
     const data = await readIcebergData({ tableUrl, rowStart: 0, rowEnd: 10, metadataFileName: 'v3.metadata.json' })
 
     // Verify first row has expected structure
-    expect(data[0]).toMatchObject({
+    expect(data[0]).toEqual({
       Breed_x20Name: 'Netherland Dwarf',
       Average_x20Weight: 0.9,
       Fur_x20Length: 2.5,
@@ -54,6 +54,23 @@ describe('readIcebergData', () => {
       Ear_x20Type: 'Erect',
       Temperament: 'Shy',
       Popularity_x20Rank: 2n,
+    })
+  })
+
+  it('reads data v5 with added column', async () => {
+    const data = await readIcebergData({ tableUrl, rowStart: 0, rowEnd: 10, metadataFileName: 'v5.metadata.json' })
+
+    // Verify first row has expected structure
+    expect(data[0]).toEqual({
+      Breed_x20Name: 'Netherland Dwarf',
+      Average_x20Weight: 0.9,
+      Fur_x20Length: 2.5,
+      Lifespan: 10n,
+      Origin_x20Country: 'Netherlands',
+      Ear_x20Type: 'Erect',
+      Temperament: 'Shy',
+      Popularity_x20Rank: 2n,
+      breed_name_length: 16,
     })
   })
 })
