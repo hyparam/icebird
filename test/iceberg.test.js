@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { readIcebergData } from '../src/iceberg.js'
+import { icebergRead } from '../src/iceberg.js'
 
 describe('readIcebergData', () => {
   const tableUrl = 'https://s3.amazonaws.com/hyperparam-iceberg/warehouse/bunnies'
 
   it('reads data from Iceberg table with row limits', async () => {
-    const data = await readIcebergData({ tableUrl, rowStart: 0, rowEnd: 10, metadataFileName: 'v1.metadata.json' })
+    const data = await icebergRead({ tableUrl, rowStart: 0, rowEnd: 10, metadataFileName: 'v1.metadata.json' })
 
     // Verify we got correct number of rows
     expect(data).toBeInstanceOf(Array)
@@ -42,7 +42,7 @@ describe('readIcebergData', () => {
   })
 
   it('reads data v3 with deleted rows', async () => {
-    const data = await readIcebergData({ tableUrl, rowStart: 0, rowEnd: 10, metadataFileName: 'v3.metadata.json' })
+    const data = await icebergRead({ tableUrl, rowStart: 0, rowEnd: 10, metadataFileName: 'v3.metadata.json' })
 
     // Verify first row has expected structure
     expect(data[0]).toEqual({
@@ -58,7 +58,7 @@ describe('readIcebergData', () => {
   })
 
   it('reads data v5 with added column', async () => {
-    const data = await readIcebergData({ tableUrl, rowStart: 0, rowEnd: 10, metadataFileName: 'v5.metadata.json' })
+    const data = await icebergRead({ tableUrl, rowStart: 0, rowEnd: 10, metadataFileName: 'v5.metadata.json' })
 
     // Verify first row has expected structure
     expect(data[0]).toEqual({

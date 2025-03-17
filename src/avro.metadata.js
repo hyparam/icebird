@@ -37,7 +37,7 @@ export function readZigZagBigInt(reader) {
 /**
  * Read an Avro string from the DataReader
  *
- * @import {DataReader} from 'hyparquet/src/types.d.ts'
+ * @import {DataReader} from 'hyparquet/src/types.js'
  * @param {DataReader} reader
  * @returns {string}
  */

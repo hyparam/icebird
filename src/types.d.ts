@@ -47,8 +47,19 @@ interface Snapshot {
 
 interface Manifest {
   manifest_path: string
-  manifest_length: number
+  manifest_length: bigint
   partition_spec_id: number
+  content: 0 | 1
+  sequence_number: bigint
+  min_sequence_number: bigint
+  added_snapshot_id: bigint
+  added_data_files_count: number
+  existing_data_files_count: number
+  deleted_data_files_count: number
+  added_rows_count: bigint
+  existing_rows_count: bigint
+  deleted_rows_count: bigint
+  partitions?: any[]
 }
 
 export interface DataFile {
@@ -57,5 +68,7 @@ export interface DataFile {
   file_format: string
   record_count: bigint
   file_size_in_bytes: bigint
-  equality_ids: any[]
+  split_offsets: bigint[]
+  equality_ids?: any[]
+  sort_order_id: number
 }

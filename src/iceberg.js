@@ -7,7 +7,7 @@ import {
 /**
  * Returns manifest URLs for the current snapshot separated into data and delete manifests.
  *
- * @import {IcebergMetadata} from './types.d.ts'
+ * @import {IcebergMetadata} from './types.js'
  * @param {IcebergMetadata} metadata - The Iceberg table metadata.
  * @returns {Promise<{dataManifestUrls: string[], deleteManifestUrls: string[]}>}
  */
@@ -90,6 +90,9 @@ function equalityMatch(row, deletePredicate) {
  *   3. Reads delete files from delete manifests and groups them by target data file.
  *   4. When reading each data file, applies position and equality deletes.
  *
+ * TODO:
+ *   - Sequence number checks when filtering deletes
+ *
  * @param {object} options
  * @param {string} options.tableUrl - Base S3 URL of the table.
  * @param {number} [options.rowStart] - The starting global row index to fetch (inclusive).
@@ -97,7 +100,7 @@ function equalityMatch(row, deletePredicate) {
  * @param {string} [options.metadataFileName] - Name of the Iceberg metadata file.
  * @returns {Promise<Array<Record<string, any>>>} Array of data records.
  */
-export async function readIcebergData({ tableUrl, rowStart, rowEnd, metadataFileName }) {
+export async function icebergRead({ tableUrl, rowStart, rowEnd, metadataFileName }) {
   // Find the latest snapshot version.
   if (!metadataFileName) {
     const version = await fetchSnapshotVersion(tableUrl)

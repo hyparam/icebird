@@ -1,10 +1,11 @@
 {
-  "name": "hyparquet-iceberg",
+  "name": "icebird",
   "version": "0.1.0",
   "description": "Apache Iceberg client for javascript",
   "author": "Hyperparam",
   "homepage": "https://hyperparam.app",
   "keywords": [
+    "avro",
     "hyparquet",
     "iceberg",
     "parquet",
@@ -16,17 +17,20 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/hyparam/hyparquet-iceberg.git"
+    "url": "git+https://github.com/hyparam/icebird.git"
   },
   "main": "src/iceberg.js",
   "files": [
-    "src"
+    "src",
+    "types"
   ],
   "type": "module",
   "scripts": {
+    "build:types": "tsc -p ./tsconfig.build.json",
     "coverage": "vitest run --coverage --coverage.include=src",
     "lint": "eslint",
     "lint:fix": "eslint --fix",
+    "prepare": "npm run build:types",
     "test": "vitest run"
   },
   "dependencies": {

@@ -5,7 +5,7 @@ import { readZigZag, readZigZagBigInt } from './avro.metadata.js'
  * Read avro data blocks.
  * Should be called after avroMetadata.
  *
- * @import {DataReader} from 'hyparquet/src/types.d.ts'
+ * @import {DataReader} from 'hyparquet/src/types.js'
  * @param {Object} options
  * @param {DataReader} options.reader
  * @param {Record<string, any>} options.metadata

@@ -51,7 +51,7 @@ export function fetchIcebergMetadata(tableBaseUrl, metadataFileName) {
 /**
  * Fetches data files information from multiple manifest file URLs.
  *
- * @import {DataFile} from './types.d.ts'
+ * @import {DataFile} from './types.js'
  * @param {string[]} manifestUrls - The URLs of the manifest files
  * @returns {Promise<DataFile[]>} Array of data file information
  */
