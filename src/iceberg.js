@@ -1,9 +1,15 @@
-import { asyncBufferFromUrl, parquetReadObjects } from 'hyparquet'
+import { asyncBufferFromUrl, cachedAsyncBuffer, parquetReadObjects } from 'hyparquet'
 import { decompress as ZSTD } from 'fzstd'
 import { fetchAvroRecords, fetchDataFilesFromManifests, translateS3Url } from './iceberg.fetch.js'
-import { fetchIcebergMetadata } from './iceberg.metadata.js'
+import { fetchIcebergMetadata, fetchLatestSequenceNumber } from './iceberg.metadata.js'
 
-export { fetchIcebergMetadata }
+export { fetchIcebergMetadata, fetchLatestSequenceNumber }
+
+// Iceberg uses ZSTD compression for parquet files.
+/** @type {import('hyparquet').Compressors} */
+const compressors = {
+  ZSTD: input => ZSTD(input),
+}
 
 /**
  * Returns manifest URLs for the current snapshot separated into data and delete manifests.
@@ -54,14 +60,9 @@ async function getManifestUrls(metadata) {
  * @returns {Promise<Record<string, any>[]>} Array of delete rows.
  */
 async function readParquetFile(url) {
-  const buffer = await asyncBufferFromUrl({ url: translateS3Url(url) })
-  const rows = await parquetReadObjects({
-    file: buffer,
-    // Iceberg uses ZSTD compression for parquet files.
-    compressors: {
-      ZSTD: input => ZSTD(input),
-    },
-  })
+  const asyncBuffer = await asyncBufferFromUrl({ url: translateS3Url(url) })
+  const file = cachedAsyncBuffer(asyncBuffer)
+  const rows = await parquetReadObjects({ file, compressors })
   return rows
 }
 
@@ -176,14 +177,14 @@ export async function icebergRead({ tableUrl, rowStart, rowEnd, metadataFileName
     const fileRowEnd = fileRowStart + rowsToRead - 1
 
     // Read the data file
-    const fileBuffer = await asyncBufferFromUrl({ url: translateS3Url(fileInfo.file_path) })
+    const fileUrl = translateS3Url(fileInfo.file_path)
+    const asyncBuffer = await asyncBufferFromUrl({ url: fileUrl })
+    const fileBuffer = cachedAsyncBuffer(asyncBuffer)
     let rows = await parquetReadObjects({
       file: fileBuffer,
       rowStart: fileRowStart,
       rowEnd: fileRowEnd,
-      compressors: {
-        ZSTD: input => ZSTD(input),
-      },
+      compressors,
     })
 
     // If delete files apply to this data file, filter the rows.
