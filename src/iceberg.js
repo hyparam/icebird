@@ -201,7 +201,19 @@ export async function icebergRead({ tableUrl, rowStart, rowEnd, metadataFileName
       }
     }
 
-    results.push(...rows)
+    // Map column names to unsanitized names
+    const schema = metadata.schemas[metadata.schemas.length - 1]
+    const unsanitizedFields = schema.fields.map(f => f.name)
+      .filter(column => column !== sanitize(column))
+    const sanitizedFields = unsanitizedFields.map(sanitize)
+    for (const row of rows) {
+      for (let i = 0; i < unsanitizedFields.length; i++) {
+        row[unsanitizedFields[i]] = row[sanitizedFields[i]]
+        delete row[sanitizedFields[i]]
+      }
+      results.push(row)
+    }
+
     if (rowsNeeded !== Infinity) {
       rowsNeeded -= rows.length
       if (rowsNeeded <= 0) break
@@ -209,4 +221,33 @@ export async function icebergRead({ tableUrl, rowStart, rowEnd, metadataFileName
   }
 
   return results
+}
+
+/**
+ * Avro sanitization function.
+ *
+ * @param {string} name
+ * @returns {string}
+ */
+function sanitize(name) {
+  let result = ''
+  for (let i = 0; i < name.length; i++) {
+    const ch = name.charAt(i)
+    const isLetter = /^[A-Za-z]$/.test(ch)
+    const isDigit = /^[0-9]$/.test(ch)
+    if (i === 0) {
+      if (isLetter || ch === '_') {
+        result += ch
+      } else {
+        result += isDigit ? '_' + ch : '_x' + ch.charCodeAt(0).toString(16).toUpperCase()
+      }
+    } else {
+      if (isLetter || isDigit || ch === '_') {
+        result += ch
+      } else {
+        result += '_x' + ch.charCodeAt(0).toString(16).toUpperCase()
+      }
+    }
+  }
+  return result
 }

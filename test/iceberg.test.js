@@ -13,26 +13,26 @@ describe('readIcebergData', () => {
 
     // Verify first row has expected structure
     expect(data[0]).toEqual({
-      Breed_x20Name: 'Holland Lop',
-      Average_x20Weight: 1.8,
-      Fur_x20Length: 3,
+      'Breed Name': 'Holland Lop',
+      'Average Weight': 1.8,
+      'Fur Length': 3,
       Lifespan: 7n,
-      Origin_x20Country: 'The Netherlands',
-      Ear_x20Type: 'Lop',
+      'Origin Country': 'The Netherlands',
+      'Ear Type': 'Lop',
       Temperament: 'Friendly',
-      Popularity_x20Rank: 1n,
+      'Popularity Rank': 1n,
     })
 
     // Check we have all expected properties
     const expectedProperties = [
-      'Breed_x20Name',
-      'Average_x20Weight',
-      'Fur_x20Length',
+      'Breed Name',
+      'Average Weight',
+      'Fur Length',
       'Lifespan',
-      'Origin_x20Country',
-      'Ear_x20Type',
+      'Origin Country',
+      'Ear Type',
       'Temperament',
-      'Popularity_x20Rank',
+      'Popularity Rank',
     ]
     data.forEach(row => {
       expectedProperties.forEach(prop => {
@@ -46,14 +46,14 @@ describe('readIcebergData', () => {
 
     // Verify first row has expected structure
     expect(data[0]).toEqual({
-      Breed_x20Name: 'Netherland Dwarf',
-      Average_x20Weight: 0.9,
-      Fur_x20Length: 2.5,
+      'Breed Name': 'Netherland Dwarf',
+      'Average Weight': 0.9,
+      'Fur Length': 2.5,
       Lifespan: 10n,
-      Origin_x20Country: 'Netherlands',
-      Ear_x20Type: 'Erect',
+      'Origin Country': 'Netherlands',
+      'Ear Type': 'Erect',
       Temperament: 'Shy',
-      Popularity_x20Rank: 2n,
+      'Popularity Rank': 2n,
     })
   })
 
@@ -62,14 +62,14 @@ describe('readIcebergData', () => {
 
     // Verify first row has expected structure
     expect(data[0]).toEqual({
-      Breed_x20Name: 'Netherland Dwarf',
-      Average_x20Weight: 0.9,
-      Fur_x20Length: 2.5,
+      'Breed Name': 'Netherland Dwarf',
+      'Average Weight': 0.9,
+      'Fur Length': 2.5,
       Lifespan: 10n,
-      Origin_x20Country: 'Netherlands',
-      Ear_x20Type: 'Erect',
+      'Origin Country': 'Netherlands',
+      'Ear Type': 'Erect',
       Temperament: 'Shy',
-      Popularity_x20Rank: 2n,
+      'Popularity Rank': 2n,
       breed_name_length: 16,
     })
   })
