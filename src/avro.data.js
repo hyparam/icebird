@@ -1,4 +1,4 @@
-import zlib from 'zlib'
+import { inflateSync } from 'fflate'
 import { readZigZag, readZigZagBigInt } from './avro.metadata.js'
 
 /**
@@ -38,7 +38,7 @@ export function avroData({ reader, metadata, syncMarker }) {
 
     // De-compress data
     if (codec === 'deflate') {
-      data = zlib.inflateRawSync(data)
+      data = inflateSync(data)
     } else if (codec !== 'null') {
       throw new Error(`Unsupported codec: ${codec}`)
     }
