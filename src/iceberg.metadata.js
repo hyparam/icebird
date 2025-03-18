@@ -6,7 +6,7 @@ import { translateS3Url } from './iceberg.fetch.js'
  * @param {string} tableUrl - Base S3 URL of the table (e.g. "s3://my-bucket/path/to/table")
  * @returns {Promise<number>} The snapshot version
  */
-export function fetchSnapshotVersion(tableUrl) {
+export function fetchLatestSequenceNumber(tableUrl) {
   const url = `${tableUrl}/metadata/version-hint.text`
   const safeUrl = translateS3Url(url)
   // TODO: If version-hint is not found, try listing or binary search.
@@ -24,7 +24,7 @@ export function fetchSnapshotVersion(tableUrl) {
  */
 export async function fetchIcebergMetadata(tableUrl, metadataFileName) {
   if (!metadataFileName) {
-    const version = await fetchSnapshotVersion(tableUrl)
+    const version = await fetchLatestSequenceNumber(tableUrl)
     metadataFileName = `v${version}.metadata.json`
   }
   const url = `${tableUrl}/metadata/${metadataFileName}`

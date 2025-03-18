@@ -9,7 +9,7 @@ export interface IcebergMetadata {
   'current-schema-id': number
   schemas: Schema[]
   'default-spec-id': number
-  'partition-specs': any[]
+  'partition-specs': PartitionSpec[]
   'last-partition-id': number
   'default-sort-order-id': number
   'sort-orders': SortOrder[]
@@ -17,9 +17,9 @@ export interface IcebergMetadata {
   'current-snapshot-id': number
   refs: object
   snapshots: Snapshot[]
-  statistics: any[]
-  'snapshot-log': any[]
-  'metadata-log': any[]
+  statistics: TableStatistics[]
+  'snapshot-log': SnapshotLog[]
+  'metadata-log': MetadataLog[]
 }
 
 export interface Schema {
@@ -35,9 +35,14 @@ interface Field {
   type: string
 }
 
+interface PartitionSpec {
+  'spec-id': number
+  fields: Field[]
+}
+
 interface SortOrder {
   "order-id": number
-  "fields": any[]
+  "fields": unknown[]
 }
 
 export interface Snapshot {
@@ -63,6 +68,23 @@ export interface Snapshot {
   'schema-id': number
 }
 
+interface TableStatistics {
+  'snapshot-id': number
+  'statistics-path': string
+  'file-size-in-bytes': bigint
+  'file-footer-size-in-bytes': bigint
+}
+
+interface SnapshotLog {
+  'timestamp-ms': number
+  'snapshot-id': number
+}
+
+interface MetadataLog {
+  'timestamp-ms': number
+  'metadata-file': string
+}
+
 export interface Manifest {
   manifest_path: string
   manifest_length: bigint
@@ -77,7 +99,11 @@ export interface Manifest {
   added_rows_count: bigint
   existing_rows_count: bigint
   deleted_rows_count: bigint
-  partitions?: any[]
+  partitions?: FieldSummary[]
+}
+
+interface FieldSummary {
+  'contains-null': boolean
 }
 
 export interface DataFile {
@@ -87,6 +113,6 @@ export interface DataFile {
   record_count: bigint
   file_size_in_bytes: bigint
   split_offsets: bigint[]
-  equality_ids?: any[]
+  equality_ids?: number[]
   sort_order_id: number
 }
