@@ -7,12 +7,12 @@ export interface IcebergMetadata {
   'last-updated-ms': number
   'last-column-id': number
   'current-schema-id': number
-  schemas: any[]
+  schemas: Schema[]
   'default-spec-id': number
   'partition-specs': any[]
   'last-partition-id': number
   'default-sort-order-id': number
-  'sort-orders': any[]
+  'sort-orders': SortOrder[]
   properties: object
   'current-snapshot-id': number
   refs: object
@@ -22,7 +22,25 @@ export interface IcebergMetadata {
   'metadata-log': any[]
 }
 
-interface Snapshot {
+export interface Schema {
+  type: string
+  "schema-id": number
+  fields: Field[]
+}
+
+interface Field {
+  id: number
+  name: string
+  required: boolean
+  type: string
+}
+
+interface SortOrder {
+  "order-id": number
+  "fields": any[]
+}
+
+export interface Snapshot {
   'sequence-number': number
   'snapshot-id': number
   'timestamp-ms': number
@@ -45,7 +63,7 @@ interface Snapshot {
   'schema-id': number
 }
 
-interface Manifest {
+export interface Manifest {
   manifest_path: string
   manifest_length: bigint
   partition_spec_id: number

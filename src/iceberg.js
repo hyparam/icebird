@@ -1,8 +1,9 @@
 import { asyncBufferFromUrl, parquetReadObjects } from 'hyparquet'
 import { decompress as ZSTD } from 'fzstd'
-import {
-  fetchAvroRecords, fetchDataFilesFromManifests, fetchIcebergMetadata, fetchSnapshotVersion, translateS3Url,
-} from './iceberg.fetch.js'
+import { fetchAvroRecords, fetchDataFilesFromManifests, translateS3Url } from './iceberg.fetch.js'
+import { fetchIcebergMetadata } from './iceberg.metadata.js'
+
+export { fetchIcebergMetadata }
 
 /**
  * Returns manifest URLs for the current snapshot separated into data and delete manifests.
@@ -101,27 +102,22 @@ function equalityMatch(row, deletePredicate) {
  * @returns {Promise<Array<Record<string, any>>>} Array of data records.
  */
 export async function icebergRead({ tableUrl, rowStart, rowEnd, metadataFileName }) {
-  // Find the latest snapshot version.
-  if (!metadataFileName) {
-    const version = await fetchSnapshotVersion(tableUrl)
-    metadataFileName = `v${version}.metadata.json`
-  }
-  // Fetch table metadata and validate key fields.
+  // Fetch table metadata
   const metadata = await fetchIcebergMetadata(tableUrl, metadataFileName)
 
-  // Get manifest URLs for data and delete files.
+  // Get manifest URLs for data and delete files
   const { dataManifestUrls, deleteManifestUrls } = await getManifestUrls(metadata)
   if (dataManifestUrls.length === 0) {
     throw new Error('No data manifest files found for current snapshot')
   }
 
-  // Read data file info from data manifests.
+  // Read data file info from data manifests
   const dataFiles = await fetchDataFilesFromManifests(dataManifestUrls)
   if (dataFiles.length === 0) {
     throw new Error('No data files found in manifests (table may be empty)')
   }
 
-  // Read delete file info from delete manifests (if any).
+  // Read delete file info from delete manifests (if any)
   const deleteFiles = deleteManifestUrls.length > 0
     ? await fetchDataFilesFromManifests(deleteManifestUrls)
     : []
