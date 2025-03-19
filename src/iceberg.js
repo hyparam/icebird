@@ -96,7 +96,12 @@ function equalityMatch(row, deletePredicate) {
  * @param {string} [options.metadataFileName] - Name of the Iceberg metadata file.
  * @returns {Promise<Array<Record<string, any>>>} Array of data records.
  */
-export async function icebergRead({ tableUrl, rowStart, rowEnd, metadataFileName }) {
+export async function icebergRead({
+  tableUrl,
+  rowStart = 0,
+  rowEnd = Infinity,
+  metadataFileName,
+}) {
   // Fetch table metadata
   const metadata = await fetchIcebergMetadata(tableUrl, metadataFileName)
 
@@ -133,7 +138,7 @@ export async function icebergRead({ tableUrl, rowStart, rowEnd, metadataFileName
       if (deleteFile.content === 1) { // Position delete
         const { pos } = deleteRow
         if (pos !== undefined && pos !== null) {
-          // Note: pos is relative to the data file's row order.
+          // Note: pos is relative to the data file's row order
           deleteMap[targetFile].positionDeletes.add(pos)
         }
       } else if (deleteFile.content === 2) { // Equality delete
@@ -143,20 +148,18 @@ export async function icebergRead({ tableUrl, rowStart, rowEnd, metadataFileName
     }
   }
 
-  // Determine the global row range to read.
-  const start = rowStart ?? 0
-  const end = rowEnd ?? Infinity
-  const totalRowsToRead = end === Infinity ? Infinity : end - start + 1
+  // Determine the global row range to read
+  const totalRowsToRead = rowEnd === Infinity ? Infinity : rowEnd - rowStart
 
-  // Find the data file that contains the starting global row.
+  // Find the data file that contains the starting global row
   let fileIndex = 0
-  let skipRows = start
+  let skipRows = rowStart
   while (fileIndex < dataFiles.length && skipRows >= dataFiles[fileIndex].record_count) {
     skipRows -= Number(dataFiles[fileIndex].record_count)
     fileIndex++
   }
 
-  // Read data files one-by-one, applying delete filters.
+  // Read data files one-by-one, applying delete filters
   const results = []
   let rowsNeeded = totalRowsToRead
   for (let i = fileIndex; i < dataFiles.length && rowsNeeded !== 0; i++) {
@@ -168,7 +171,7 @@ export async function icebergRead({ tableUrl, rowStart, rowEnd, metadataFileName
 
     // Skip if there are no rows to read from this file
     if (rowsToRead <= 0) continue
-    const fileRowEnd = fileRowStart + rowsToRead - 1
+    const fileRowEnd = fileRowStart + rowsToRead
 
     // Read the data file
     const fileUrl = translateS3Url(fileInfo.file_path)
@@ -181,14 +184,14 @@ export async function icebergRead({ tableUrl, rowStart, rowEnd, metadataFileName
       compressors,
     })
 
-    // If delete files apply to this data file, filter the rows.
+    // If delete files apply to this data file, filter the rows
     const deletesForFile = deleteMap[fileInfo.file_path]
     if (deletesForFile) {
-      // For position deletes, remove rows whose physical row index is in the set.
+      // For position deletes, remove rows whose physical row index is in the set
       if (deletesForFile.positionDeletes && deletesForFile.positionDeletes.size > 0) {
         rows = rows.filter((row, idx) => !deletesForFile.positionDeletes.has(BigInt(idx + fileRowStart)))
       }
-      // For equality deletes, filter out rows matching any delete predicate.
+      // For equality deletes, filter out rows matching any delete predicate
       if (deletesForFile.equalityDeletes && deletesForFile.equalityDeletes.length > 0) {
         for (const predicate of deletesForFile.equalityDeletes) {
           rows = rows.filter(row => !equalityMatch(row, predicate))
