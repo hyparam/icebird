@@ -2,6 +2,7 @@ import { asyncBufferFromUrl, cachedAsyncBuffer, parquetReadObjects } from 'hypar
 import { compressors } from 'hyparquet-compressors'
 import { avroData } from './avro.data.js'
 import { avroMetadata } from './avro.metadata.js'
+import { fetchDataFilesFromManifests } from './iceberg.manifest.js'
 
 /**
  * Translates an S3A URL to an HTTPS URL for direct access to the object.
@@ -24,72 +25,6 @@ export function translateS3Url(url) {
 }
 
 /**
- * Returns manifest URLs for the current snapshot separated into data and delete manifests.
- *
- * @import {IcebergMetadata, Manifest, ManifestEntry} from './types.js'
- * @param {IcebergMetadata} metadata
- * @returns {Promise<{dataManifestUrls: string[], deleteManifestUrls: string[]}>}
- */
-export async function fetchManifestUrls(metadata) {
-  const currentSnapshotId = metadata['current-snapshot-id']
-  if (!currentSnapshotId || currentSnapshotId < 0) {
-    throw new Error('No current snapshot id found in table metadata')
-  }
-  const snapshot = metadata.snapshots.find(s => s['snapshot-id'] === currentSnapshotId)
-  if (!snapshot) {
-    throw new Error(`Snapshot ${currentSnapshotId} not found in metadata`)
-  }
-
-  // Get manifest URLs from snapshot
-  let manifestUrls = []
-  if (snapshot['manifest-list']) {
-    // Fetch manifest list and extract manifest URLs
-    const manifestListUrl = snapshot['manifest-list']
-    const records = /** @type {Manifest[]} */ (await fetchAvroRecords(manifestListUrl))
-    manifestUrls = records.map(rec => rec.manifest_path)
-  } else if (snapshot.manifests) {
-    manifestUrls = snapshot.manifests.map(m => m.manifest_path)
-  } else {
-    throw new Error('No manifest information found in snapshot')
-  }
-
-  // Separate manifest URLs into data and delete manifests
-  const dataManifestUrls = []
-  const deleteManifestUrls = []
-  for (const url of manifestUrls) {
-    const records = /** @type {ManifestEntry[]} */ (await fetchAvroRecords(url))
-    if (records.length === 0) continue
-    const content = records[0].data_file.content || 0
-    if (content === 0) {
-      dataManifestUrls.push(url)
-    } else if (content === 1 || content === 2) {
-      deleteManifestUrls.push(url)
-    }
-  }
-
-  return { dataManifestUrls, deleteManifestUrls }
-}
-
-/**
- * Fetches data files information from multiple manifest file URLs.
- *
- * @import {DataFile} from './types.js'
- * @param {string[]} manifestUrls - The URLs of the manifest files
- * @returns {Promise<DataFile[]>} Array of data file information
- */
-export async function fetchDataFilesFromManifests(manifestUrls) {
-  /** @type {DataFile[]} */
-  const files = []
-  for (const url of manifestUrls) {
-    const records = await fetchAvroRecords(url)
-    for (const rec of records) {
-      files.push(rec.data_file)
-    }
-  }
-  return files
-}
-
-/**
  * Reads delete files from delete manifests and groups them by target data file.
  *
  * @import {FilePositionDelete} from './types.js'
@@ -98,9 +33,7 @@ export async function fetchDataFilesFromManifests(manifestUrls) {
  */
 export async function fetchDeleteMaps(deleteManifestUrls) {
   // Read delete file info from delete manifests
-  const deleteFiles = deleteManifestUrls.length > 0
-    ? await fetchDataFilesFromManifests(deleteManifestUrls)
-    : []
+  const deleteFiles = await fetchDataFilesFromManifests(deleteManifestUrls)
 
   // Build maps of delete entries keyed by target data file path
   /** @type {Map<string, Set<bigint>>} */

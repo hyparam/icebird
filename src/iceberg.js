@@ -1,9 +1,10 @@
 import { asyncBufferFromUrl, cachedAsyncBuffer, parquetReadObjects } from 'hyparquet'
 import { compressors } from 'hyparquet-compressors'
-import { fetchDataFilesFromManifests, fetchDeleteMaps, fetchManifestUrls, translateS3Url } from './iceberg.fetch.js'
+import { fetchDeleteMaps, translateS3Url } from './iceberg.fetch.js'
 import { icebergLatestVersion, icebergMetadata } from './iceberg.metadata.js'
+import { fetchDataFilesFromManifests, getDataUrls, icebergManifests } from './iceberg.manifest.js'
 
-export { icebergMetadata, icebergLatestVersion }
+export { icebergMetadata, icebergManifests, icebergLatestVersion }
 
 /**
  * Helper to check if a row matches an equality delete predicate.
@@ -49,9 +50,10 @@ export async function icebergRead({
 }) {
   // Fetch table metadata
   const metadata = await icebergMetadata(tableUrl, metadataFileName)
+  const manifests = await icebergManifests(metadata)
 
   // Get manifest URLs for data and delete files
-  const { dataManifestUrls, deleteManifestUrls } = await fetchManifestUrls(metadata)
+  const { dataManifestUrls, deleteManifestUrls } = getDataUrls(manifests)
   if (dataManifestUrls.length === 0) {
     throw new Error('No data manifest files found for current snapshot')
   }
