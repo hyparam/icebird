@@ -1,9 +1,9 @@
 import { asyncBufferFromUrl, cachedAsyncBuffer, parquetReadObjects } from 'hyparquet'
 import { compressors } from 'hyparquet-compressors'
 import { fetchAvroRecords, fetchDataFilesFromManifests, fetchDeleteMaps, translateS3Url } from './iceberg.fetch.js'
-import { fetchIcebergMetadata, fetchLatestSequenceNumber } from './iceberg.metadata.js'
+import { icebergLatestVersion, icebergMetadata } from './iceberg.metadata.js'
 
-export { fetchIcebergMetadata, fetchLatestSequenceNumber }
+export { icebergMetadata, icebergLatestVersion }
 
 /**
  * Returns manifest URLs for the current snapshot separated into data and delete manifests.
@@ -90,7 +90,7 @@ export async function icebergRead({
   metadataFileName,
 }) {
   // Fetch table metadata
-  const metadata = await fetchIcebergMetadata(tableUrl, metadataFileName)
+  const metadata = await icebergMetadata(tableUrl, metadataFileName)
 
   // Get manifest URLs for data and delete files
   const { dataManifestUrls, deleteManifestUrls } = await getManifestUrls(metadata)

@@ -1,6 +1,6 @@
 {
   "name": "icebird",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Apache Iceberg client for javascript",
   "author": "Hyperparam",
   "homepage": "https://hyperparam.app",
@@ -9,10 +9,10 @@
     "hyparquet",
     "iceberg",
     "parquet",
-    "parquetjs",
+    "hyparquet",
+    "table",
     "parser",
-    "snappy",
-    "thrift"
+    "datalake"
   ],
   "license": "MIT",
   "repository": {

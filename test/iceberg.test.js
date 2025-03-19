@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { icebergRead, sanitize } from '../src/iceberg.js'
 
-describe.concurrent('readIcebergData', () => {
+describe.concurrent('icebergRead', () => {
   const tableUrl = 'https://s3.amazonaws.com/hyperparam-iceberg/warehouse/bunnies'
 
   it('reads data from Iceberg table with row limits', async () => {
@@ -75,7 +75,7 @@ describe.concurrent('readIcebergData', () => {
   })
 })
 
-describe('Iceberg sanitizes names', () => {
+describe('sanitizes names', () => {
   it('keeps valid names unchanged', () => {
     expect(sanitize('')).toBe('')
     expect(sanitize('ColumnName')).toBe('ColumnName')

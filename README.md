@@ -12,6 +12,8 @@ Icebird is a library for reading [Apache Iceberg](https://iceberg.apache.org/) t
 
 ## Usage
 
+To read an Iceberg table:
+
 ```javascript
 import { icebergRead } from 'icebird'
 
@@ -20,6 +22,14 @@ const data = await icebergRead({
   rowStart: 0,
   rowEnd: 10
 })
+```
+
+To read the Iceberg metadata (schema, etc):
+
+```javascript
+import { icebergMetadata } from 'icebird'
+
+const metadata = await icebergMetadata(tableUrl)
 ```
 
 ## References
