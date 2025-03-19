@@ -1,15 +1,9 @@
 import { asyncBufferFromUrl, cachedAsyncBuffer, parquetReadObjects } from 'hyparquet'
-import { decompress as ZSTD } from 'fzstd'
+import { compressors } from 'hyparquet-compressors'
 import { fetchAvroRecords, fetchDataFilesFromManifests, translateS3Url } from './iceberg.fetch.js'
 import { fetchIcebergMetadata, fetchLatestSequenceNumber } from './iceberg.metadata.js'
 
 export { fetchIcebergMetadata, fetchLatestSequenceNumber }
-
-// Iceberg uses ZSTD compression for parquet files.
-/** @type {import('hyparquet').Compressors} */
-const compressors = {
-  ZSTD: input => ZSTD(input),
-}
 
 /**
  * Returns manifest URLs for the current snapshot separated into data and delete manifests.
@@ -20,7 +14,7 @@ const compressors = {
  */
 async function getManifestUrls(metadata) {
   const currentSnapshotId = metadata['current-snapshot-id']
-  if (!currentSnapshotId) {
+  if (!currentSnapshotId || currentSnapshotId < 0) {
     throw new Error('No current snapshot id found in table metadata')
   }
   const snapshot = metadata.snapshots.find(s => s['snapshot-id'] === currentSnapshotId)
