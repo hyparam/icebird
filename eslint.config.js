@@ -40,7 +40,9 @@ export default [
       'jsdoc/require-returns-type': 'error',
       'jsdoc/sort-tags': 'error',
       'no-constant-condition': 'off',
-      'no-extra-parens': 'error',
+      'no-extra-parens': ['error', 'all', {
+        'allowParensAfterCommentPattern': '@type', // allow jsdoc
+      }],
       'no-multi-spaces': 'error',
       'no-trailing-spaces': 'error',
       'no-undef': 'error',

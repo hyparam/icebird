@@ -116,3 +116,8 @@ export interface DataFile {
   equality_ids?: number[]
   sort_order_id: number
 }
+
+export interface FilePositionDelete {
+  file_path: string
+  pos: bigint
+}

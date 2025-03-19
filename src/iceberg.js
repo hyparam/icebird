@@ -1,6 +1,6 @@
 import { asyncBufferFromUrl, cachedAsyncBuffer, parquetReadObjects } from 'hyparquet'
 import { compressors } from 'hyparquet-compressors'
-import { fetchAvroRecords, fetchDataFilesFromManifests, translateS3Url } from './iceberg.fetch.js'
+import { fetchAvroRecords, fetchDataFilesFromManifests, fetchDeleteMaps, translateS3Url } from './iceberg.fetch.js'
 import { fetchIcebergMetadata, fetchLatestSequenceNumber } from './iceberg.metadata.js'
 
 export { fetchIcebergMetadata, fetchLatestSequenceNumber }
@@ -9,7 +9,7 @@ export { fetchIcebergMetadata, fetchLatestSequenceNumber }
  * Returns manifest URLs for the current snapshot separated into data and delete manifests.
  *
  * @import {IcebergMetadata} from './types.js'
- * @param {IcebergMetadata} metadata - The Iceberg table metadata.
+ * @param {IcebergMetadata} metadata
  * @returns {Promise<{dataManifestUrls: string[], deleteManifestUrls: string[]}>}
  */
 async function getManifestUrls(metadata) {
@@ -45,19 +45,6 @@ async function getManifestUrls(metadata) {
     }
   }
   return { dataManifestUrls, deleteManifestUrls }
-}
-
-/**
- * Reads an entire parquet file its URL.
- *
- * @param {string} url - The URL of the delete file.
- * @returns {Promise<Record<string, any>[]>} Array of delete rows.
- */
-async function readParquetFile(url) {
-  const asyncBuffer = await asyncBufferFromUrl({ url: translateS3Url(url) })
-  const file = cachedAsyncBuffer(asyncBuffer)
-  const rows = await parquetReadObjects({ file, compressors })
-  return rows
 }
 
 /**
@@ -111,41 +98,13 @@ export async function icebergRead({
     throw new Error('No data manifest files found for current snapshot')
   }
 
+  // Build maps of delete entries keyed by target data file path (async)
+  const deleteMaps = fetchDeleteMaps(deleteManifestUrls)
+
   // Read data file info from data manifests
   const dataFiles = await fetchDataFilesFromManifests(dataManifestUrls)
   if (dataFiles.length === 0) {
     throw new Error('No data files found in manifests (table may be empty)')
-  }
-
-  // Read delete file info from delete manifests (if any)
-  const deleteFiles = deleteManifestUrls.length > 0
-    ? await fetchDataFilesFromManifests(deleteManifestUrls)
-    : []
-
-  // Build a map of delete entries keyed by target data file path.
-  // Each entry contains a Set of positions to delete (for position deletes)
-  // and an array of predicates (for equality deletes).
-  /** @type {Record<string, { positionDeletes: Set<bigint>, equalityDeletes: any[] }>} */
-  const deleteMap = {}
-  for (const deleteFile of deleteFiles) {
-    const deleteRows = await readParquetFile(deleteFile.file_path)
-    for (const deleteRow of deleteRows) {
-      const targetFile = deleteRow.file_path
-      if (!targetFile) continue
-      if (!deleteMap[targetFile]) {
-        deleteMap[targetFile] = { positionDeletes: new Set(), equalityDeletes: [] }
-      }
-      if (deleteFile.content === 1) { // Position delete
-        const { pos } = deleteRow
-        if (pos !== undefined && pos !== null) {
-          // Note: pos is relative to the data file's row order
-          deleteMap[targetFile].positionDeletes.add(pos)
-        }
-      } else if (deleteFile.content === 2) { // Equality delete
-        // Save the entire delete row (you might want to restrict this to equalityIds)
-        deleteMap[targetFile].equalityDeletes.push(deleteRow)
-      }
-    }
   }
 
   // Determine the global row range to read
@@ -164,7 +123,7 @@ export async function icebergRead({
   let rowsNeeded = totalRowsToRead
   for (let i = fileIndex; i < dataFiles.length && rowsNeeded !== 0; i++) {
     const fileInfo = dataFiles[i]
-    // Determine the row range to read from this file.
+    // Determine the row range to read from this file
     const fileRowStart = i === fileIndex ? skipRows : 0
     const availableRows = Number(fileInfo.record_count) - fileRowStart
     const rowsToRead = rowsNeeded === Infinity ? availableRows : Math.min(rowsNeeded, availableRows)
@@ -185,18 +144,14 @@ export async function icebergRead({
     })
 
     // If delete files apply to this data file, filter the rows
-    const deletesForFile = deleteMap[fileInfo.file_path]
-    if (deletesForFile) {
-      // For position deletes, remove rows whose physical row index is in the set
-      if (deletesForFile.positionDeletes && deletesForFile.positionDeletes.size > 0) {
-        rows = rows.filter((row, idx) => !deletesForFile.positionDeletes.has(BigInt(idx + fileRowStart)))
-      }
-      // For equality deletes, filter out rows matching any delete predicate
-      if (deletesForFile.equalityDeletes && deletesForFile.equalityDeletes.length > 0) {
-        for (const predicate of deletesForFile.equalityDeletes) {
-          rows = rows.filter(row => !equalityMatch(row, predicate))
-        }
-      }
+    const { positionDeletesMap, equalityDeletesMap } = await deleteMaps
+    const positionDeletes = positionDeletesMap.get(fileInfo.file_path)
+    if (positionDeletes) {
+      rows = rows.filter((_, idx) => !positionDeletes.has(BigInt(idx + fileRowStart)))
+    }
+    const equalityDeletes = equalityDeletesMap.get(fileInfo.file_path)
+    if (equalityDeletes) {
+      rows = rows.filter(row => !equalityDeletes.some(predicate => equalityMatch(row, predicate)))
     }
 
     // Map column names to unsanitized names

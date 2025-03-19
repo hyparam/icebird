@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { icebergRead } from '../src/iceberg.js'
 
-describe('readIcebergData', () => {
+describe.concurrent('readIcebergData', () => {
   const tableUrl = 'https://s3.amazonaws.com/hyperparam-iceberg/warehouse/bunnies'
 
   it('reads data from Iceberg table with row limits', async () => {
