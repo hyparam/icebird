@@ -182,7 +182,7 @@ export async function icebergRead({
  * @param {string} name
  * @returns {string}
  */
-function sanitize(name) {
+export function sanitize(name) {
   let result = ''
   for (let i = 0; i < name.length; i++) {
     const ch = name.charAt(i)
