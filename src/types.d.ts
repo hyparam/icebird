@@ -89,7 +89,7 @@ export interface Manifest {
   manifest_path: string
   manifest_length: bigint
   partition_spec_id: number
-  content: 0 | 1
+  content: 0 | 1 // 0=data, 1=deletes
   sequence_number: bigint
   min_sequence_number: bigint
   added_snapshot_id: bigint
@@ -102,12 +102,20 @@ export interface Manifest {
   partitions?: FieldSummary[]
 }
 
+export interface ManifestEntry {
+  status: 0 | 1 | 2 // 0=existing, 1=added, 2=deleted
+  snapshot_id: bigint
+  sequence_number: bigint
+  file_sequence_number: bigint
+  data_file: DataFile
+}
+
 interface FieldSummary {
   'contains-null': boolean
 }
 
 export interface DataFile {
-  content: 0 | 1 | 2
+  content: 0 | 1 | 2 // 0=data, 1=position_delete, 2=equality_delete
   file_path: string
   file_format: string
   record_count: bigint

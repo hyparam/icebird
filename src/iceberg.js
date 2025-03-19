@@ -1,51 +1,9 @@
 import { asyncBufferFromUrl, cachedAsyncBuffer, parquetReadObjects } from 'hyparquet'
 import { compressors } from 'hyparquet-compressors'
-import { fetchAvroRecords, fetchDataFilesFromManifests, fetchDeleteMaps, translateS3Url } from './iceberg.fetch.js'
+import { fetchDataFilesFromManifests, fetchDeleteMaps, fetchManifestUrls, translateS3Url } from './iceberg.fetch.js'
 import { icebergLatestVersion, icebergMetadata } from './iceberg.metadata.js'
 
 export { icebergMetadata, icebergLatestVersion }
-
-/**
- * Returns manifest URLs for the current snapshot separated into data and delete manifests.
- *
- * @import {IcebergMetadata} from './types.js'
- * @param {IcebergMetadata} metadata
- * @returns {Promise<{dataManifestUrls: string[], deleteManifestUrls: string[]}>}
- */
-async function getManifestUrls(metadata) {
-  const currentSnapshotId = metadata['current-snapshot-id']
-  if (!currentSnapshotId || currentSnapshotId < 0) {
-    throw new Error('No current snapshot id found in table metadata')
-  }
-  const snapshot = metadata.snapshots.find(s => s['snapshot-id'] === currentSnapshotId)
-  if (!snapshot) {
-    throw new Error(`Snapshot ${currentSnapshotId} not found in metadata`)
-  }
-  let manifestUrls = []
-  if (snapshot['manifest-list']) {
-    const manifestListUrl = snapshot['manifest-list']
-    const records = await fetchAvroRecords(manifestListUrl)
-    manifestUrls = records.map(rec => rec.manifest_path)
-  } else if (snapshot.manifests) {
-    manifestUrls = snapshot.manifests.map(m => m.manifest_path)
-  } else {
-    throw new Error('No manifest information found in snapshot')
-  }
-  // Separate manifest URLs into data and delete manifests.
-  const dataManifestUrls = []
-  const deleteManifestUrls = []
-  for (const url of manifestUrls) {
-    const records = await fetchAvroRecords(url)
-    if (records.length === 0) continue
-    const content = records[0].data_file.content || 0
-    if (content === 0) {
-      dataManifestUrls.push(url)
-    } else if (content === 1 || content === 2) {
-      deleteManifestUrls.push(url)
-    }
-  }
-  return { dataManifestUrls, deleteManifestUrls }
-}
 
 /**
  * Helper to check if a row matches an equality delete predicate.
@@ -93,7 +51,7 @@ export async function icebergRead({
   const metadata = await icebergMetadata(tableUrl, metadataFileName)
 
   // Get manifest URLs for data and delete files
-  const { dataManifestUrls, deleteManifestUrls } = await getManifestUrls(metadata)
+  const { dataManifestUrls, deleteManifestUrls } = await fetchManifestUrls(metadata)
   if (dataManifestUrls.length === 0) {
     throw new Error('No data manifest files found for current snapshot')
   }
