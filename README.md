@@ -30,6 +30,12 @@ To read the Iceberg metadata (schema, etc):
 import { icebergMetadata } from 'icebird'
 
 const metadata = await icebergMetadata(tableUrl)
+const data = await icebergRead({
+  tableUrl,
+  metadata, // faster if you provide the metadata
+  rowStart: 0,
+  rowEnd: 10
+})
 ```
 
 ## References

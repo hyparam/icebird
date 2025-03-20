@@ -129,3 +129,36 @@ export interface FilePositionDelete {
   file_path: string
   pos: bigint
 }
+
+/* Avro types */
+interface AvroField {
+  name: string
+  type: AvroType
+  doc?: string
+  default?: any
+  // 'field-id'?: number
+}
+
+export type AvroType = AvroPrimitiveType | AvroComplexType
+
+type AvroPrimitiveType = 'null' | 'boolean' | 'int' | 'long' | 'float' | 'double' | 'bytes' | 'string'
+
+interface AvroRecord {
+  type: 'record'
+  name: string
+  namespace?: string
+  doc?: string
+  aliases?: string[]
+  fields: AvroField[]
+  'schema-id'?: number
+}
+
+interface AvroArray {
+  type: 'array'
+  items: AvroType
+  default?: any[]
+}
+
+type AvroUnion = AvroType[]
+
+type AvroComplexType = AvroRecord | AvroArray | AvroUnion

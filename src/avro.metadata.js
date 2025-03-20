@@ -81,11 +81,11 @@ export function avroMetadata(reader) {
 
   // Parse avro-specific metadata
   metadata['avro.schema'] = JSON.parse(metadata['avro.schema'])
-  if (metadata['iceberg.schema']) {
-    metadata['iceberg.schema'] = JSON.parse(metadata['iceberg.schema'])
-  }
   if (metadata['schema']) {
     metadata['schema'] = JSON.parse(metadata['schema'])
+  }
+  if (metadata['iceberg.schema']) {
+    metadata['iceberg.schema'] = JSON.parse(metadata['iceberg.schema'])
   }
 
   // Read 16-byte sync marker

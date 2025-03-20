@@ -61,8 +61,9 @@ export function avroData({ reader, metadata, syncMarker }) {
 }
 
 /**
+ * @import {AvroType} from './types.js'
  * @param {DataReader} reader
- * @param {any} type
+ * @param {AvroType} type
  * @returns {any}
  */
 function readType(reader, type) {
