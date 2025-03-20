@@ -5,6 +5,8 @@ import { icebergLatestVersion, icebergMetadata } from './iceberg.metadata.js'
 import { fetchDataFilesFromManifests, getDataUrls, icebergManifests } from './iceberg.manifest.js'
 
 export { icebergMetadata, icebergManifests, icebergLatestVersion }
+export { avroMetadata } from './avro.metadata.js'
+export { avroData } from './avro.data.js'
 
 /**
  * Helper to check if a row matches an equality delete predicate.
@@ -35,11 +37,13 @@ function equalityMatch(row, deletePredicate) {
  * TODO:
  *   - Sequence number checks when filtering deletes
  *
+ * @import {IcebergMetadata} from './types.js'
  * @param {object} options
  * @param {string} options.tableUrl - Base S3 URL of the table.
  * @param {number} [options.rowStart] - The starting global row index to fetch (inclusive).
  * @param {number} [options.rowEnd] - The ending global row index to fetch (exclusive).
  * @param {string} [options.metadataFileName] - Name of the Iceberg metadata file.
+ * @param {IcebergMetadata} [options.metadata] - Pre-fetched Iceberg metadata.
  * @returns {Promise<Array<Record<string, any>>>} Array of data records.
  */
 export async function icebergRead({
@@ -47,9 +51,10 @@ export async function icebergRead({
   rowStart = 0,
   rowEnd = Infinity,
   metadataFileName,
+  metadata,
 }) {
   // Fetch table metadata
-  const metadata = await icebergMetadata(tableUrl, metadataFileName)
+  metadata ??= await icebergMetadata(tableUrl, metadataFileName)
   const manifests = await icebergManifests(metadata)
 
   // Get manifest URLs for data and delete files
