@@ -1,4 +1,4 @@
-import { inflateSync } from 'fflate'
+import { gunzip } from 'hyparquet-compressors'
 import { readZigZag, readZigZagBigInt } from './avro.metadata.js'
 
 /**
@@ -38,7 +38,7 @@ export function avroData({ reader, metadata, syncMarker }) {
 
     // De-compress data
     if (codec === 'deflate') {
-      data = inflateSync(data)
+      data = gunzip(data)
     } else if (codec !== 'null') {
       throw new Error(`Unsupported codec: ${codec}`)
     }
