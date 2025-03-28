@@ -3,7 +3,7 @@ import { icebergManifests } from '../src/iceberg.manifest.js'
 import { icebergMetadata } from '../src/iceberg.metadata.js'
 
 describe('Iceberg Manifests', () => {
-  const tableUrl = 'https://s3.amazonaws.com/hyperparam-iceberg/warehouse/bunnies'
+  const tableUrl = 'https://s3.amazonaws.com/hyperparam-iceberg/spark/bunnies'
 
   it('fetches iceberg manifests', async () => {
     const metadata = await icebergMetadata(tableUrl, 'v5.metadata.json')
@@ -11,20 +11,20 @@ describe('Iceberg Manifests', () => {
 
     expect(manifests.length).toBe(3)
     const { url, entries } = manifests[2]
-    expect(url).toBe('s3a://hyperparam-iceberg/warehouse/bunnies/metadata/c6a8baa0-dac7-41c5-b4db-30aeac1da4e2-m0.avro')
+    expect(url).toBe('s3a://hyperparam-iceberg/spark/bunnies/metadata/ac75cc9f-cc0c-4712-8337-fe4b0c473459-m0.avro')
     expect(entries.length).toBe(1)
     const manifest = entries[0]
     expect(manifest).toMatchObject({
       status: 1,
-      snapshot_id: 8292582310975252866n,
+      snapshot_id: 469881615898633426n,
       sequence_number: null,
       file_sequence_number: null,
       data_file: {
         content: 1,
-        file_path: 's3a://hyperparam-iceberg/warehouse/bunnies/data/00000-3-7e317867-0e84-4110-a223-4574f6ec5de5-00001-deletes.parquet',
+        file_path: 's3a://hyperparam-iceberg/spark/bunnies/data/00000-3-6fdcdaeb-591f-4ae0-a39a-75c7fba53907-00001-deletes.parquet',
         file_format: 'PARQUET',
         record_count: 1n,
-        file_size_in_bytes: 1457n,
+        file_size_in_bytes: 1437n,
         split_offsets: [4n],
       },
     })

@@ -50,19 +50,17 @@ async function fetchManifests(manifestUrls) {
 
 /**
  * @import {DataFile} from './types.js'
- * @param {string[]} dataManifestUrls
- * @returns {Promise<DataFile[]>}
+ * @param {string[]} manifestUrls
+ * @returns {Promise<ManifestEntry[]>}
  */
-export async function fetchDataFilesFromManifests(dataManifestUrls) {
-  const manifests = await fetchManifests(dataManifestUrls)
-  /** @type {DataFile[]} */
-  const dataFiles = []
+export async function fetchManifestEntries(manifestUrls) {
+  const manifests = await fetchManifests(manifestUrls)
+  /** @type {ManifestEntry[]} */
+  const result = []
   for (const { entries } of manifests) {
-    for (const entry of entries) {
-      dataFiles.push(entry.data_file)
-    }
+    result.push(...entries)
   }
-  return dataFiles
+  return result
 }
 
 /**

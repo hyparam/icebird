@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { icebergLatestVersion, icebergMetadata } from '../src/iceberg.metadata.js'
 
 describe('Iceberg Metadata', () => {
-  const tableUrl = 'https://s3.amazonaws.com/hyperparam-iceberg/warehouse/bunnies'
+  const tableUrl = 'https://s3.amazonaws.com/hyperparam-iceberg/spark/bunnies'
 
   it('fetches the latest sequence number from version-hint.text', async () => {
     const version = await icebergLatestVersion(tableUrl)

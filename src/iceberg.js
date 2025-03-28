@@ -2,7 +2,7 @@ import { asyncBufferFromUrl, cachedAsyncBuffer, parquetReadObjects } from 'hypar
 import { compressors } from 'hyparquet-compressors'
 import { fetchDeleteMaps, translateS3Url } from './iceberg.fetch.js'
 import { icebergLatestVersion, icebergMetadata } from './iceberg.metadata.js'
-import { fetchDataFilesFromManifests, getDataUrls, icebergManifests } from './iceberg.manifest.js'
+import { fetchManifestEntries, getDataUrls, icebergManifests } from './iceberg.manifest.js'
 
 export { icebergMetadata, icebergManifests, icebergLatestVersion }
 export { avroMetadata } from './avro.metadata.js'
@@ -53,9 +53,17 @@ export async function icebergRead({
   metadataFileName,
   metadata,
 }) {
+  if (rowStart > rowEnd) throw new Error('rowStart must be less than rowEnd')
+  if (rowStart < 0) throw new Error('rowStart must be positive')
+
   // Fetch table metadata
   metadata ??= await icebergMetadata(tableUrl, metadataFileName)
   const manifests = await icebergManifests(metadata)
+
+  // Get current schema id
+  const currentSchemaId = metadata['current-schema-id']
+  const schema = metadata.schemas.find(s => s['schema-id'] === currentSchemaId)
+  if (!schema) throw new Error('current schema not found in metadata')
 
   // Get manifest URLs for data and delete files
   const { dataManifestUrls, deleteManifestUrls } = getDataUrls(manifests)
@@ -67,8 +75,8 @@ export async function icebergRead({
   const deleteMaps = fetchDeleteMaps(deleteManifestUrls)
 
   // Read data file info from data manifests
-  const dataFiles = await fetchDataFilesFromManifests(dataManifestUrls)
-  if (dataFiles.length === 0) {
+  const dataEntries = await fetchManifestEntries(dataManifestUrls)
+  if (dataEntries.length === 0) {
     throw new Error('No data files found in manifests (table may be empty)')
   }
 
@@ -78,19 +86,28 @@ export async function icebergRead({
   // Find the data file that contains the starting global row
   let fileIndex = 0
   let skipRows = rowStart
-  while (fileIndex < dataFiles.length && skipRows >= dataFiles[fileIndex].record_count) {
-    skipRows -= Number(dataFiles[fileIndex].record_count)
+  while (fileIndex < dataEntries.length && skipRows >= dataEntries[fileIndex].data_file.record_count) {
+    skipRows -= Number(dataEntries[fileIndex].data_file.record_count)
     fileIndex++
   }
 
   // Read data files one-by-one, applying delete filters
   const results = []
   let rowsNeeded = totalRowsToRead
-  for (let i = fileIndex; i < dataFiles.length && rowsNeeded !== 0; i++) {
-    const fileInfo = dataFiles[i]
+  // TODO: Fetch data files in parallel
+  for (let i = fileIndex; i < dataEntries.length && rowsNeeded !== 0; i++) {
+    const { data_file, status } = dataEntries[i]
+
+    if (status === 2) continue // Skip deleted files
+
+    // TODO: Check sequence numbers
+    // if (sequence_number === null || file_sequence_number === null) {
+    //   throw new Error('Sequence numbers not found, check v2 inheritance logic')
+    // }
+
     // Determine the row range to read from this file
     const fileRowStart = i === fileIndex ? skipRows : 0
-    const availableRows = Number(fileInfo.record_count) - fileRowStart
+    const availableRows = Number(data_file.record_count) - fileRowStart
     const rowsToRead = rowsNeeded === Infinity ? availableRows : Math.min(rowsNeeded, availableRows)
 
     // Skip if there are no rows to read from this file
@@ -98,7 +115,7 @@ export async function icebergRead({
     const fileRowEnd = fileRowStart + rowsToRead
 
     // Read the data file
-    const fileUrl = translateS3Url(fileInfo.file_path)
+    const fileUrl = translateS3Url(data_file.file_path)
     const asyncBuffer = await asyncBufferFromUrl({ url: fileUrl })
     const fileBuffer = cachedAsyncBuffer(asyncBuffer)
     let rows = await parquetReadObjects({
@@ -110,17 +127,17 @@ export async function icebergRead({
 
     // If delete files apply to this data file, filter the rows
     const { positionDeletesMap, equalityDeletesMap } = await deleteMaps
-    const positionDeletes = positionDeletesMap.get(fileInfo.file_path)
+
+    const positionDeletes = positionDeletesMap.get(data_file.file_path)
     if (positionDeletes) {
       rows = rows.filter((_, idx) => !positionDeletes.has(BigInt(idx + fileRowStart)))
     }
-    const equalityDeletes = equalityDeletesMap.get(fileInfo.file_path)
+    const equalityDeletes = equalityDeletesMap.get(data_file.file_path)
     if (equalityDeletes) {
       rows = rows.filter(row => !equalityDeletes.some(predicate => equalityMatch(row, predicate)))
     }
 
     // Map column names to unsanitized names
-    const schema = metadata.schemas[metadata.schemas.length - 1]
     const unsanitizedFields = schema.fields.map(f => f.name)
       .filter(column => column !== sanitize(column))
     const sanitizedFields = unsanitizedFields.map(sanitize)

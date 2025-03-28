@@ -2,7 +2,7 @@ import { asyncBufferFromUrl, cachedAsyncBuffer, parquetReadObjects } from 'hypar
 import { compressors } from 'hyparquet-compressors'
 import { avroData } from './avro.data.js'
 import { avroMetadata } from './avro.metadata.js'
-import { fetchDataFilesFromManifests } from './iceberg.manifest.js'
+import { fetchManifestEntries } from './iceberg.manifest.js'
 
 /**
  * Translates an S3A URL to an HTTPS URL for direct access to the object.
@@ -33,7 +33,7 @@ export function translateS3Url(url) {
  */
 export async function fetchDeleteMaps(deleteManifestUrls) {
   // Read delete file info from delete manifests
-  const deleteFiles = await fetchDataFilesFromManifests(deleteManifestUrls)
+  const deleteEntries = await fetchManifestEntries(deleteManifestUrls)
 
   // Build maps of delete entries keyed by target data file path
   /** @type {Map<string, Set<bigint>>} */
@@ -42,14 +42,15 @@ export async function fetchDeleteMaps(deleteManifestUrls) {
   const equalityDeletesMap = new Map()
 
   // Fetch delete files in parallel
-  await Promise.all(deleteFiles.map(async deleteFile => {
-    const asyncBuffer = await asyncBufferFromUrl({ url: translateS3Url(deleteFile.file_path) })
+  await Promise.all(deleteEntries.map(async deleteEntry => {
+    const { content, file_path } = deleteEntry.data_file
+    const asyncBuffer = await asyncBufferFromUrl({ url: translateS3Url(file_path) })
     const file = cachedAsyncBuffer(asyncBuffer)
     const deleteRows = /** @type {FilePositionDelete[]} */ (await parquetReadObjects({ file, compressors }))
     for (const deleteRow of deleteRows) {
       const targetFile = deleteRow.file_path
       if (!targetFile) continue
-      if (deleteFile.content === 1) { // Position delete
+      if (content === 1) { // Position delete
         const { pos } = deleteRow
         if (pos !== undefined && pos !== null) {
           // Note: pos is relative to the data file's row order
@@ -60,7 +61,7 @@ export async function fetchDeleteMaps(deleteManifestUrls) {
           }
           set.add(pos)
         }
-      } else if (deleteFile.content === 2) { // Equality delete
+      } else if (content === 2) { // Equality delete
         // Save the entire delete row (restrict this to equalityIds?)
         let list = equalityDeletesMap.get(targetFile)
         if (!list) {
