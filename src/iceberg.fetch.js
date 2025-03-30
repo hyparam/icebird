@@ -2,7 +2,6 @@ import { asyncBufferFromUrl, cachedAsyncBuffer, parquetReadObjects } from 'hypar
 import { compressors } from 'hyparquet-compressors'
 import { avroData } from './avro.data.js'
 import { avroMetadata } from './avro.metadata.js'
-import { fetchManifestEntries } from './iceberg.manifest.js'
 
 /**
  * Translates an S3A URL to an HTTPS URL for direct access to the object.
@@ -25,20 +24,19 @@ export function translateS3Url(url) {
 }
 
 /**
- * Reads delete files from delete manifests and groups them by target data file.
+ * Reads delete files from delete manifests.
+ * Position deletes are grouped by target data file.
+ * Equality deletes are grouped by sequence number.
  *
- * @import {FilePositionDelete} from './types.js'
- * @param {string[]} deleteManifestUrls
- * @returns {Promise<{positionDeletesMap: Map<string, Set<bigint>>, equalityDeletesMap: Map<string, FilePositionDelete[]>}>}
+ * @import {ManifestEntry} from './types.js'
+ * @param {ManifestEntry[]} deleteEntries
+ * @returns {Promise<{positionDeletesMap: Map<string, Set<bigint>>, equalityDeletesMap: Map<bigint, Record<string, any>[]>}>}
  */
-export async function fetchDeleteMaps(deleteManifestUrls) {
-  // Read delete file info from delete manifests
-  const deleteEntries = await fetchManifestEntries(deleteManifestUrls)
-
+export async function fetchDeleteMaps(deleteEntries) {
   // Build maps of delete entries keyed by target data file path
   /** @type {Map<string, Set<bigint>>} */
   const positionDeletesMap = new Map()
-  /** @type {Map<string, FilePositionDelete[]>} */
+  /** @type {Map<bigint, Record<string, any>[]>} */
   const equalityDeletesMap = new Map()
 
   // Fetch delete files in parallel
@@ -46,27 +44,28 @@ export async function fetchDeleteMaps(deleteManifestUrls) {
     const { content, file_path } = deleteEntry.data_file
     const asyncBuffer = await asyncBufferFromUrl({ url: translateS3Url(file_path) })
     const file = cachedAsyncBuffer(asyncBuffer)
-    const deleteRows = /** @type {FilePositionDelete[]} */ (await parquetReadObjects({ file, compressors }))
+    const deleteRows = await parquetReadObjects({ file, compressors })
     for (const deleteRow of deleteRows) {
-      const targetFile = deleteRow.file_path
-      if (!targetFile) continue
       if (content === 1) { // Position delete
-        const { pos } = deleteRow
+        const { file_path, pos } = deleteRow
+        if (!file_path) throw new Error('position delete missing target file path')
+        if (pos === undefined) throw new Error('position delete missing pos')
         if (pos !== undefined && pos !== null) {
           // Note: pos is relative to the data file's row order
-          let set = positionDeletesMap.get(targetFile)
+          let set = positionDeletesMap.get(file_path)
           if (!set) {
             set = new Set()
-            positionDeletesMap.set(targetFile, set)
+            positionDeletesMap.set(file_path, set)
           }
           set.add(pos)
         }
       } else if (content === 2) { // Equality delete
         // Save the entire delete row (restrict this to equalityIds?)
-        let list = equalityDeletesMap.get(targetFile)
+        const { sequence_number } = deleteEntry
+        let list = equalityDeletesMap.get(sequence_number)
         if (!list) {
           list = []
-          equalityDeletesMap.set(targetFile, list)
+          equalityDeletesMap.set(sequence_number, list)
         }
         list.push(deleteRow)
       }

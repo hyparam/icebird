@@ -17,7 +17,7 @@ describe('Iceberg Manifests', () => {
     expect(manifest).toMatchObject({
       status: 1,
       snapshot_id: 469881615898633426n,
-      sequence_number: null,
+      sequence_number: 2n,
       file_sequence_number: null,
       data_file: {
         content: 1,

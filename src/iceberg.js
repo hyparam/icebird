@@ -2,7 +2,7 @@ import { asyncBufferFromUrl, cachedAsyncBuffer, parquetReadObjects } from 'hypar
 import { compressors } from 'hyparquet-compressors'
 import { fetchDeleteMaps, translateS3Url } from './iceberg.fetch.js'
 import { icebergLatestVersion, icebergMetadata } from './iceberg.metadata.js'
-import { fetchManifestEntries, getDataUrls, icebergManifests } from './iceberg.manifest.js'
+import { icebergManifests, splitManifestEntries } from './iceberg.manifest.js'
 
 export { icebergMetadata, icebergManifests, icebergLatestVersion }
 export { avroMetadata } from './avro.metadata.js'
@@ -19,7 +19,7 @@ export { avroData } from './avro.data.js'
 function equalityMatch(row, deletePredicate) {
   for (const key in deletePredicate) {
     if (key === 'file_path' || key === 'pos') continue
-    if (row[key] !== deletePredicate[key]) return false
+    if (deletePredicate[key] !== null && row[key] !== deletePredicate[key]) return false
   }
   return true
 }
@@ -58,26 +58,21 @@ export async function icebergRead({
 
   // Fetch table metadata
   metadata ??= await icebergMetadata(tableUrl, metadataFileName)
-  const manifests = await icebergManifests(metadata)
+  // TODO: Fetch manifests asynchronously
+  const manifestList = await icebergManifests(metadata)
 
   // Get current schema id
   const currentSchemaId = metadata['current-schema-id']
   const schema = metadata.schemas.find(s => s['schema-id'] === currentSchemaId)
   if (!schema) throw new Error('current schema not found in metadata')
 
+  // Get current sequence number
+  // const lastSequenceNumber = metadata['last-sequence-number']
+
   // Get manifest URLs for data and delete files
-  const { dataManifestUrls, deleteManifestUrls } = getDataUrls(manifests)
-  if (dataManifestUrls.length === 0) {
-    throw new Error('No data manifest files found for current snapshot')
-  }
-
-  // Build maps of delete entries keyed by target data file path (async)
-  const deleteMaps = fetchDeleteMaps(deleteManifestUrls)
-
-  // Read data file info from data manifests
-  const dataEntries = await fetchManifestEntries(dataManifestUrls)
+  const { dataEntries, deleteEntries } = splitManifestEntries(manifestList)
   if (dataEntries.length === 0) {
-    throw new Error('No data files found in manifests (table may be empty)')
+    throw new Error('No data manifest files found for current snapshot')
   }
 
   // Determine the global row range to read
@@ -96,14 +91,11 @@ export async function icebergRead({
   let rowsNeeded = totalRowsToRead
   // TODO: Fetch data files in parallel
   for (let i = fileIndex; i < dataEntries.length && rowsNeeded !== 0; i++) {
-    const { data_file, status } = dataEntries[i]
+    const { data_file, sequence_number } = dataEntries[i]
+    // assert(status !== 2)
 
-    if (status === 2) continue // Skip deleted files
-
-    // TODO: Check sequence numbers
-    // if (sequence_number === null || file_sequence_number === null) {
-    //   throw new Error('Sequence numbers not found, check v2 inheritance logic')
-    // }
+    // Check sequence numbers
+    if (sequence_number === null) throw new Error('sequence number not found, check v2 inheritance logic')
 
     // Determine the row range to read from this file
     const fileRowStart = i === fileIndex ? skipRows : 0
@@ -126,15 +118,14 @@ export async function icebergRead({
     })
 
     // If delete files apply to this data file, filter the rows
-    const { positionDeletesMap, equalityDeletesMap } = await deleteMaps
+    const { positionDeletesMap, equalityDeletesMap } = await fetchDeleteMaps(deleteEntries)
 
     const positionDeletes = positionDeletesMap.get(data_file.file_path)
     if (positionDeletes) {
       rows = rows.filter((_, idx) => !positionDeletes.has(BigInt(idx + fileRowStart)))
     }
-    const equalityDeletes = equalityDeletesMap.get(data_file.file_path)
-    if (equalityDeletes) {
-      rows = rows.filter(row => !equalityDeletes.some(predicate => equalityMatch(row, predicate)))
+    for (const [, deleteRows] of equalityDeletesMap) {
+      rows = rows.filter(row => !deleteRows.some(predicate => equalityMatch(row, predicate)))
     }
 
     // Map column names to unsanitized names

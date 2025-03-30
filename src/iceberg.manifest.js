@@ -19,69 +19,63 @@ export async function icebergManifests(metadata) {
   }
 
   // Get manifest URLs from snapshot
-  let manifestUrls = []
+  let manifests = []
   if (snapshot['manifest-list']) {
     // Fetch manifest list and extract manifest URLs
     const manifestListUrl = snapshot['manifest-list']
-    const records = /** @type {Manifest[]} */ (await fetchAvroRecords(manifestListUrl))
-    manifestUrls = records.map(rec => rec.manifest_path)
+    manifests = /** @type {Manifest[]} */ (await fetchAvroRecords(manifestListUrl))
   } else if (snapshot.manifests) {
-    manifestUrls = snapshot.manifests.map(m => m.manifest_path)
+    // Use manifest URLs directly from snapshot
+    manifests = snapshot.manifests
   } else {
     throw new Error('No manifest information found in snapshot')
   }
 
-  return await fetchManifests(manifestUrls)
+  return await fetchManifests(manifests)
 }
 
 /**
- * Fetch manifest entries from a list of manifest URLs in parallel.
+ * Fetch manifest entries from a list of manifests in parallel.
  *
- * @param {string[]} manifestUrls - list of manifest URLs
+ * @param {Manifest[]} manifests
  * @returns {Promise<ManifestList>}
  */
-async function fetchManifests(manifestUrls) {
+async function fetchManifests(manifests) {
   // Fetch manifest entries in parallel
-  return await Promise.all(manifestUrls.map(async url => {
+  return await Promise.all(manifests.map(async manifest => {
+    const url = manifest.manifest_path
     const entries = /** @type {ManifestEntry[]} */ (await fetchAvroRecords(url))
+
+    // Inherit sequence number from manifest if not present in entry
+    for (const entry of entries) {
+      if (!entry.sequence_number) {
+        entry.sequence_number = manifest.sequence_number
+      }
+    }
+
     return { url, entries }
   }))
 }
 
 /**
- * @import {DataFile} from './types.js'
- * @param {string[]} manifestUrls
- * @returns {Promise<ManifestEntry[]>}
- */
-export async function fetchManifestEntries(manifestUrls) {
-  const manifests = await fetchManifests(manifestUrls)
-  /** @type {ManifestEntry[]} */
-  const result = []
-  for (const { entries } of manifests) {
-    result.push(...entries)
-  }
-  return result
-}
-
-/**
- * Returns manifest URLs for the current snapshot separated into data and delete manifests.
+ * Split manifest entries into data and delete manifests.
  *
  * @param {ManifestList} manifests
- * @returns {{dataManifestUrls: string[], deleteManifestUrls: string[]}}
+ * @returns {{dataEntries: ManifestEntry[], deleteEntries: ManifestEntry[]}}
  */
-export function getDataUrls(manifests) {
-  // Separate manifest entries into data and delete urls
-  const dataManifestUrls = []
-  const deleteManifestUrls = []
-  for (const { url, entries } of manifests) {
+export function splitManifestEntries(manifests) {
+  const dataEntries = []
+  const deleteEntries = []
+  for (const { entries } of manifests) {
     for (const entry of entries) {
+      if (entry.status === 2) continue // skip deleted files
       if (entry.data_file.content) {
-        deleteManifestUrls.push(url)
+        deleteEntries.push(entry)
       } else {
-        dataManifestUrls.push(url)
+        dataEntries.push(entry)
       }
     }
   }
 
-  return { dataManifestUrls, deleteManifestUrls }
+  return { dataEntries, deleteEntries }
 }

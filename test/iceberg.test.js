@@ -2,11 +2,11 @@ import { describe, expect, it } from 'vitest'
 import { icebergRead, sanitize } from '../src/iceberg.js'
 
 describe('icebergRead', () => {
-  it('throws for invalid row range', () => {
-    expect(() => icebergRead({ tableUrl: 'https://example.com', rowStart: 5, rowEnd: 3 }))
+  it('throws for invalid row range', async () => {
+    await expect(() => icebergRead({ tableUrl: 'https://example.com', rowStart: 5, rowEnd: 3 }))
       .rejects.toThrow('rowStart must be less than rowEnd')
 
-    expect(() => icebergRead({ tableUrl: 'https://example.com', rowStart: -1 }))
+    await expect(() => icebergRead({ tableUrl: 'https://example.com', rowStart: -1 }))
       .rejects.toThrow('rowStart must be positive')
   })
 })
