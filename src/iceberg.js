@@ -47,7 +47,7 @@ export async function icebergRead({
   if (!schema) throw new Error('current schema not found in metadata')
 
   // Get current sequence number
-  // const lastSequenceNumber = metadata['last-sequence-number']
+  const lastSequenceNumber = metadata['last-sequence-number']
 
   // Get manifest URLs for data and delete files
   const { dataEntries, deleteEntries } = splitManifestEntries(manifestList)
@@ -104,7 +104,19 @@ export async function icebergRead({
     if (positionDeletes) {
       rows = rows.filter((_, idx) => !positionDeletes.has(BigInt(idx + fileRowStart)))
     }
-    for (const [, deleteRows] of equalityDeletesMap) {
+    for (const [deleteSequenceNumber, deleteRows] of equalityDeletesMap) {
+      // An equality delete file must be applied to a data file when all of the following are true:
+      // - The data file's data sequence number is strictly less than the delete's data sequence number
+      // - The data file's partition (both spec id and partition values) is equal to the delete file's
+      //   partition or the delete file's partition spec is unpartitioned
+      // In general, deletes are applied only to data files that are older and in the same partition, except for two special cases:
+      // - Equality delete files stored with an unpartitioned spec are applied as global deletes.
+      //   Otherwise, delete files do not apply to files in other partitions.
+      // - Position deletes (vectors and files) must be applied to data files from the same commit,
+      //   when the data and delete file data sequence numbers are equal.
+      //   This allows deleting rows that were added in the same commit.
+      if (deleteSequenceNumber > lastSequenceNumber) continue // Skip future deletes
+      if (deleteSequenceNumber <= sequence_number) continue // Skip deletes that are too old
       rows = rows.filter(row => !deleteRows.some(predicate => equalityMatch(row, predicate)))
     }
 

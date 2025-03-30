@@ -84,4 +84,24 @@ describe.concurrent('icebergRead from java iceberg table', () => {
       'Popularity Rank': 21n,
     })
   })
+
+  it('reads data v5 with equality updated row', async () => {
+    const data = await icebergRead({ tableUrl, metadataFileName: 'v5.metadata.json' })
+
+    expect(data.length).toBe(15)
+    const newZealands = data.filter(row => row['Breed Name'] === 'New Zealand')
+    expect(newZealands).toHaveLength(1)
+    const newZealandRow = newZealands[0]
+    expect(newZealandRow).toEqual({
+      'Breed Name': 'New Zealand',
+      'Average Weight': 4,
+      'Fur Length': 2.7,
+      Lifespan: 8n,
+      'Origin Country': 'New Zealand',
+      'Ear Type': 'Erect',
+      Temperament: 'Affectionate',
+      'Popularity Rank': 0n,
+      __happy__: true,
+    })
+  })
 })
