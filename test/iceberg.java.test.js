@@ -1,17 +1,17 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { icebergRead } from '../src/iceberg.js'
 
 describe.concurrent('icebergRead from java iceberg table', () => {
   const tableUrl = 'https://s3.amazonaws.com/hyperparam-iceberg/java/bunnies'
 
   it('reads data from iceberg table', async () => {
-    const data = await icebergRead({ tableUrl, metadataFileName: 'v2.metadata.json' })
+    const data = await icebergRead({
+      tableUrl,
+      metadataFileName: 'v2.metadata.json',
+    })
 
-    // Verify we got correct number of rows
     expect(data).toBeInstanceOf(Array)
     expect(data.length).toBe(21)
-
-    // Verify first row has expected structure
     expect(data[0]).toEqual({
       'Breed Name': 'Holland Lop',
       'Average Weight': 1.8,
@@ -42,7 +42,10 @@ describe.concurrent('icebergRead from java iceberg table', () => {
   })
 
   it('reads data v3 with added column', async () => {
-    const data = await icebergRead({ tableUrl, metadataFileName: 'v3.metadata.json' })
+    const data = await icebergRead({
+      tableUrl,
+      metadataFileName: 'v3.metadata.json',
+    })
 
     expect(data.length).toBe(21)
     expect(data[2]).toEqual({
@@ -59,7 +62,10 @@ describe.concurrent('icebergRead from java iceberg table', () => {
   })
 
   it('reads data v4 with deleted rows', async () => {
-    const data = await icebergRead({ tableUrl, metadataFileName: 'v4.metadata.json' })
+    const data = await icebergRead({
+      tableUrl,
+      metadataFileName: 'v4.metadata.json',
+    })
 
     expect(data.length).toBe(15)
     expect(data[2]).toEqual({
@@ -86,13 +92,19 @@ describe.concurrent('icebergRead from java iceberg table', () => {
   })
 
   it('reads data v5 with equality updated row', async () => {
-    const data = await icebergRead({ tableUrl, metadataFileName: 'v5.metadata.json' })
+    const fetchSpy = vi.spyOn(global, 'fetch')
+
+    const data = await icebergRead({
+      tableUrl,
+      metadataFileName: 'v5.metadata.json',
+    })
+
+    expect(fetchSpy).toHaveBeenCalledTimes(29)
 
     expect(data.length).toBe(15)
     const newZealands = data.filter(row => row['Breed Name'] === 'New Zealand')
     expect(newZealands).toHaveLength(1)
-    const newZealandRow = newZealands[0]
-    expect(newZealandRow).toEqual({
+    expect(newZealands[0]).toEqual({
       'Breed Name': 'New Zealand',
       'Average Weight': 4,
       'Fur Length': 2.7,

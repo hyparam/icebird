@@ -15,8 +15,9 @@ Icebird is a library for reading [Apache Iceberg](https://iceberg.apache.org/) t
 To read an Iceberg table:
 
 ```javascript
-import { icebergRead } from 'icebird'
+const { icebergRead } = await import('icebird')
 
+const tableUrl = 'https://s3.amazonaws.com/hyperparam-iceberg/spark/bunnies'
 const data = await icebergRead({
   tableUrl,
   rowStart: 0,
@@ -30,9 +31,11 @@ To read the Iceberg metadata (schema, etc):
 import { icebergMetadata } from 'icebird'
 
 const metadata = await icebergMetadata(tableUrl)
+
+// subsequent reads will be faster if you provide the metadata:
 const data = await icebergRead({
   tableUrl,
-  metadata, // faster if you provide the metadata
+  metadata,
   rowStart: 0,
   rowEnd: 10
 })
@@ -59,7 +62,7 @@ Icebird aims to support reading any Iceberg table, but currently only supports a
 | Position Deletes | ✅ |
 | Equality Deletes | ✅ |
 | Binary Deletion Vectors | ❌ |
-| Partitioned Tables | ❌ |
+| Efficient Partitioned Read Queries | ❌ |
 | All Parquet Compression Codecs | ✅ |
 | All Parquet Types | ✅ |
 | Variant Types | ❌ |

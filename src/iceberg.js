@@ -54,6 +54,7 @@ export async function icebergRead({
   if (dataEntries.length === 0) {
     throw new Error('No data manifest files found for current snapshot')
   }
+  const deleteMaps = fetchDeleteMaps(deleteEntries)
 
   // Determine the global row range to read
   const totalRowsToRead = rowEnd === Infinity ? Infinity : rowEnd - rowStart
@@ -98,7 +99,7 @@ export async function icebergRead({
     })
 
     // If delete files apply to this data file, filter the rows
-    const { positionDeletesMap, equalityDeletesMap } = await fetchDeleteMaps(deleteEntries)
+    const { positionDeletesMap, equalityDeletesMap } = await deleteMaps
 
     const positionDeletes = positionDeletesMap.get(data_file.file_path)
     if (positionDeletes) {
