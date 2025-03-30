@@ -3,7 +3,7 @@ import { fetchAvroRecords } from './iceberg.fetch.js'
 /**
  * Returns manifest entries for the current snapshot.
  *
- * @import {IcebergMetadata, Manifest, ManifestEntry} from './types.js'
+ * @import {IcebergMetadata, Manifest, ManifestEntry} from '../src/types.js'
  * @typedef {{ url: string, entries: ManifestEntry[] }[]} ManifestList
  * @param {IcebergMetadata} metadata
  * @returns {Promise<ManifestList>}

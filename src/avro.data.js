@@ -31,7 +31,7 @@ export function avroData({ reader, metadata, syncMarker }) {
     reader.offset += 16
     for (let i = 0; i < 16; i++) {
       if (blockSync[i] !== syncMarker[i]) {
-        throw new Error('Sync marker does not match')
+        throw new Error('sync marker does not match')
       }
     }
     const codec = metadata['avro.codec']
@@ -40,7 +40,7 @@ export function avroData({ reader, metadata, syncMarker }) {
     if (codec === 'deflate') {
       data = gunzip(data)
     } else if (codec !== 'null') {
-      throw new Error(`Unsupported codec: ${codec}`)
+      throw new Error(`unsupported codec: ${codec}`)
     }
 
     // Decode according to binary or json encoding
@@ -61,7 +61,7 @@ export function avroData({ reader, metadata, syncMarker }) {
 }
 
 /**
- * @import {AvroType} from './types.js'
+ * @import {AvroType} from '../src/types.js'
  * @param {DataReader} reader
  * @param {AvroType} type
  * @returns {any}
@@ -123,6 +123,6 @@ function readType(reader, type) {
     return text
   } else {
     // enum, fixed, null, map
-    throw new Error(`Unsupported type: ${type}`)
+    throw new Error(`unsupported type: ${type}`)
   }
 }

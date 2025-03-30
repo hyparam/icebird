@@ -28,7 +28,7 @@ export function translateS3Url(url) {
  * Position deletes are grouped by target data file.
  * Equality deletes are grouped by sequence number.
  *
- * @import {ManifestEntry} from './types.js'
+ * @import {ManifestEntry} from '../src/types.js'
  * @param {ManifestEntry[]} deleteEntries
  * @returns {Promise<{positionDeletesMap: Map<string, Set<bigint>>, equalityDeletesMap: Map<bigint, Record<string, any>[]>}>}
  */

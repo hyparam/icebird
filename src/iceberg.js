@@ -16,7 +16,7 @@ export { avroData } from './avro.data.js'
  * TODO:
  *   - Sequence number checks when filtering deletes
  *
- * @import {IcebergMetadata} from './types.js'
+ * @import {IcebergMetadata} from '../src/types.js'
  * @param {object} options
  * @param {string} options.tableUrl - Base S3 URL of the table.
  * @param {number} [options.rowStart] - The starting global row index to fetch (inclusive).

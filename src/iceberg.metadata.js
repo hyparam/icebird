@@ -17,7 +17,7 @@ export function icebergLatestVersion(tableUrl) {
  * Fetches the Iceberg table metadata.
  * If metadataFileName is not privided, uses icebergLatestVersion to get the version hint.
  *
- * @import {IcebergMetadata} from './types.js'
+ * @import {IcebergMetadata} from '../src/types.js'
  * @param {string} tableUrl - Base URL of the table (e.g. "s3://my-bucket/path/to/table")
  * @param {string} [metadataFileName] - Name of the metadata JSON file
  * @returns {Promise<IcebergMetadata>} The table metadata as a JSON object
