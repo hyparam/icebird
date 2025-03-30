@@ -3,36 +3,15 @@ import { compressors } from 'hyparquet-compressors'
 import { fetchDeleteMaps, translateS3Url } from './iceberg.fetch.js'
 import { icebergLatestVersion, icebergMetadata } from './iceberg.metadata.js'
 import { icebergManifests, splitManifestEntries } from './iceberg.manifest.js'
+import { equalityMatch, sanitize } from './utils.js'
 
 export { icebergMetadata, icebergManifests, icebergLatestVersion }
 export { avroMetadata } from './avro.metadata.js'
 export { avroData } from './avro.data.js'
 
 /**
- * Helper to check if a row matches an equality delete predicate.
- * For simplicity, compares all fields (except file_path and pos) by strict equality.
- *
- * @param {any} row - Data row from the data file.
- * @param {any} deletePredicate - A delete row from an equality delete file.
- * @returns {boolean} True if row matches the predicate.
- */
-function equalityMatch(row, deletePredicate) {
-  for (const key in deletePredicate) {
-    if (key === 'file_path' || key === 'pos') continue
-    if (deletePredicate[key] !== null && row[key] !== deletePredicate[key]) return false
-  }
-  return true
-}
-
-/**
  * Reads data from the Iceberg table with optional row-level delete processing.
- * Row indices are zero-based and rowEnd is inclusive.
- *
- * This function:
- *   1. Loads metadata and verifies format-version and table-uuid.
- *   2. Separates manifest URLs into data and delete manifests.
- *   3. Reads delete files from delete manifests and groups them by target data file.
- *   4. When reading each data file, applies position and equality deletes.
+ * Row indices are zero-based and rowEnd is exclusive.
  *
  * TODO:
  *   - Sequence number checks when filtering deletes
@@ -53,6 +32,7 @@ export async function icebergRead({
   metadataFileName,
   metadata,
 }) {
+  if (!tableUrl) throw new Error('tableUrl is required')
   if (rowStart > rowEnd) throw new Error('rowStart must be less than rowEnd')
   if (rowStart < 0) throw new Error('rowStart must be positive')
 
@@ -147,33 +127,4 @@ export async function icebergRead({
   }
 
   return results
-}
-
-/**
- * Avro sanitization function.
- *
- * @param {string} name
- * @returns {string}
- */
-export function sanitize(name) {
-  let result = ''
-  for (let i = 0; i < name.length; i++) {
-    const ch = name.charAt(i)
-    const isLetter = /^[A-Za-z]$/.test(ch)
-    const isDigit = /^[0-9]$/.test(ch)
-    if (i === 0) {
-      if (isLetter || ch === '_') {
-        result += ch
-      } else {
-        result += isDigit ? '_' + ch : '_x' + ch.charCodeAt(0).toString(16).toUpperCase()
-      }
-    } else {
-      if (isLetter || isDigit || ch === '_') {
-        result += ch
-      } else {
-        result += '_x' + ch.charCodeAt(0).toString(16).toUpperCase()
-      }
-    }
-  }
-  return result
 }
