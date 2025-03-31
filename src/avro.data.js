@@ -1,5 +1,6 @@
 import { gunzip } from 'hyparquet-compressors'
 import { readZigZag, readZigZagBigInt } from './avro.metadata.js'
+import { parseDecimal } from 'hyparquet/src/convert.js'
 
 /**
  * Read avro data blocks.
@@ -95,6 +96,25 @@ function readType(reader, type) {
       }
     }
     return arr
+  } else if (typeof type === 'object' && type.logicalType) {
+    if (type.logicalType === 'date' && type.type === 'int') {
+      const value = readZigZag(reader)
+      return new Date(value * 86400000)
+    } else if (type.logicalType === 'timestamp-millis' && type.type === 'long') {
+      const value = readZigZagBigInt(reader)
+      return new Date(Number(value))
+    } else if (type.logicalType === 'timestamp-micros' && type.type === 'long') {
+      const value = readZigZagBigInt(reader)
+      return new Date(Number(value / 1000n))
+    } else if (type.logicalType === 'decimal' && 'precision' in type) {
+      const bytes = readType(reader, type.type)
+      const scale = type.scale || 0
+      const factor = 10 ** -scale
+      return parseDecimal(bytes) * factor
+    } else {
+      console.warn(`unknown logical type: ${type.logicalType}`)
+      return readType(reader, type.type)
+    }
   } else if (type === 'boolean') {
     const value = reader.view.getUint8(reader.offset) === 1
     reader.offset++

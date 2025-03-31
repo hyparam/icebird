@@ -24,7 +24,7 @@ export interface IcebergMetadata {
 
 export interface Schema {
   type: string
-  "schema-id": number
+  'schema-id': number
   fields: Field[]
 }
 
@@ -41,8 +41,8 @@ interface PartitionSpec {
 }
 
 interface SortOrder {
-  "order-id": number
-  "fields": unknown[]
+  'order-id': number
+  'fields': unknown[]
 }
 
 export interface Snapshot {
@@ -139,7 +139,7 @@ interface AvroField {
   // 'field-id'?: number
 }
 
-export type AvroType = AvroPrimitiveType | AvroComplexType
+export type AvroType = AvroPrimitiveType | AvroComplexType | AvroLogicalType
 
 type AvroPrimitiveType = 'null' | 'boolean' | 'int' | 'long' | 'float' | 'double' | 'bytes' | 'string'
 
@@ -160,5 +160,47 @@ interface AvroArray {
 }
 
 type AvroUnion = AvroType[]
+
+type AvroDate = {
+  type: 'int'
+  logicalType: 'date'
+}
+
+type AvroDecimal = {
+  type: 'bytes'
+  logicalType: 'decimal'
+  precision: number
+  scale?: number
+}
+
+type AvroTimestampMillis = {
+  type: 'long'
+  logicalType: 'timestamp-millis'
+}
+
+type AvroTimestampMicros = {
+  type: 'long'
+  logicalType: 'timestamp-micros'
+}
+
+type AvroLogicalTypeType =
+  'date' |
+  'decimal' |
+  'duration' |
+  'local-timestamp-millis' |
+  'local-timestamp-micros' |
+  'time-millis' |
+  'time-micros' |
+  'timestamp-millis' |
+  'timestamp-micros' |
+  'uuid'
+
+// catch-all: "implementations must ignore unknown logical types when reading"
+type AvroGenericLogicalType = {
+  type: AvroPrimitiveType
+  logicalType: AvroLogicalTypeType
+}
+
+type AvroLogicalType = AvroDate | AvroDecimal | AvroTimestampMillis | AvroTimestampMicros | AvroGenericLogicalType
 
 type AvroComplexType = AvroRecord | AvroArray | AvroUnion

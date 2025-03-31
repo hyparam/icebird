@@ -36,10 +36,12 @@ export async function icebergRead({
   if (rowStart > rowEnd) throw new Error('rowStart must be less than rowEnd')
   if (rowStart < 0) throw new Error('rowStart must be positive')
 
-  // Fetch table metadata
+  // Fetch table metadata if not provided
   metadata ??= await icebergMetadata(tableUrl, metadataFileName)
-  // TODO: Fetch manifests asynchronously
+  // TODO: Handle manifests asynchronously
   const manifestList = await icebergManifests(metadata)
+
+  if (metadata['format-version'] > 2) throw new Error('iceberg format version > 2 not supported')
 
   // Get current schema id
   const currentSchemaId = metadata['current-schema-id']
