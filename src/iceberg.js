@@ -1,4 +1,4 @@
-import { asyncBufferFromUrl, cachedAsyncBuffer, parquetReadObjects } from 'hyparquet'
+import { asyncBufferFromUrl, cachedAsyncBuffer, parquetMetadataAsync, parquetReadObjects } from 'hyparquet'
 import { compressors } from 'hyparquet-compressors'
 import { fetchDeleteMaps, translateS3Url } from './iceberg.fetch.js'
 import { icebergLatestVersion, icebergMetadata } from './iceberg.metadata.js'
@@ -13,10 +13,7 @@ export { avroData } from './avro.data.js'
  * Reads data from the Iceberg table with optional row-level delete processing.
  * Row indices are zero-based and rowEnd is exclusive.
  *
- * TODO:
- *   - Sequence number checks when filtering deletes
- *
- * @import {IcebergMetadata} from '../src/types.js'
+ * @import {IcebergMetadata, Schema} from '../src/types.js'
  * @param {object} options
  * @param {string} options.tableUrl - Base S3 URL of the table.
  * @param {number} [options.rowStart] - The starting global row index to fetch (inclusive).
@@ -91,10 +88,40 @@ export async function icebergRead({
 
     // Read the data file
     const fileUrl = translateS3Url(data_file.file_path)
+    // TODO: This would be faster if we could rely on the file size in the manifest
+    // But it doesn't always match the actual file size
+    // const byteLength = Number(data_file.file_size_in_bytes)
     const asyncBuffer = await asyncBufferFromUrl({ url: fileUrl })
     const fileBuffer = cachedAsyncBuffer(asyncBuffer)
+
+    // Read iceberg schema from parquet metadata
+    const parquetMetadata = await parquetMetadataAsync(fileBuffer)
+    const kv = parquetMetadata.key_value_metadata?.find(k => k.key === 'iceberg.schema')
+    if (!kv?.value) throw new Error('iceberg.schema not found in parquet metadata')
+    /** @type {Schema} */
+    const parquetIcebergSchema = JSON.parse(kv.value)
+
+    // TODO: Tables may also define a property schema.name-mapping.default with
+    // a JSON name mapping containing a list of field mapping objects. These
+    // mappings provide fallback field ids to be used when a data file does not
+    // contain field id information.
+
+    // Determine which columns to read based on field ids
+    const parquetColumnNames = []
+    for (const field of schema.fields) {
+      const parquetField = parquetIcebergSchema.fields.find(f => f.id === field.id)
+      // May be undefined if the field was added later
+      if (parquetField) {
+        parquetColumnNames.push(sanitize(parquetField.name))
+      } else {
+        parquetColumnNames.push(undefined)
+      }
+    }
+
     let rows = await parquetReadObjects({
       file: fileBuffer,
+      metadata: parquetMetadata,
+      columns: parquetColumnNames.filter(n => n !== undefined),
       rowStart: fileRowStart,
       rowEnd: fileRowEnd,
       compressors,
@@ -123,16 +150,28 @@ export async function icebergRead({
       rows = rows.filter(row => !deleteRows.some(predicate => equalityMatch(row, predicate)))
     }
 
-    // Map column names to unsanitized names
-    const unsanitizedFields = schema.fields.map(f => f.name)
-      .filter(column => column !== sanitize(column))
-    const sanitizedFields = unsanitizedFields.map(sanitize)
+    // Map parquet column names to iceberg names by field id
     for (const row of rows) {
-      for (let i = 0; i < unsanitizedFields.length; i++) {
-        row[unsanitizedFields[i]] = row[sanitizedFields[i]]
-        delete row[sanitizedFields[i]]
+      /** @type {Record<string, any>} */
+      const out = {}
+      for (let i = 0; i < schema.fields.length; i++) {
+        const parquetColumnName = parquetColumnNames[i]
+        if (parquetColumnName) {
+          out[schema.fields[i].name] = row[parquetColumnName]
+        } else {
+          // TODO: Values for field ids which are not present in a data file must
+          // be resolved according the following rules:
+          // - Return the value from partition metadata if an Identity Transform
+          //   exists for the field and the partition value is present in the
+          //   partition struct on data_file object in the manifest. This allows
+          //   for metadata only migrations of Hive tables.
+          // - Use schema.name-mapping.default metadata to map field id to columns
+          //   without field id as described below and use the column if it is present.
+          // - Return the default value if it has a defined initial-default.
+          // - Return null in all other cases.
+        }
       }
-      results.push(row)
+      results.push(out)
     }
 
     if (rowsNeeded !== Infinity) {

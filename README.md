@@ -6,7 +6,7 @@
 [![minzipped](https://img.shields.io/bundlephobia/minzip/icebird)](https://www.npmjs.com/package/icebird)
 [![workflow status](https://github.com/hyparam/icebird/actions/workflows/ci.yml/badge.svg)](https://github.com/hyparam/icebird/actions)
 [![mit license](https://img.shields.io/badge/License-MIT-orange.svg)](https://opensource.org/licenses/MIT)
-![coverage](https://img.shields.io/badge/Coverage-88-darkred)
+![coverage](https://img.shields.io/badge/Coverage-90-darkred)
 
 Icebird is a library for reading [Apache Iceberg](https://iceberg.apache.org/) tables in JavaScript. It is built on top of [hyparquet](https://github.com/hyparam/hyparquet) for reading the underlying parquet files.
 
@@ -41,6 +41,19 @@ const data = await icebergRead({
 })
 ```
 
+## Time Travel
+
+To fetch a previous version of the table, you can specify `metadataFileName`:
+
+```javascript
+import { icebergRead } from 'icebird'
+
+const data = await icebergRead({
+  tableUrl,
+  metadataFileName: 'v1.metadata.json',
+})
+```
+
 ## Supported Features
 
 Icebird aims to support reading any Iceberg table, but currently only supports a subset of the features. The following features are supported:
@@ -62,6 +75,7 @@ Icebird aims to support reading any Iceberg table, but currently only supports a
 | Position Deletes | ✅ |
 | Equality Deletes | ✅ |
 | Binary Deletion Vectors | ❌ |
+| Rename Columns | ✅ |
 | Efficient Partitioned Read Queries | ❌ |
 | All Parquet Compression Codecs | ✅ |
 | All Parquet Types | ✅ |
