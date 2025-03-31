@@ -6,7 +6,7 @@ import { translateS3Url } from './iceberg.fetch.js'
  * @param {object} options
  * @param {string} options.tableUrl - Base URL of the table (e.g. "s3://my-bucket/path/to/table")
  * @param {RequestInit} [options.requestInit] - Optional fetch request initialization
- * @returns {Promise<number>} The snapshot version
+ * @returns {Promise<string>} The snapshot version
  */
 export function icebergLatestVersion({ tableUrl, requestInit }) {
   const url = `${tableUrl}/metadata/version-hint.text`
@@ -18,10 +18,32 @@ export function icebergLatestVersion({ tableUrl, requestInit }) {
       const text = await res.text()
       const version = parseInt(text)
       if (isNaN(version)) throw new Error(`invalid version: ${text}`)
-      return version
+      return `v${version}`
     })
     .catch(err => {
-      throw new Error(`failed to get version hint: ${err.message}`)
+      // version hint not found, try listing S3 bucket
+      const s3parts = s3ParseUrl(tableUrl)
+      if (s3parts) {
+        const { bucket, prefix } = s3parts
+        return s3list(bucket, prefix + '/metadata/')
+          .then(files => {
+            if (files.length === 0) throw new Error('no metadata files found')
+            // sort most recent files first
+            const sorted = files
+              .filter(f => f.key.endsWith('.metadata.json'))
+              .sort((a, b) => b.lastModified.localeCompare(a.lastModified))
+            return sorted[0].key.split('/').slice(-1)[0]
+              .replace(/\.metadata\.json$/, '')
+          })
+          .catch(err => {
+            throw new Error(`failed to list S3 objects: ${err.message}`)
+          })
+      } else {
+        throw err
+      }
+    })
+    .catch(err => {
+      throw new Error(`failed to determine latest iceberg version: ${err.message}`)
     })
 }
 
@@ -39,7 +61,7 @@ export function icebergLatestVersion({ tableUrl, requestInit }) {
 export async function icebergMetadata({ tableUrl, metadataFileName, requestInit }) {
   if (!metadataFileName) {
     const version = await icebergLatestVersion({ tableUrl, requestInit })
-    metadataFileName = `v${version}.metadata.json`
+    metadataFileName = `${version}.metadata.json`
   }
   const url = `${tableUrl}/metadata/${metadataFileName}`
   const safeUrl = translateS3Url(url)
@@ -51,4 +73,57 @@ export async function icebergMetadata({ tableUrl, metadataFileName, requestInit 
     .catch(err => {
       throw new Error(`failed to get iceberg metadata: ${err.message}`)
     })
+}
+
+/**
+ * Lists objects in an S3 bucket with a specific prefix.
+ *
+ * @param {string} bucket
+ * @param {string} prefix
+ * @returns {Promise<{ key: string, lastModified: string }[]>}
+ */
+function s3list(bucket, prefix) {
+  const url = `https://${bucket}.s3.amazonaws.com/?list-type=2&prefix=${prefix}&delimiter=/`
+  return fetch(url)
+    .then(res => {
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+      return res.text()
+    })
+    .then(text => {
+      // Janky parse XML response with regex:
+      const regex = /<Contents>(.*?)<\/Contents>/gs
+      const matches = text.match(regex) || []
+      const results = []
+      for (const match of matches) {
+        const keyMatch = match.match(/<Key>(.*?)<\/Key>/)
+        const lastModifiedMatch = match.match(/<LastModified>(.*?)<\/LastModified>/)
+        if (!keyMatch || !lastModifiedMatch) throw new Error('failed to parse S3 list response')
+        const key = keyMatch[1]
+        const lastModified = lastModifiedMatch[1]
+        results.push({ key, lastModified })
+      }
+      return results
+    })
+    .catch(err => {
+      throw new Error(`failed to list S3 objects: ${err.message}`)
+    })
+}
+
+/**
+ * Checks if a URL is an S3 URL.
+ *
+ * @param {string} url
+ * @returns {{ bucket: string, prefix: string } | undefined}
+ */
+function s3ParseUrl(url) {
+  if (url.startsWith('s3://') || url.startsWith('s3a://')) {
+    const parts = url.split('/')
+    return { bucket: parts[2], prefix: parts.slice(3).join('/') }
+  } else if (url.startsWith('https://s3.amazonaws.com/')) {
+    const parts = url.split('/')
+    return { bucket: parts[3], prefix: parts.slice(4).join('/') }
+  } else if (url.match(/https:\/\/\w+\.s3\.amazonaws\.com\//)) {
+    const parts = url.split('/')
+    return { bucket: parts[2], prefix: parts.slice(3).join('/') }
+  }
 }

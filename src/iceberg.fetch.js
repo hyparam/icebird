@@ -10,8 +10,8 @@ import { avroMetadata } from './avro.metadata.js'
  * @returns {string}
  */
 export function translateS3Url(url) {
-  if (url.startsWith('s3a://')) {
-    const rest = url.slice('s3a://'.length)
+  if (url.startsWith('s3a://') || url.startsWith('s3://')) {
+    const rest = url.slice(url.indexOf('://') + 3)
     const slashIndex = rest.indexOf('/')
     if (slashIndex === -1) {
       throw new Error('Invalid S3 URL, missing "/" after bucket')

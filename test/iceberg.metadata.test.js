@@ -6,7 +6,7 @@ describe.concurrent('Iceberg Metadata', () => {
 
   it('fetches the latest sequence number from version-hint.text', async () => {
     const version = await icebergLatestVersion({ tableUrl })
-    expect(version).toBe(5)
+    expect(version).toBe('v5')
   })
 
   it('fetches latest iceberg metadata with auth', async () => {

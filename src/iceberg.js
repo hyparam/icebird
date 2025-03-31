@@ -98,9 +98,12 @@ export async function icebergRead({
     // Read iceberg schema from parquet metadata
     const parquetMetadata = await parquetMetadataAsync(asyncBuffer)
     const kv = parquetMetadata.key_value_metadata?.find(k => k.key === 'iceberg.schema')
-    if (!kv?.value) throw new Error('iceberg.schema not found in parquet metadata')
-    /** @type {Schema} */
-    const parquetIcebergSchema = JSON.parse(kv.value)
+    // AWS Athena tables have no parquet iceberg schema :-(
+    // TODO: pick the right schema from the metadata
+    let parquetIcebergSchema = schema
+    if (kv?.value) {
+      parquetIcebergSchema = JSON.parse(kv.value)
+    }
 
     // TODO: Tables may also define a property schema.name-mapping.default with
     // a JSON name mapping containing a list of field mapping objects. These

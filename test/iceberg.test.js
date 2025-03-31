@@ -10,11 +10,11 @@ describe.concurrent('icebergRead', () => {
   it('throws for fetch errors', async () => {
     // not found
     await expect(() => icebergRead({ tableUrl: 'https://hyperparam.app' }))
-      .rejects.toThrow('failed to get version hint: 404 Not Found')
+      .rejects.toThrow('failed to determine latest iceberg version: 404 Not Found')
 
     // invalid dns
     await expect(() => icebergRead({ tableUrl: 'https://nope.hyperparam.app' }))
-      .rejects.toThrow('failed to get version hint: fetch failed')
+      .rejects.toThrow('failed to determine latest iceberg version: fetch failed')
 
     // with metadataFileName
     await expect(() => icebergRead({
