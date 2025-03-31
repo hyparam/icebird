@@ -10,7 +10,17 @@ export function icebergLatestVersion(tableUrl) {
   const url = `${tableUrl}/metadata/version-hint.text`
   const safeUrl = translateS3Url(url)
   // TODO: If version-hint is not found, try listing or binary search.
-  return fetch(safeUrl).then(res => res.text()).then(text => parseInt(text))
+  return fetch(safeUrl)
+    .then(async res => {
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+      const text = await res.text()
+      const version = parseInt(text)
+      if (isNaN(version)) throw new Error(`invalid version: ${text}`)
+      return version
+    })
+    .catch(err => {
+      throw new Error(`failed to get version hint: ${err.message}`)
+    })
 }
 
 /**
@@ -29,5 +39,12 @@ export async function icebergMetadata(tableUrl, metadataFileName) {
   }
   const url = `${tableUrl}/metadata/${metadataFileName}`
   const safeUrl = translateS3Url(url)
-  return fetch(safeUrl).then(res => res.json())
+  return fetch(safeUrl)
+    .then(res => {
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+      return res.json()
+    })
+    .catch(err => {
+      throw new Error(`failed to get iceberg metadata: ${err.message}`)
+    })
 }
