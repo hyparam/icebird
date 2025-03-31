@@ -87,15 +87,13 @@ export async function icebergRead({
     const fileRowEnd = fileRowStart + rowsToRead
 
     // Read the data file
-    const fileUrl = translateS3Url(data_file.file_path)
-    // TODO: This would be faster if we could rely on the file size in the manifest
-    // But it doesn't always match the actual file size
-    // const byteLength = Number(data_file.file_size_in_bytes)
-    const asyncBuffer = await asyncBufferFromUrl({ url: fileUrl })
-    const fileBuffer = cachedAsyncBuffer(asyncBuffer)
+    const asyncBuffer = await asyncBufferFromUrl({
+      url: translateS3Url(data_file.file_path),
+      byteLength: Number(data_file.file_size_in_bytes),
+    }).then(cachedAsyncBuffer)
 
     // Read iceberg schema from parquet metadata
-    const parquetMetadata = await parquetMetadataAsync(fileBuffer)
+    const parquetMetadata = await parquetMetadataAsync(asyncBuffer)
     const kv = parquetMetadata.key_value_metadata?.find(k => k.key === 'iceberg.schema')
     if (!kv?.value) throw new Error('iceberg.schema not found in parquet metadata')
     /** @type {Schema} */
@@ -119,7 +117,7 @@ export async function icebergRead({
     }
 
     let rows = await parquetReadObjects({
-      file: fileBuffer,
+      file: asyncBuffer,
       metadata: parquetMetadata,
       columns: parquetColumnNames.filter(n => n !== undefined),
       rowStart: fileRowStart,

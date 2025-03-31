@@ -11,7 +11,14 @@ describe('package.json', () => {
   it('should have MIT license', () => {
     expect(packageJson.license).toBe('MIT')
   })
-  it('should have precise dev dependency versions', () => {
+  it('should have at most 2 dependencies', () => {
+    const { dependencies } = packageJson
+    expect(Object.keys(dependencies)).toEqual([
+      'hyparquet',
+      'hyparquet-compressors',
+    ])
+  })
+  it('should have precise dependency versions', () => {
     const { dependencies, devDependencies } = packageJson
     const allDependencies = { ...dependencies, ...devDependencies }
     Object.values(allDependencies).forEach(version => {
