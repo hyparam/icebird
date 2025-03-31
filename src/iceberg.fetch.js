@@ -30,9 +30,10 @@ export function translateS3Url(url) {
  *
  * @import {ManifestEntry} from '../src/types.js'
  * @param {ManifestEntry[]} deleteEntries
+ * @param {RequestInit} [requestInit]
  * @returns {Promise<{positionDeletesMap: Map<string, Set<bigint>>, equalityDeletesMap: Map<bigint, Record<string, any>[]>}>}
  */
-export async function fetchDeleteMaps(deleteEntries) {
+export async function fetchDeleteMaps(deleteEntries, requestInit) {
   // Build maps of delete entries keyed by target data file path
   /** @type {Map<string, Set<bigint>>} */
   const positionDeletesMap = new Map()
@@ -41,9 +42,12 @@ export async function fetchDeleteMaps(deleteEntries) {
 
   // Fetch delete files in parallel
   await Promise.all(deleteEntries.map(async deleteEntry => {
-    const { content, file_path } = deleteEntry.data_file
-    const asyncBuffer = await asyncBufferFromUrl({ url: translateS3Url(file_path) })
-    const file = cachedAsyncBuffer(asyncBuffer)
+    const { content, file_path, file_size_in_bytes } = deleteEntry.data_file
+    const file = await asyncBufferFromUrl({
+      url: translateS3Url(file_path),
+      byteLength: Number(file_size_in_bytes),
+      requestInit,
+    }).then(cachedAsyncBuffer)
     const deleteRows = await parquetReadObjects({ file, compressors })
     for (const deleteRow of deleteRows) {
       if (content === 1) { // Position delete
@@ -79,11 +83,12 @@ export async function fetchDeleteMaps(deleteEntries) {
  * Decodes Avro records from a url.
  *
  * @param {string} manifestUrl - The URL of the manifest file
+ * @param {RequestInit} [requestInit] - Optional fetch request initialization
  * @returns {Promise<Record<string, any>[]>} The decoded Avro records
  */
-export async function fetchAvroRecords(manifestUrl) {
+export async function fetchAvroRecords(manifestUrl, requestInit) {
   const safeUrl = translateS3Url(manifestUrl)
-  const buffer = await fetch(safeUrl).then(res => res.arrayBuffer())
+  const buffer = await fetch(safeUrl, requestInit).then(res => res.arrayBuffer())
   const reader = { view: new DataView(buffer), offset: 0 }
   const { metadata, syncMarker } = await avroMetadata(reader)
   return await avroData({ reader, metadata, syncMarker })

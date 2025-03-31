@@ -20,6 +20,7 @@ export { avroData } from './avro.data.js'
  * @param {number} [options.rowEnd] - The ending global row index to fetch (exclusive).
  * @param {string} [options.metadataFileName] - Name of the Iceberg metadata file.
  * @param {IcebergMetadata} [options.metadata] - Pre-fetched Iceberg metadata.
+ * @param {RequestInit} [options.requestInit] - Optional fetch request initialization.
  * @returns {Promise<Array<Record<string, any>>>} Array of data records.
  */
 export async function icebergRead({
@@ -28,13 +29,14 @@ export async function icebergRead({
   rowEnd = Infinity,
   metadataFileName,
   metadata,
+  requestInit,
 }) {
   if (!tableUrl) throw new Error('tableUrl is required')
   if (rowStart > rowEnd) throw new Error('rowStart must be less than rowEnd')
   if (rowStart < 0) throw new Error('rowStart must be positive')
 
   // Fetch table metadata if not provided
-  metadata ??= await icebergMetadata(tableUrl, metadataFileName)
+  metadata ??= await icebergMetadata({ tableUrl, metadataFileName, requestInit })
   // TODO: Handle manifests asynchronously
   const manifestList = await icebergManifests(metadata)
 
@@ -53,7 +55,7 @@ export async function icebergRead({
   if (dataEntries.length === 0) {
     throw new Error('No data manifest files found for current snapshot')
   }
-  const deleteMaps = fetchDeleteMaps(deleteEntries)
+  const deleteMaps = fetchDeleteMaps(deleteEntries, requestInit)
 
   // Determine the global row range to read
   const totalRowsToRead = rowEnd === Infinity ? Infinity : rowEnd - rowStart
@@ -90,6 +92,7 @@ export async function icebergRead({
     const asyncBuffer = await asyncBufferFromUrl({
       url: translateS3Url(data_file.file_path),
       byteLength: Number(data_file.file_size_in_bytes),
+      requestInit,
     }).then(cachedAsyncBuffer)
 
     // Read iceberg schema from parquet metadata

@@ -6,7 +6,8 @@ describe('Iceberg Manifests', () => {
   const tableUrl = 'https://s3.amazonaws.com/hyperparam-iceberg/spark/bunnies'
 
   it('fetches iceberg manifests', async () => {
-    const metadata = await icebergMetadata(tableUrl, 'v5.metadata.json')
+    const metadataFileName = 'v5.metadata.json'
+    const metadata = await icebergMetadata({ tableUrl, metadataFileName })
     const manifests = await icebergManifests(metadata)
 
     expect(manifests.length).toBe(3)

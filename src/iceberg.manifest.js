@@ -6,9 +6,10 @@ import { fetchAvroRecords } from './iceberg.fetch.js'
  * @import {IcebergMetadata, Manifest, ManifestEntry} from '../src/types.js'
  * @typedef {{ url: string, entries: ManifestEntry[] }[]} ManifestList
  * @param {IcebergMetadata} metadata
+ * @param {RequestInit} [requestInit]
  * @returns {Promise<ManifestList>}
  */
-export async function icebergManifests(metadata) {
+export async function icebergManifests(metadata, requestInit) {
   const currentSnapshotId = metadata['current-snapshot-id']
   if (!currentSnapshotId || currentSnapshotId < 0) {
     throw new Error('No current snapshot id found in table metadata')
@@ -23,7 +24,7 @@ export async function icebergManifests(metadata) {
   if (snapshot['manifest-list']) {
     // Fetch manifest list and extract manifest URLs
     const manifestListUrl = snapshot['manifest-list']
-    manifests = /** @type {Manifest[]} */ (await fetchAvroRecords(manifestListUrl))
+    manifests = /** @type {Manifest[]} */ (await fetchAvroRecords(manifestListUrl, requestInit))
   } else if (snapshot.manifests) {
     // Use manifest URLs directly from snapshot
     manifests = snapshot.manifests
@@ -38,13 +39,14 @@ export async function icebergManifests(metadata) {
  * Fetch manifest entries from a list of manifests in parallel.
  *
  * @param {Manifest[]} manifests
+ * @param {RequestInit} [requestInit]
  * @returns {Promise<ManifestList>}
  */
-async function fetchManifests(manifests) {
+async function fetchManifests(manifests, requestInit) {
   // Fetch manifest entries in parallel
   return await Promise.all(manifests.map(async manifest => {
     const url = manifest.manifest_path
-    const entries = /** @type {ManifestEntry[]} */ (await fetchAvroRecords(url))
+    const entries = /** @type {ManifestEntry[]} */ (await fetchAvroRecords(url, requestInit))
 
     // Inherit sequence number from manifest if not present in entry
     for (const entry of entries) {

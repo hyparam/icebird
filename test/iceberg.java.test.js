@@ -99,7 +99,7 @@ describe.concurrent('icebergRead from java iceberg table', () => {
       metadataFileName: 'v5.metadata.json',
     })
 
-    expect(fetchSpy).toHaveBeenCalledTimes(24)
+    expect(fetchSpy).toHaveBeenCalledTimes(21)
 
     expect(data.length).toBe(15)
     const newZealands = data.filter(row => row['Breed Name'] === 'New Zealand')
