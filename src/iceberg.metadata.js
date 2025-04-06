@@ -1,7 +1,8 @@
 import { translateS3Url } from './iceberg.fetch.js'
 
 /**
- * Fetches the Iceberg table snapshot version using the version hint file.
+ * Fetches the iceberg metadata version using the version hint file.
+ * If the version hint file is not found, tries to list S3 to find the latest metadata file.
  *
  * @param {object} options
  * @param {string} options.tableUrl - Base URL of the table (e.g. "s3://my-bucket/path/to/table")
@@ -11,7 +12,7 @@ import { translateS3Url } from './iceberg.fetch.js'
 export function icebergLatestVersion({ tableUrl, requestInit }) {
   const url = `${tableUrl}/metadata/version-hint.text`
   const safeUrl = translateS3Url(url)
-  // TODO: If version-hint is not found, try listing or binary search.
+  // fetch version-hint.text
   return fetch(safeUrl, requestInit)
     .then(async res => {
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
@@ -25,15 +26,10 @@ export function icebergLatestVersion({ tableUrl, requestInit }) {
       const s3parts = s3ParseUrl(tableUrl)
       if (s3parts) {
         const { bucket, prefix } = s3parts
-        return s3list(bucket, prefix + '/metadata/')
+        return s3ListVersions(bucket, prefix + '/metadata/')
           .then(files => {
             if (files.length === 0) throw new Error('no metadata files found')
-            // sort most recent files first
-            const sorted = files
-              .filter(f => f.key.endsWith('.metadata.json'))
-              .sort((a, b) => b.lastModified.localeCompare(a.lastModified))
-            return sorted[0].key.split('/').slice(-1)[0]
-              .replace(/\.metadata\.json$/, '')
+            return files[files.length - 1]
           })
           .catch(err => {
             throw new Error(`failed to list S3 objects: ${err.message}`)
@@ -48,8 +44,43 @@ export function icebergLatestVersion({ tableUrl, requestInit }) {
 }
 
 /**
- * Fetches the Iceberg table metadata.
- * If metadataFileName is not privided, uses icebergLatestVersion to get the version hint.
+ * Returns a list of iceberg metadata versions.
+ *
+ * @param {object} options
+ * @param {string} options.tableUrl - Base URL of the table (e.g. "s3://my-bucket/path/to/table")
+ * @param {RequestInit} [options.requestInit] - Optional fetch request initialization
+ * @returns {Promise<string[]>} A list of iceberg table versions
+ */
+export function icebergListVersions({ tableUrl, requestInit }) {
+  const url = `${tableUrl}/metadata/version-hint.text`
+  const safeUrl = translateS3Url(url)
+  // fetch version-hint.text
+  return fetch(safeUrl, requestInit)
+    .then(async res => {
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+      const text = await res.text()
+      const version = parseInt(text)
+      if (isNaN(version)) throw new Error(`invalid version: ${text}`)
+      return Array.from({ length: version }, (_, i) => `v${i + 1}`)
+    })
+    .catch(err => {
+      // version hint not found, try listing S3 bucket
+      const s3parts = s3ParseUrl(tableUrl)
+      if (s3parts) {
+        const { bucket, prefix } = s3parts
+        return s3ListVersions(bucket, prefix + '/metadata/')
+      } else {
+        throw err
+      }
+    })
+    .catch(err => {
+      throw new Error(`failed to determine latest iceberg version: ${err.message}`)
+    })
+}
+
+/**
+ * Fetches the iceberg table metadata.
+ * If metadataFileName is not provided, uses icebergLatestVersion to get the version hint.
  *
  * @import {IcebergMetadata} from '../src/types.js'
  * @param {object} options
@@ -103,6 +134,26 @@ function s3list(bucket, prefix) {
         results.push({ key, lastModified })
       }
       return results
+    })
+    .catch(err => {
+      throw new Error(`failed to list S3 objects: ${err.message}`)
+    })
+}
+
+/**
+ * @param {string} bucket
+ * @param {string} prefix
+ * @returns {Promise<string[]>}
+ */
+function s3ListVersions(bucket, prefix) {
+  return s3list(bucket, prefix)
+    .then(files => {
+      // sort most recent files first
+      const sorted = files
+        .filter(f => f.key.endsWith('.metadata.json'))
+        .sort((a, b) => a.lastModified.localeCompare(b.lastModified))
+      return sorted.map(file => file.key.split('/').slice(-1)[0]
+        .replace(/\.metadata\.json$/, ''))
     })
     .catch(err => {
       throw new Error(`failed to list S3 objects: ${err.message}`)

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { icebergLatestVersion, icebergMetadata } from '../src/iceberg.metadata.js'
+import { icebergLatestVersion, icebergListVersions, icebergMetadata } from '../src/iceberg.metadata.js'
 
 describe.concurrent('Iceberg Metadata', () => {
   const tableUrl = 'https://s3.amazonaws.com/hyperparam-iceberg/spark/bunnies'
@@ -7,6 +7,11 @@ describe.concurrent('Iceberg Metadata', () => {
   it('fetches the latest sequence number from version-hint.text', async () => {
     const version = await icebergLatestVersion({ tableUrl })
     expect(version).toBe('v5')
+  })
+
+  it('fetches iceberg versions from version-hint.text', async () => {
+    const versions = await icebergListVersions({ tableUrl })
+    expect(versions).toEqual(['v1', 'v2', 'v3', 'v4', 'v5'])
   })
 
   it('fetches latest iceberg metadata with auth', async () => {

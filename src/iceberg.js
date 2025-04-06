@@ -1,11 +1,11 @@
 import { asyncBufferFromUrl, cachedAsyncBuffer, parquetMetadataAsync, parquetReadObjects } from 'hyparquet'
 import { compressors } from 'hyparquet-compressors'
 import { fetchDeleteMaps, translateS3Url } from './iceberg.fetch.js'
-import { icebergLatestVersion, icebergMetadata } from './iceberg.metadata.js'
+import { icebergLatestVersion, icebergListVersions, icebergMetadata } from './iceberg.metadata.js'
 import { icebergManifests, splitManifestEntries } from './iceberg.manifest.js'
 import { equalityMatch, sanitize } from './utils.js'
 
-export { icebergMetadata, icebergManifests, icebergLatestVersion }
+export { icebergMetadata, icebergManifests, icebergLatestVersion, icebergListVersions }
 export { avroMetadata } from './avro.metadata.js'
 export { avroData } from './avro.data.js'
 
