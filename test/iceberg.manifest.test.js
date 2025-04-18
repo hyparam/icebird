@@ -19,7 +19,7 @@ describe('Iceberg Manifests', () => {
       status: 1,
       snapshot_id: 469881615898633426n,
       sequence_number: 2n,
-      file_sequence_number: null,
+      file_sequence_number: 2n,
       data_file: {
         content: 1,
         file_path: 's3a://hyperparam-iceberg/spark/bunnies/data/00000-3-6fdcdaeb-591f-4ae0-a39a-75c7fba53907-00001-deletes.parquet',

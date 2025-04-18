@@ -54,15 +54,13 @@ export async function fetchDeleteMaps(deleteEntries, requestInit) {
         const { file_path, pos } = deleteRow
         if (!file_path) throw new Error('position delete missing target file path')
         if (pos === undefined) throw new Error('position delete missing pos')
-        if (pos !== undefined && pos !== null) {
-          // Note: pos is relative to the data file's row order
-          let set = positionDeletesMap.get(file_path)
-          if (!set) {
-            set = new Set()
-            positionDeletesMap.set(file_path, set)
-          }
-          set.add(pos)
+        // note: pos is relative to the data file's row order
+        let set = positionDeletesMap.get(file_path)
+        if (!set) {
+          set = new Set()
+          positionDeletesMap.set(file_path, set)
         }
+        set.add(pos)
       } else if (content === 2) { // equality delete
         // save the entire delete row (restrict this to equalityIds?)
         const { sequence_number } = deleteEntry

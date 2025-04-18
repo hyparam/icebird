@@ -90,8 +90,8 @@ export interface Manifest {
   manifest_length: bigint
   partition_spec_id: number
   content: 0 | 1 // 0=data, 1=deletes
-  sequence_number: bigint
-  min_sequence_number: bigint
+  sequence_number?: bigint
+  min_sequence_number?: bigint
   added_snapshot_id: bigint
   added_data_files_count: number
   existing_data_files_count: number
@@ -118,6 +118,7 @@ export interface DataFile {
   content: 0 | 1 | 2 // 0=data, 1=position_delete, 2=equality_delete
   file_path: string
   file_format: string
+  partition: object
   record_count: bigint
   file_size_in_bytes: bigint
   split_offsets: bigint[]

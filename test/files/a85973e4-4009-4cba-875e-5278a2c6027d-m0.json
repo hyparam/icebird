@@ -12,11 +12,9 @@
         { "key": 8, "value": 107 }
       ],
       "content": 0,
-      "equality_ids": null,
       "file_format": "PARQUET",
       "file_path": "s3a://hyperparam-iceberg/warehouse/bunnies/data/00000-1-ab020707-f0e6-43c8-98ed-5643ba60e97c-00001.parquet",
       "file_size_in_bytes": 3224,
-      "key_metadata": null,
       "lower_bounds": [
         {
           "key": 1,
@@ -147,8 +145,6 @@
         { "key": 8, "value": 21 }
       ]
     },
-    "file_sequence_number": null,
-    "sequence_number": null,
     "snapshot_id": 8656952484400131532,
     "status": 1
   }

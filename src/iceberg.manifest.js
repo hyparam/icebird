@@ -50,12 +50,11 @@ async function fetchManifests(manifests, requestInit) {
 
     // Inherit sequence number from manifest if not present in entry
     for (const entry of entries) {
-      if (!entry.sequence_number) {
-        entry.sequence_number = manifest.sequence_number
+      if (entry.sequence_number === undefined) {
+        // When reading v1 manifests with no sequence number column,
+        // sequence numbers for all files must default to 0.
+        entry.sequence_number = manifest.sequence_number ?? 0n
       }
-
-      // TODO: When reading v1 manifests with no sequence number column,
-      // sequence numbers for all files must default to 0.
 
       if (entry.status === 1) {
         // only ADDED can inherit sequence number

@@ -69,7 +69,7 @@ export function avroData({ reader, metadata, syncMarker }) {
  */
 function readType(reader, type) {
   if (type === 'null') {
-    return null
+    return undefined
   } else if (Array.isArray(type)) {
     const unionIndex = readZigZag(reader)
     return readType(reader, type[unionIndex])
