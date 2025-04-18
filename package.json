@@ -1,6 +1,6 @@
 {
   "name": "icebird",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "description": "Apache Iceberg client for javascript",
   "author": "Hyperparam",
   "homepage": "https://hyperparam.app",
@@ -19,13 +19,22 @@
     "type": "git",
     "url": "git+https://github.com/hyparam/icebird.git"
   },
-  "main": "src/iceberg.js",
   "files": [
     "src",
     "types"
   ],
   "type": "module",
   "types": "types/iceberg.d.ts",
+  "exports": {
+    ".": {
+      "types": "./types/iceberg.d.ts",
+      "import": "./src/iceberg.js"
+    },
+    "./src/*.js": {
+      "types": "./types/*.d.ts",
+      "import": "./src/*.js"
+    }
+  },
   "scripts": {
     "build:types": "tsc -p ./tsconfig.build.json",
     "coverage": "vitest run --coverage --coverage.include=src",
