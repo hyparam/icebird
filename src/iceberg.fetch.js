@@ -50,7 +50,7 @@ export async function fetchDeleteMaps(deleteEntries, requestInit) {
     }).then(cachedAsyncBuffer)
     const deleteRows = await parquetReadObjects({ file, compressors })
     for (const deleteRow of deleteRows) {
-      if (content === 1) { // Position delete
+      if (content === 1) { // position delete
         const { file_path, pos } = deleteRow
         if (!file_path) throw new Error('position delete missing target file path')
         if (pos === undefined) throw new Error('position delete missing pos')
@@ -63,9 +63,12 @@ export async function fetchDeleteMaps(deleteEntries, requestInit) {
           }
           set.add(pos)
         }
-      } else if (content === 2) { // Equality delete
-        // Save the entire delete row (restrict this to equalityIds?)
+      } else if (content === 2) { // equality delete
+        // save the entire delete row (restrict this to equalityIds?)
         const { sequence_number } = deleteEntry
+        if (sequence_number === undefined) {
+          throw new Error('equality delete missing sequence number')
+        }
         let list = equalityDeletesMap.get(sequence_number)
         if (!list) {
           list = []

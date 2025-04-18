@@ -53,6 +53,24 @@ async function fetchManifests(manifests, requestInit) {
       if (!entry.sequence_number) {
         entry.sequence_number = manifest.sequence_number
       }
+
+      // TODO: When reading v1 manifests with no sequence number column,
+      // sequence numbers for all files must default to 0.
+
+      if (entry.status === 1) {
+        // only ADDED can inherit sequence number
+        if (entry.sequence_number === undefined) {
+          entry.sequence_number = manifest.sequence_number
+        }
+        if (entry.file_sequence_number === undefined) {
+          entry.file_sequence_number = manifest.sequence_number
+        }
+      } else {
+        if (entry.sequence_number === undefined || entry.file_sequence_number === undefined) {
+          // spec violation "Sequence‑number inheritance"
+          throw new Error('iceberg manifest entry missing sequence number')
+        }
+      }
     }
 
     return { url, entries }

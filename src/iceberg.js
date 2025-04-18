@@ -40,15 +40,10 @@ export async function icebergRead({
   // TODO: Handle manifests asynchronously
   const manifestList = await icebergManifests(metadata)
 
-  if (metadata['format-version'] > 2) throw new Error('iceberg format version > 2 not supported')
-
   // Get current schema id
   const currentSchemaId = metadata['current-schema-id']
   const schema = metadata.schemas.find(s => s['schema-id'] === currentSchemaId)
   if (!schema) throw new Error('current schema not found in metadata')
-
-  // Get current sequence number
-  const lastSequenceNumber = metadata['last-sequence-number']
 
   // Get manifest URLs for data and delete files
   const { dataEntries, deleteEntries } = splitManifestEntries(manifestList)
@@ -77,7 +72,7 @@ export async function icebergRead({
     // assert(status !== 2)
 
     // Check sequence numbers
-    if (sequence_number === null) throw new Error('sequence number not found, check v2 inheritance logic')
+    if (sequence_number === undefined) throw new Error('sequence number not found, check v2 inheritance logic')
 
     // Determine the row range to read from this file
     const fileRowStart = i === fileIndex ? skipRows : 0
@@ -149,7 +144,6 @@ export async function icebergRead({
       // - Position deletes (vectors and files) must be applied to data files from the same commit,
       //   when the data and delete file data sequence numbers are equal.
       //   This allows deleting rows that were added in the same commit.
-      if (deleteSequenceNumber > lastSequenceNumber) continue // Skip future deletes
       if (deleteSequenceNumber <= sequence_number) continue // Skip deletes that are too old
       rows = rows.filter(row => !deleteRows.some(predicate => equalityMatch(row, predicate)))
     }

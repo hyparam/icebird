@@ -41,7 +41,7 @@ describe.concurrent('icebergRead from spark iceberg table', () => {
     })
   })
 
-  it('reads data v3 with deleted rows', async () => {
+  it('reads data v3 with deleted row', async () => {
     const data = await icebergRead({ tableUrl, metadataFileName: 'v3.metadata.json' })
 
     expect(data.length).toBe(20)

@@ -104,9 +104,9 @@ export interface Manifest {
 
 export interface ManifestEntry {
   status: 0 | 1 | 2 // 0=existing, 1=added, 2=deleted
-  snapshot_id: bigint
-  sequence_number: bigint
-  file_sequence_number: bigint
+  snapshot_id?: bigint
+  sequence_number?: bigint
+  file_sequence_number?: bigint
   data_file: DataFile
 }
 
