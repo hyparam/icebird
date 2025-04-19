@@ -87,7 +87,7 @@ export function splitManifestEntries(manifests) {
   const deleteEntries = []
   for (const { entries } of manifests) {
     for (const entry of entries) {
-      if (entry.status === 2) continue // skip deleted files
+      if (entry.status === 2) continue // skip logically deleted
       if (entry.data_file.content) {
         deleteEntries.push(entry)
       } else {

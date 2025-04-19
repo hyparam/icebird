@@ -33,12 +33,30 @@ interface Field {
   name: string
   required: boolean
   type: string
+  doc?: string
+  'initial-default': string
+  'write-default': string
 }
 
-interface PartitionSpec {
+export interface PartitionSpec {
   'spec-id': number
-  fields: Field[]
+  fields: PartitionField[]
 }
+interface PartitionField {
+  'source-id'?: number
+  'source-ids'?: number[]
+  'field-id': number
+  name: string
+  transform: PartitionTransform
+}
+export type PartitionTransform =
+  'identity' |
+  `bucket[${number}]` |
+  `truncate[${number}]` |
+  'year' |
+  'month' |
+  'day' |
+  'hour'
 
 interface SortOrder {
   'order-id': number
@@ -118,7 +136,7 @@ export interface DataFile {
   content: 0 | 1 | 2 // 0=data, 1=position_delete, 2=equality_delete
   file_path: string
   file_format: string
-  partition: object
+  partition: Record<number, PartitionSpec> // indexed by field id
   record_count: bigint
   file_size_in_bytes: bigint
   split_offsets: bigint[]
