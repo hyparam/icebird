@@ -82,12 +82,12 @@ export function icebergListVersions({ tableUrl, requestInit }) {
  * Fetches the iceberg table metadata.
  * If metadataFileName is not provided, uses icebergLatestVersion to get the version hint.
  *
- * @import {IcebergMetadata} from '../src/types.js'
+ * @import {TableMetadata} from '../src/types.js'
  * @param {object} options
  * @param {string} options.tableUrl - Base URL of the table (e.g. "s3://my-bucket/path/to/table")
  * @param {string} [options.metadataFileName] - Name of the metadata JSON file
  * @param {RequestInit} [options.requestInit] - Optional fetch request initialization
- * @returns {Promise<IcebergMetadata>} The table metadata as a JSON object
+ * @returns {Promise<TableMetadata>} The table metadata as a JSON object
  */
 export async function icebergMetadata({ tableUrl, metadataFileName, requestInit }) {
   if (!metadataFileName) {

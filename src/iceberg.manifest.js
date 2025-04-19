@@ -3,9 +3,9 @@ import { fetchAvroRecords } from './iceberg.fetch.js'
 /**
  * Returns manifest entries for the current snapshot.
  *
- * @import {IcebergMetadata, Manifest, ManifestEntry} from '../src/types.js'
+ * @import {TableMetadata, Manifest, ManifestEntry} from '../src/types.js'
  * @typedef {{ url: string, entries: ManifestEntry[] }[]} ManifestList
- * @param {IcebergMetadata} metadata
+ * @param {TableMetadata} metadata
  * @param {RequestInit} [requestInit]
  * @returns {Promise<ManifestList>}
  */
@@ -14,7 +14,7 @@ export async function icebergManifests(metadata, requestInit) {
   if (!currentSnapshotId || currentSnapshotId < 0) {
     throw new Error('No current snapshot id found in table metadata')
   }
-  const snapshot = metadata.snapshots.find(s => s['snapshot-id'] === currentSnapshotId)
+  const snapshot = metadata.snapshots?.find(s => s['snapshot-id'] === currentSnapshotId)
   if (!snapshot) {
     throw new Error(`Snapshot ${currentSnapshotId} not found in metadata`)
   }

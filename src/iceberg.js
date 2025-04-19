@@ -13,13 +13,13 @@ export { avroData } from './avro.data.js'
  * Reads data from the Iceberg table with optional row-level delete processing.
  * Row indices are zero-based and rowEnd is exclusive.
  *
- * @import {IcebergMetadata, Schema} from '../src/types.js'
+ * @import {TableMetadata, Schema} from '../src/types.js'
  * @param {object} options
  * @param {string} options.tableUrl - Base S3 URL of the table.
  * @param {number} [options.rowStart] - The starting global row index to fetch (inclusive).
  * @param {number} [options.rowEnd] - The ending global row index to fetch (exclusive).
  * @param {string} [options.metadataFileName] - Name of the Iceberg metadata file.
- * @param {IcebergMetadata} [options.metadata] - Pre-fetched Iceberg metadata.
+ * @param {TableMetadata} [options.metadata] - Pre-fetched Iceberg metadata.
  * @param {RequestInit} [options.requestInit] - Optional fetch request initialization.
  * @returns {Promise<Array<Record<string, any>>>} Array of data records.
  */

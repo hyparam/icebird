@@ -1,5 +1,5 @@
 
-export interface IcebergMetadata {
+export interface TableMetadata {
   'format-version': number
   'table-uuid': string
   location: string
@@ -11,20 +11,23 @@ export interface IcebergMetadata {
   'default-spec-id': number
   'partition-specs': PartitionSpec[]
   'last-partition-id': number
-  'default-sort-order-id': number
-  'sort-orders': SortOrder[]
-  properties: object
+  properties?: Record<string, string>
   'current-snapshot-id': number
-  refs: object
-  snapshots: Snapshot[]
+  snapshots?: Snapshot[]
+  'snapshot-log'?: SnapshotLog[]
+  'metadata-log'?: MetadataLog[]
+  'sort-orders': SortOrder[]
+  'default-sort-order-id': number
+  refs?: object
   statistics: TableStatistics[]
-  'snapshot-log': SnapshotLog[]
-  'metadata-log': MetadataLog[]
+  'partition-statistics'?: PartitionStatistics[]
+  'next-row-id'?: bigint
 }
 
 export interface Schema {
-  type: string
+  type: 'struct'
   'schema-id': number
+  'identifier-field-ids'?: number[]
   fields: Field[]
 }
 
@@ -32,10 +35,10 @@ interface Field {
   id: number
   name: string
   required: boolean
-  type: string
+  type: string // TODO
   doc?: string
-  'initial-default': string
-  'write-default': string
+  'initial-default': any
+  'write-default': any
 }
 
 export interface PartitionSpec {
@@ -56,20 +59,36 @@ export type PartitionTransform =
   'year' |
   'month' |
   'day' |
-  'hour'
+  'hour' |
+  'void'
+interface PartitionStatistics {
+  'snapshot-id': bigint
+  'statistics-path': string
+  'file-size-in-bytes': bigint
+}
 
 interface SortOrder {
   'order-id': number
-  'fields': unknown[]
+  'fields': SortField[]
+}
+interface SortField {
+  transform: string
+  'source-id'?: number
+  'source-ids'?: number[] // V3
+  'direction': 'asc' | 'desc'
+  'null-order': 'nulls-first' | 'nulls-last'
 }
 
 export interface Snapshot {
-  'sequence-number': number
   'snapshot-id': number
+  'parent-snapshot-id'?: number
+  'sequence-number': number
   'timestamp-ms': number
+  'manifest-list': string
+  manifests?: Manifest[]
   summary: {
     operation: string
-    'spark.app.id': string
+    // 'spark.app.id'?: string
     'added-data-files': string
     'added-records': string
     'added-files-size': string
@@ -81,9 +100,9 @@ export interface Snapshot {
     'total-position-deletes': string
     'total-equality-deletes': string
   }
-  'manifest-list': string
-  manifests?: Manifest[]
-  'schema-id': number
+  'schema-id'?: number
+  'first-row-id'?: bigint // V3
+  'added-rows'?: number // V3
 }
 
 interface TableStatistics {
@@ -111,13 +130,15 @@ export interface Manifest {
   sequence_number?: bigint
   min_sequence_number?: bigint
   added_snapshot_id: bigint
-  added_data_files_count: number
-  existing_data_files_count: number
-  deleted_data_files_count: number
+  added_files_count: number
+  existing_files_count: number
+  deleted_files_count: number
   added_rows_count: bigint
   existing_rows_count: bigint
   deleted_rows_count: bigint
   partitions?: FieldSummary[]
+  // key_metadata?: unknown
+  first_row_id?: bigint
 }
 
 export interface ManifestEntry {
@@ -130,18 +151,32 @@ export interface ManifestEntry {
 
 interface FieldSummary {
   'contains-null': boolean
+  'contains-nan'?: boolean
+  'lower-bound'?: unknown
+  'upper-bound'?: unknown
 }
 
 export interface DataFile {
   content: 0 | 1 | 2 // 0=data, 1=position_delete, 2=equality_delete
   file_path: string
-  file_format: string
-  partition: Record<number, PartitionSpec> // indexed by field id
+  file_format: 'avro' | 'orc' | 'parquet' | 'puffin'
+  partition: Record<number, unknown> // indexed by field id
   record_count: bigint
   file_size_in_bytes: bigint
-  split_offsets: bigint[]
+  column_sizes?: Record<number, bigint>
+  value_counts?: Record<number, bigint>
+  null_value_counts?: Record<number, bigint>
+  nan_value_counts?: Record<number, bigint>
+  lower_bounds?: Record<number, unknown>
+  upper_bounds?: Record<number, unknown>
+  // key_metadata?: string
+  split_offsets?: bigint[]
   equality_ids?: number[]
-  sort_order_id: number
+  sort_order_id?: number
+  first_row_id?: bigint
+  referenced_data_file?: string
+  content_offset?: bigint
+  content_size_in_bytes?: bigint
 }
 
 export interface FilePositionDelete {
