@@ -79,6 +79,12 @@ interface SortField {
   'null-order': 'nulls-first' | 'nulls-last'
 }
 
+export interface NameMapping {
+  names: string[]
+  'field-id'?: number
+  fields?: NameMapping[]
+}
+
 export interface Snapshot {
   'snapshot-id': number
   'parent-snapshot-id'?: number

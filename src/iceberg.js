@@ -13,7 +13,6 @@ export { avroData } from './avro.data.js'
  * Reads data from the Iceberg table with optional row-level delete processing.
  * Row indices are zero-based and rowEnd is exclusive.
  *
- * @import {TableMetadata, Schema} from '../src/types.js'
  * @param {object} options
  * @param {string} options.tableUrl - Base S3 URL of the table.
  * @param {number} [options.rowStart] - The starting global row index to fetch (inclusive).
@@ -100,11 +99,6 @@ export async function icebergRead({
       parquetIcebergSchema = JSON.parse(kv.value)
     }
 
-    // TODO: Tables may also define a property schema.name-mapping.default with
-    // a JSON name mapping containing a list of field mapping objects. These
-    // mappings provide fallback field ids to be used when a data file does not
-    // contain field id information.
-
     // Determine which columns to read based on field ids
     const parquetColumnNames = []
     for (const field of schema.fields) {
@@ -153,20 +147,47 @@ export async function icebergRead({
       /** @type {Record<string, any>} */
       const out = {}
       for (let i = 0; i < schema.fields.length; i++) {
+        const field = schema.fields[i]
         const parquetColumnName = parquetColumnNames[i]
         if (parquetColumnName) {
-          out[schema.fields[i].name] = row[parquetColumnName]
+          out[field.name] = row[parquetColumnName]
         } else {
-          // TODO: Values for field ids which are not present in a data file must
+          // current partition spec:
+          const partitionSpec = metadata['partition-specs'].find(s => s['spec-id'] === metadata['default-spec-id'])
+          const partitionField = partitionSpec?.fields.find(pf => pf['source-id'] === field.id)
+
+          /** @type {NameMapping | undefined} */
+          let nameMapping
+          if (metadata.properties?.['schema.name-mapping.default']) {
+            /** @type {NameMapping[]} */
+            const mapping = JSON.parse(metadata.properties['schema.name-mapping.default'])
+            nameMapping = nameMappingById(mapping, field.id)
+          }
+
+          // Values for field ids which are not present in a data file must
           // be resolved according the following rules:
-          // - Return the value from partition metadata if an Identity Transform
-          //   exists for the field and the partition value is present in the
-          //   partition struct on data_file object in the manifest. This allows
-          //   for metadata only migrations of Hive tables.
-          // - Use schema.name-mapping.default metadata to map field id to columns
-          //   without field id as described below and use the column if it is present.
-          // - Return the default value if it has a defined initial-default.
-          // - Return null in all other cases.
+          if (partitionField?.transform === 'identity') {
+            // 1. Return the value from partition metadata if an Identity Transform
+            // exists for the field and the partition value is present in the
+            // partition struct on data_file object in the manifest. This allows
+            // for metadata only migrations of Hive tables.
+            out[field.name] = data_file.partition[partitionField['field-id']]
+          } else if (nameMapping) {
+            // 2. Use schema.name-mapping.default metadata to map field id to columns
+            for (const name of nameMapping.names) {
+              const idx = parquetColumnNames.indexOf(name)
+              if (idx !== -1) {
+                out[field.name] = row[name]
+                break
+              }
+            }
+          } else if (field['initial-default'] !== undefined) {
+            // 3. Return the default value if it has a defined initial-default.
+            out[field.name] = field['initial-default']
+          } else {
+            // 4. Return null in all other cases.
+            out[field.name] = undefined
+          }
         }
       }
       results.push(out)
@@ -179,4 +200,22 @@ export async function icebergRead({
   }
 
   return results
+}
+
+/**
+ * Recursively find the name mapping object that belongs to a particular field‑id.
+ *
+ * @import {TableMetadata, NameMapping} from '../src/types.js'
+ * @param {NameMapping[]} mappings
+ * @param {number} fieldId
+ * @returns {NameMapping|undefined}
+ */
+function nameMappingById(mappings, fieldId) {
+  for (const m of mappings) {
+    if (m['field-id'] === fieldId) return m
+    if (m.fields) {
+      const hit = nameMappingById(m.fields, fieldId)
+      if (hit) return hit
+    }
+  }
 }
