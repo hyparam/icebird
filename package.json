@@ -1,6 +1,6 @@
 {
   "name": "icebird",
-  "version": "0.1.15",
+  "version": "0.2.0",
   "description": "Apache Iceberg client for javascript",
   "author": "Hyperparam",
   "homepage": "https://hyperparam.app",
