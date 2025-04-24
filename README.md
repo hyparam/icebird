@@ -39,6 +39,13 @@ const data = await icebergRead({
 })
 ```
 
+## Demo
+
+Check out a minimal iceberg table viewer demo that shows how to integrate Icebird into a react web application using [HighTable](https://github.com/hyparam/hightable) to render the table data. You can view any publicly accessible Iceberg table:
+
+ - **Live Demo**: [https://hyparam.github.io/demos/icebird/](https://hyparam.github.io/demos/icebird/)
+ - **Demo Source Code**: [https://github.com/hyparam/demos/tree/master/icebird](https://github.com/hyparam/demos/tree/master/icebird)
+
 ## Time Travel
 
 To fetch a previous version of the table, you can specify `metadataFileName`:
