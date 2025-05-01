@@ -28,7 +28,7 @@ export default [
         functions: 'never',
       }],
       'eol-last': 'error',
-      eqeqeq: 'error',
+      eqeqeq: ['error', 'smart'],
       'func-style': ['error', 'declaration'],
       indent: ['error', 2],
       'jsdoc/check-param-names': 'error',
