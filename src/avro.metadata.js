@@ -42,10 +42,10 @@ export function readZigZagBigInt(reader) {
  * @returns {string}
  */
 function readAvroString(reader) {
-  const len = readZigZag(reader)
-  const bytes = new Uint8Array(reader.view.buffer, reader.offset, len)
-  reader.offset += len
-  return new TextDecoder('utf-8').decode(bytes)
+  const length = readZigZag(reader)
+  const bytes = new Uint8Array(reader.view.buffer, reader.view.byteOffset + reader.offset, length)
+  reader.offset += length
+  return new TextDecoder().decode(bytes)
 }
 
 /**
@@ -57,7 +57,7 @@ function readAvroString(reader) {
 export function avroMetadata(reader) {
   // Check avro magic bytes "Obj\x01"
   if (reader.view.getUint32(reader.offset) !== 0x4f626a01) {
-    throw new Error('avro file invalid magic bytes')
+    throw new Error('avro invalid magic bytes')
   }
   reader.offset += 4
 
@@ -89,7 +89,7 @@ export function avroMetadata(reader) {
   }
 
   // Read 16-byte sync marker
-  const syncMarker = new Uint8Array(reader.view.buffer, reader.offset, 16)
+  const syncMarker = new Uint8Array(reader.view.buffer, reader.view.byteOffset + reader.offset, 16)
   reader.offset += 16
 
   return { metadata, syncMarker }

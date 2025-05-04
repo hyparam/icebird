@@ -263,4 +263,5 @@ type AvroGenericLogicalType = {
 
 type AvroLogicalType = AvroDate | AvroDecimal | AvroTimestampMillis | AvroTimestampMicros | AvroGenericLogicalType
 
+// Avro complex types: records, enums, arrays, maps, unions, fixed
 type AvroComplexType = AvroRecord | AvroArray | AvroUnion

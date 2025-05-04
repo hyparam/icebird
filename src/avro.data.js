@@ -6,7 +6,6 @@ import { parseDecimal } from 'hyparquet/src/convert.js'
  * Read avro data blocks.
  * Should be called after avroMetadata.
  *
- * @import {DataReader} from 'hyparquet/src/types.js'
  * @param {Object} options
  * @param {DataReader} options.reader
  * @param {Record<string, any>} options.metadata
@@ -24,11 +23,11 @@ export function avroData({ reader, metadata, syncMarker }) {
       recordCount = -recordCount
     }
     const blockSize = readZigZag(reader)
-    let data = new Uint8Array(reader.view.buffer, reader.offset, blockSize)
+    let data = new Uint8Array(reader.view.buffer, reader.view.byteOffset + reader.offset, blockSize)
     reader.offset += blockSize
 
     // Read and verify sync marker for the block
-    const blockSync = new Uint8Array(reader.view.buffer, reader.offset, 16)
+    const blockSync = new Uint8Array(reader.view.buffer, reader.view.byteOffset + reader.offset, 16)
     reader.offset += 16
     for (let i = 0; i < 16; i++) {
       if (blockSync[i] !== syncMarker[i]) {
@@ -47,7 +46,8 @@ export function avroData({ reader, metadata, syncMarker }) {
     // Decode according to binary or json encoding
     // Loop through metadata['avro.schema'] to parse the block
     const { fields } = metadata['avro.schema']
-    const dataReader = { view: new DataView(data.buffer), offset: 0 }
+    const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
+    const dataReader = { view, offset: 0 }
     for (let i = 0; i < recordCount; i++) {
       /** @type {Record<string, any>} */
       const obj = {}
@@ -62,6 +62,7 @@ export function avroData({ reader, metadata, syncMarker }) {
 }
 
 /**
+ * @import {DataReader} from 'hyparquet/src/types.js'
  * @import {AvroType} from '../src/types.js'
  * @param {DataReader} reader
  * @param {AvroType} type
@@ -74,10 +75,9 @@ function readType(reader, type) {
     const unionIndex = readZigZag(reader)
     return readType(reader, type[unionIndex])
   } else if (typeof type === 'object' && type.type === 'record') {
-    // Read recursively
+    // read recursively
     /** @type {Record<string, any>} */
     const obj = {}
-    // assert(Array.isArray(type.fields))
     for (const subField of type.fields) {
       obj[subField.name] = readType(reader, subField.type)
     }
@@ -133,12 +133,13 @@ function readType(reader, type) {
     return value
   } else if (type === 'bytes') {
     const length = readZigZag(reader)
-    const bytes = new Uint8Array(reader.view.buffer, reader.offset, length)
+    const bytes = new Uint8Array(reader.view.buffer, reader.view.byteOffset + reader.offset, length)
     reader.offset += length
     return bytes
   } else if (type === 'string') {
     const length = readZigZag(reader)
-    const text = new TextDecoder().decode(new Uint8Array(reader.view.buffer, reader.offset, length))
+    const bytes = new Uint8Array(reader.view.buffer, reader.view.byteOffset + reader.offset, length)
+    const text = new TextDecoder().decode(bytes)
     reader.offset += length
     return text
   } else {
