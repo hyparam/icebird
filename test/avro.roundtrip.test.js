@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ByteWriter } from 'hyparquet-writer'
-import { avroWrite } from '../src/avro.write.js'
-import { avroData, avroMetadata } from '../src/iceberg.js'
+import { avroMetadata, avroRead, avroWrite } from '../src/index.js'
 
 /**
  * @import {AvroType} from '../src/types.js'
@@ -33,7 +32,7 @@ describe('Avro round-trip', () => {
 
     const reader = { view: new DataView(writer.getBuffer()), offset: 0 }
     const { metadata, syncMarker } = avroMetadata(reader)
-    const rows = avroData({ reader, metadata, syncMarker })
+    const rows = avroRead({ reader, metadata, syncMarker })
 
     expect(rows).toEqual(records)
   })
@@ -58,7 +57,7 @@ describe('Avro round-trip', () => {
 
     const reader = { view: new DataView(writer.getBuffer()), offset: 0 }
     const { metadata, syncMarker } = avroMetadata(reader)
-    const got = avroData({ reader, metadata, syncMarker })
+    const got = avroRead({ reader, metadata, syncMarker })
 
     expect(got).toEqual(recs)
   })
@@ -84,7 +83,7 @@ describe('Avro round-trip', () => {
 
     const reader = { view: new DataView(writer.getBuffer()), offset: 0 }
     const { metadata, syncMarker } = avroMetadata(reader)
-    const round = avroData({ reader, metadata, syncMarker })
+    const round = avroRead({ reader, metadata, syncMarker })
 
     expect(round[0].ts.getTime()).toBe(original[0].ts.getTime())
   })
@@ -114,7 +113,7 @@ describe('Avro round-trip', () => {
 
     const reader = { view: new DataView(writer.getBuffer()), offset: 0 }
     const { metadata, syncMarker } = avroMetadata(reader)
-    const got = avroData({ reader, metadata, syncMarker })
+    const got = avroRead({ reader, metadata, syncMarker })
 
     expect(got).toEqual(recs)
   })

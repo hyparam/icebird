@@ -1,4 +1,4 @@
-import { translateS3Url } from './iceberg.fetch.js'
+import { translateS3Url } from './fetch.js'
 
 /**
  * Fetches the iceberg metadata version using the version hint file.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { icebergLatestVersion, icebergListVersions, icebergMetadata, icebergRead } from '../src/iceberg.js'
+import { icebergLatestVersion, icebergListVersions, icebergMetadata, icebergRead } from '../src/index.js'
 
 describe.concurrent('icebergRead from athena table', () => {
   const tableUrl = 'https://s3.amazonaws.com/hyperparam-iceberg/athena/example'

@@ -1,13 +1,9 @@
 import { asyncBufferFromUrl, cachedAsyncBuffer, parquetMetadataAsync, parquetReadObjects } from 'hyparquet'
 import { compressors } from 'hyparquet-compressors'
-import { fetchDeleteMaps, translateS3Url } from './iceberg.fetch.js'
-import { icebergLatestVersion, icebergListVersions, icebergMetadata } from './iceberg.metadata.js'
-import { icebergManifests, splitManifestEntries } from './iceberg.manifest.js'
+import { fetchDeleteMaps, translateS3Url } from './fetch.js'
+import { icebergMetadata } from './metadata.js'
+import { icebergManifests, splitManifestEntries } from './manifest.js'
 import { equalityMatch, sanitize } from './utils.js'
-
-export { icebergMetadata, icebergManifests, icebergLatestVersion, icebergListVersions }
-export { avroMetadata } from './avro.metadata.js'
-export { avroData } from './avro.data.js'
 
 /**
  * Reads data from the Iceberg table with optional row-level delete processing.

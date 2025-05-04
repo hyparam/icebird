@@ -1,6 +1,6 @@
-import { icebergRead } from './src/iceberg.js'
+import { icebergRead } from './src/index.js'
 
-const tableUrl = 'https://s3.amazonaws.com/hyperparam-iceberg/warehouse/bunnies'
+const tableUrl = 'https://s3.amazonaws.com/hyperparam-iceberg/spark/bunnies'
 const metadataFileName = 'v3.metadata.json'
 
 /**

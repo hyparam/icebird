@@ -1,6 +1,6 @@
 import fs from 'fs'
 import { describe, expect, it } from 'vitest'
-import { avroMetadata } from '../src/avro.metadata.js'
+import { avroMetadata } from '../src/avro/avro.metadata.js'
 import { asyncBufferFromFile, toJson } from 'hyparquet'
 import { fileToJson } from './helpers.js'
 

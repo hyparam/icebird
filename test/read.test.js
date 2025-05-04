@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { icebergRead } from '../src/iceberg.js'
+import { icebergRead } from '../src/read.js'
 
 describe.concurrent('icebergRead', () => {
   it('throws for missing tableUrl', async () => {

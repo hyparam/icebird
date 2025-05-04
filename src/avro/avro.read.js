@@ -12,7 +12,7 @@ import { parseDecimal } from 'hyparquet/src/convert.js'
  * @param {Uint8Array} options.syncMarker
  * @returns {Record<string, any>[]}
  */
-export function avroData({ reader, metadata, syncMarker }) {
+export function avroRead({ reader, metadata, syncMarker }) {
   const blocks = []
   while (reader.offset < reader.view.byteLength) {
     let recordCount = readZigZag(reader)
@@ -63,7 +63,7 @@ export function avroData({ reader, metadata, syncMarker }) {
 
 /**
  * @import {DataReader} from 'hyparquet/src/types.js'
- * @import {AvroType} from '../src/types.js'
+ * @import {AvroType} from '../../src/types.js'
  * @param {DataReader} reader
  * @param {AvroType} type
  * @returns {any}

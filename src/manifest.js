@@ -1,4 +1,4 @@
-import { fetchAvroRecords } from './iceberg.fetch.js'
+import { fetchAvroRecords } from './fetch.js'
 
 /**
  * Returns manifest entries for the current snapshot.

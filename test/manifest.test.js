@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { icebergManifests } from '../src/iceberg.manifest.js'
-import { icebergMetadata } from '../src/iceberg.metadata.js'
+import { icebergManifests } from '../src/manifest.js'
+import { icebergMetadata } from '../src/metadata.js'
 
 describe('Iceberg Manifests', () => {
   const tableUrl = 'https://s3.amazonaws.com/hyperparam-iceberg/spark/bunnies'

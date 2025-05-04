@@ -1,7 +1,7 @@
 import { asyncBufferFromUrl, cachedAsyncBuffer, parquetReadObjects } from 'hyparquet'
 import { compressors } from 'hyparquet-compressors'
-import { avroData } from './avro.data.js'
-import { avroMetadata } from './avro.metadata.js'
+import { avroRead } from './avro/avro.read.js'
+import { avroMetadata } from './avro/avro.metadata.js'
 
 /**
  * Translates an S3A URL to an HTTPS URL for direct access to the object.
@@ -92,5 +92,5 @@ export async function fetchAvroRecords(manifestUrl, requestInit) {
   const buffer = await fetch(safeUrl, requestInit).then(res => res.arrayBuffer())
   const reader = { view: new DataView(buffer), offset: 0 }
   const { metadata, syncMarker } = await avroMetadata(reader)
-  return await avroData({ reader, metadata, syncMarker })
+  return await avroRead({ reader, metadata, syncMarker })
 }

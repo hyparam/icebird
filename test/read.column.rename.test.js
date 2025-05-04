@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { icebergRead } from '../src/iceberg.js'
+import { icebergRead } from '../src/read.js'
 
 describe.concurrent('icebergRead from table with renamed column', () => {
   const tableUrl = 'https://s3.amazonaws.com/hyperparam-iceberg/spark/rename_column'

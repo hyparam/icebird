@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { icebergRead } from '../src/iceberg.js'
+import { icebergRead } from '../src/read.js'
 
 describe.concurrent('icebergRead from java iceberg table', () => {
   const tableUrl = 'https://s3.amazonaws.com/hyperparam-iceberg/java/bunnies'

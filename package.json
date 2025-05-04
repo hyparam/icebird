@@ -24,11 +24,11 @@
     "types"
   ],
   "type": "module",
-  "types": "types/iceberg.d.ts",
+  "types": "types/index.d.ts",
   "exports": {
     ".": {
-      "types": "./types/iceberg.d.ts",
-      "import": "./src/iceberg.js"
+      "types": "./types/index.d.ts",
+      "import": "./src/index.js"
     },
     "./src/*.js": {
       "types": "./types/*.d.ts",

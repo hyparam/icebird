@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { icebergLatestVersion, icebergListVersions, icebergMetadata } from '../src/iceberg.metadata.js'
+import { icebergLatestVersion, icebergListVersions, icebergMetadata } from '../src/metadata.js'
 
 describe.concurrent('Iceberg Metadata', () => {
   const tableUrl = 'https://s3.amazonaws.com/hyperparam-iceberg/spark/bunnies'
