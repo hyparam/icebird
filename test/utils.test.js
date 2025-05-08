@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { equalityMatch, sanitize } from '../src/utils.js'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { equalityMatch, sanitize, uuid4 } from '../src/utils.js'
 
 describe('sanitizes names', () => {
   it('keeps valid names unchanged', () => {
@@ -44,5 +44,26 @@ describe('equalityMatch', () => {
     const row = { id: 1, category: 'books', price: 9.99 }
     const deletePredicate = { id: 1, file_path: 'path/to/file', pos: 123 }
     expect(equalityMatch(row, deletePredicate)).toBe(true)
+  })
+})
+
+describe('uuid4', () => {
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it('delegates to crypto.randomUUID when it exists', () => {
+    vi.stubGlobal('crypto', { randomUUID: vi.fn().mockReturnValue('native-uuid') })
+
+    expect(uuid4()).toBe('native-uuid')
+    expect(globalThis.crypto.randomUUID).toHaveBeenCalledOnce()
+  })
+
+  it('falls back when crypto.randomUUID is missing', () => {
+    vi.stubGlobal('crypto', undefined)
+    expect(uuid4()).toMatch(uuidRegex)
   })
 })

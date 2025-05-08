@@ -12,7 +12,7 @@ export function avroWrite({ writer, schema, records, blockSize = 512 }) {
 
   const meta = {
     'avro.schema': typeof schema === 'string' ? schema : JSON.stringify(schema),
-    'avro.codec':  'null',
+    'avro.codec': 'null',
   }
   appendZigZag(writer, Object.keys(meta).length)
   for (const [key, value] of Object.entries(meta)) {
@@ -43,7 +43,7 @@ export function avroWrite({ writer, schema, records, blockSize = 512 }) {
     writer.appendBytes(sync)
   }
 
-  if (writer.finish) writer.finish()
+  writer.finish()
 }
 
 /**

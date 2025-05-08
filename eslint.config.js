@@ -39,6 +39,7 @@ export default [
       'jsdoc/require-returns': 'error',
       'jsdoc/require-returns-type': 'error',
       'jsdoc/sort-tags': 'error',
+      'key-spacing': 'error',
       'no-constant-condition': 'off',
       'no-extra-parens': ['error', 'all', {
         'allowParensAfterCommentPattern': '@type', // allow jsdoc
@@ -53,9 +54,15 @@ export default [
       'no-var': 'error',
       'object-curly-spacing': ['error', 'always'],
       'prefer-const': 'error',
-      'prefer-destructuring': ['warn', {
-        object: true,
-        array: false,
+      'prefer-destructuring': ['error', {
+        VariableDeclarator: {
+          object: true,
+          array: false,
+        },
+        AssignmentExpression: {
+          object: false,
+          array: false,
+        },
       }],
       'prefer-exponentiation-operator': 'error',
       'prefer-promise-reject-errors': 'error',

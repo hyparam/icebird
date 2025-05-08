@@ -3,25 +3,26 @@ export interface TableMetadata {
   'format-version': number
   'table-uuid': string
   location: string
-  'last-sequence-number': number
+  'last-sequence-number': number // missing in V1, required in V2+
   'last-updated-ms': number
   'last-column-id': number
-  'current-schema-id': number
-  schemas: Schema[]
-  'default-spec-id': number
-  'partition-specs': PartitionSpec[]
-  'last-partition-id': number
+  'current-schema-id': number // optional in V1, required in V2+
+  schemas: Schema[] // optional in V1, required in V2+
+  'default-spec-id': number // optional in V1, required in V2+
+  'partition-specs': PartitionSpec[] // optional in V1, required in V2+
+  'last-partition-id': number // optional in V1, required in V2+
   properties?: Record<string, string>
-  'current-snapshot-id': number
+  'current-snapshot-id'?: number
   snapshots?: Snapshot[]
   'snapshot-log'?: SnapshotLog[]
   'metadata-log'?: MetadataLog[]
-  'sort-orders': SortOrder[]
-  'default-sort-order-id': number
+  'sort-orders': SortOrder[] // optional in V1, required in V2+
+  'default-sort-order-id': number // optional in V1, required in V2+
   refs?: object
-  statistics: TableStatistics[]
+  statistics?: TableStatistics[]
   'partition-statistics'?: PartitionStatistics[]
-  'next-row-id'?: bigint
+  'next-row-id'?: bigint // required in V3
+  // 'encryption-keys'?: EncryptionKeys[]
 }
 
 export interface Schema {
@@ -93,6 +94,7 @@ export interface Snapshot {
   'manifest-list': string
   manifests?: Manifest[]
   summary: {
+    // spec: "value of these fields should be of string type"
     operation: string
     // 'spark.app.id'?: string
     'added-data-files': string
@@ -196,7 +198,7 @@ interface AvroField {
   type: AvroType
   doc?: string
   default?: any
-  // 'field-id'?: number
+  'field-id'?: number
 }
 
 export type AvroType = AvroPrimitiveType | AvroComplexType | AvroLogicalType

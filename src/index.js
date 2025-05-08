@@ -1,3 +1,4 @@
+export { icebergCreate } from './create.js'
 export { icebergRead } from './read.js'
 export { icebergLatestVersion, icebergListVersions, icebergMetadata } from './metadata.js'
 export { icebergManifests } from './manifest.js'
