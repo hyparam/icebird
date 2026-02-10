@@ -1,3 +1,7 @@
+import type { AsyncBuffer } from 'hyparquet'
+
+export type Resolver = (path: string, byteLength?: number) => AsyncBuffer | Promise<AsyncBuffer>
+export type Lister = (path: string) => Promise<string[]>
 
 export interface TableMetadata {
   'format-version': number

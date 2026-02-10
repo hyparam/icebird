@@ -4,6 +4,10 @@ import { avroRead } from './avro/avro.read.js'
 import { avroMetadata } from './avro/avro.metadata.js'
 
 /**
+ * @import {ManifestEntry, Lister, Resolver} from '../src/types.js'
+ */
+
+/**
  * Translates an S3A URL to an HTTPS URL for direct access to the object.
  *
  * @param {string} url
@@ -24,16 +28,75 @@ export function translateS3Url(url) {
 }
 
 /**
+ * Creates a resolver that fetches files via HTTP, translating S3 URLs.
+ *
+ * @param {object} [options]
+ * @param {RequestInit} [options.requestInit] - Optional fetch request initialization
+ * @returns {Resolver}
+ */
+export function urlResolver({ requestInit } = {}) {
+  return function resolve(url, byteLength) {
+    return asyncBufferFromUrl({ url: translateS3Url(url), byteLength, requestInit })
+  }
+}
+
+/**
+ * Creates a lister that lists files in an S3 directory via the S3 XML API.
+ * Accepts s3://, s3a://, and https://*.s3.amazonaws.com/ URLs.
+ *
+ * @param {object} [options]
+ * @param {RequestInit} [options.requestInit] - Optional fetch request initialization
+ * @returns {Lister}
+ */
+export function s3Lister({ requestInit } = {}) {
+  return async function list(url) {
+    const s3parts = s3ParseUrl(url)
+    if (!s3parts) throw new Error(`not an S3 URL: ${url}`)
+    const { bucket, prefix } = s3parts
+    const listUrl = `https://${bucket}.s3.amazonaws.com/?list-type=2&prefix=${prefix.replace(/\/$/, '')}/&delimiter=/`
+    const res = await fetch(listUrl, requestInit)
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+    const text = await res.text()
+    const regex = /<Contents>(.*?)<\/Contents>/gs
+    const matches = text.match(regex) || []
+    return matches.map(match => {
+      const keyMatch = match.match(/<Key>(.*?)<\/Key>/)
+      if (!keyMatch) throw new Error('failed to parse S3 list response')
+      // Return just the filename (last path segment)
+      return keyMatch[1].split('/').pop() ?? ''
+    }).filter(Boolean)
+  }
+}
+
+/**
+ * Checks if a URL is an S3 URL and extracts bucket and prefix.
+ *
+ * @param {string} url
+ * @returns {{ bucket: string, prefix: string } | undefined}
+ */
+export function s3ParseUrl(url) {
+  if (url.startsWith('s3://') || url.startsWith('s3a://')) {
+    const parts = url.split('/')
+    return { bucket: parts[2], prefix: parts.slice(3).join('/') }
+  } else if (url.startsWith('https://s3.amazonaws.com/')) {
+    const parts = url.split('/')
+    return { bucket: parts[3], prefix: parts.slice(4).join('/') }
+  } else if (url.match(/^https:\/\/\w+\.s3\.amazonaws\.com\//)) {
+    const parts = url.split('/')
+    return { bucket: parts[2].split('.')[0], prefix: parts.slice(3).join('/') }
+  }
+}
+
+/**
  * Reads delete files from delete manifests.
  * Position deletes are grouped by target data file.
  * Equality deletes are grouped by sequence number.
  *
- * @import {ManifestEntry} from '../src/types.js'
  * @param {ManifestEntry[]} deleteEntries
- * @param {RequestInit} [requestInit]
+ * @param {Resolver} resolver
  * @returns {Promise<{positionDeletesMap: Map<string, Set<bigint>>, equalityDeletesMap: Map<bigint, Record<string, any>[]>}>}
  */
-export async function fetchDeleteMaps(deleteEntries, requestInit) {
+export async function fetchDeleteMaps(deleteEntries, resolver) {
   // Build maps of delete entries keyed by target data file path
   /** @type {Map<string, Set<bigint>>} */
   const positionDeletesMap = new Map()
@@ -43,11 +106,8 @@ export async function fetchDeleteMaps(deleteEntries, requestInit) {
   // Fetch delete files in parallel
   await Promise.all(deleteEntries.map(async deleteEntry => {
     const { content, file_path, file_size_in_bytes } = deleteEntry.data_file
-    const file = await asyncBufferFromUrl({
-      url: translateS3Url(file_path),
-      byteLength: Number(file_size_in_bytes),
-      requestInit,
-    }).then(cachedAsyncBuffer)
+    const asyncBuffer = await resolver(file_path, Number(file_size_in_bytes))
+    const file = cachedAsyncBuffer(asyncBuffer)
     const deleteRows = await parquetReadObjects({ file, compressors })
     for (const deleteRow of deleteRows) {
       if (content === 1) { // position delete
@@ -81,15 +141,28 @@ export async function fetchDeleteMaps(deleteEntries, requestInit) {
 }
 
 /**
+ * Read the full contents of a resolved file as a string.
+ *
+ * @param {Resolver} resolver
+ * @param {string} path
+ * @returns {Promise<string>}
+ */
+export async function resolveText(resolver, path) {
+  const ab = await resolver(path)
+  const buf = await ab.slice(0, ab.byteLength)
+  return new TextDecoder().decode(buf)
+}
+
+/**
  * Decodes Avro records from a url.
  *
- * @param {string} manifestUrl - The URL of the manifest file
- * @param {RequestInit} [requestInit] - Optional fetch request initialization
+ * @param {string} url - The URL or path of the manifest file
+ * @param {Resolver} resolver - Resolves a path to an AsyncBuffer
  * @returns {Promise<Record<string, any>[]>} The decoded Avro records
  */
-export async function fetchAvroRecords(manifestUrl, requestInit) {
-  const safeUrl = translateS3Url(manifestUrl)
-  const buffer = await fetch(safeUrl, requestInit).then(res => res.arrayBuffer())
+export async function fetchAvroRecords(url, resolver) {
+  const ab = await resolver(url)
+  const buffer = await ab.slice(0, ab.byteLength)
   const reader = { view: new DataView(buffer), offset: 0 }
   const { metadata, syncMarker } = await avroMetadata(reader)
   return await avroRead({ reader, metadata, syncMarker })

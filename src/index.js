@@ -1,4 +1,5 @@
 export { icebergCreate } from './create.js'
+export { s3Lister, urlResolver } from './fetch.js'
 export { icebergRead } from './read.js'
 export { icebergLatestVersion, icebergListVersions, icebergMetadata } from './metadata.js'
 export { icebergManifests } from './manifest.js'

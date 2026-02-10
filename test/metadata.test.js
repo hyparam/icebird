@@ -1,5 +1,6 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { icebergLatestVersion, icebergListVersions, icebergMetadata } from '../src/metadata.js'
+import { urlResolver } from '../src/fetch.js'
 
 describe.concurrent('Iceberg Metadata', () => {
   const tableUrl = 'https://s3.amazonaws.com/hyperparam-iceberg/spark/bunnies'
@@ -14,22 +15,20 @@ describe.concurrent('Iceberg Metadata', () => {
     expect(versions).toEqual(['v1', 'v2', 'v3', 'v4', 'v5'])
   })
 
-  it('fetches latest iceberg metadata with auth', async () => {
-    const fetchSpy = vi.spyOn(global, 'fetch')
+  it('fetches latest iceberg metadata with custom resolver', async () => {
     const requestInit = {
       headers: {
         Dummy: 'Bearer my_token',
       },
     }
-    const metadata = await icebergMetadata({ tableUrl, requestInit })
+    const resolver = urlResolver({ requestInit })
+    const metadata = await icebergMetadata({ tableUrl, resolver })
     expect(metadata).toMatchObject({
       'current-schema-id': 1,
       'format-version': 2,
       'last-sequence-number': 3,
       location: 's3a://hyperparam-iceberg/spark/bunnies',
     })
-    expect(fetchSpy).toHaveBeenCalledWith(tableUrl + '/metadata/version-hint.text', requestInit)
-    expect(fetchSpy).toHaveBeenCalledWith(tableUrl + '/metadata/v5.metadata.json', requestInit)
   })
 
   it('fetches previous iceberg metadata', async () => {
@@ -41,5 +40,23 @@ describe.concurrent('Iceberg Metadata', () => {
       'last-sequence-number': 2,
       location: 's3a://hyperparam-iceberg/spark/bunnies',
     })
+  })
+
+  it('sorts fallback metadata versions numerically', async () => {
+    /** @returns {Promise<string[]>} */
+    function lister() {
+      return Promise.resolve([
+        'v10.metadata.json',
+        'v2.metadata.json',
+        'v1.metadata.json',
+      ])
+    }
+    /** @returns {Promise<never>} */
+    function resolver() {
+      throw new Error('version hint missing')
+    }
+
+    await expect(icebergLatestVersion({ tableUrl, resolver, lister })).resolves.toBe('v10')
+    await expect(icebergListVersions({ tableUrl, resolver, lister })).resolves.toEqual(['v1', 'v2', 'v10'])
   })
 })

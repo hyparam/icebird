@@ -1,15 +1,16 @@
-import { fetchAvroRecords } from './fetch.js'
+import { fetchAvroRecords, urlResolver } from './fetch.js'
 
 /**
  * Returns manifest entries for the current snapshot.
  *
- * @import {TableMetadata, Manifest, ManifestEntry} from '../src/types.js'
+ * @import {Resolver, TableMetadata, Manifest, ManifestEntry} from '../src/types.js'
  * @typedef {{ url: string, entries: ManifestEntry[] }[]} ManifestList
  * @param {TableMetadata} metadata
- * @param {RequestInit} [requestInit]
+ * @param {Resolver} [resolver]
  * @returns {Promise<ManifestList>}
  */
-export async function icebergManifests(metadata, requestInit) {
+export async function icebergManifests(metadata, resolver) {
+  resolver ??= urlResolver()
   const currentSnapshotId = metadata['current-snapshot-id']
   if (!currentSnapshotId || currentSnapshotId < 0) {
     throw new Error('No current snapshot id found in table metadata')
@@ -24,7 +25,7 @@ export async function icebergManifests(metadata, requestInit) {
   if (snapshot['manifest-list']) {
     // Fetch manifest list and extract manifest URLs
     const manifestListUrl = snapshot['manifest-list']
-    manifests = /** @type {Manifest[]} */ (await fetchAvroRecords(manifestListUrl, requestInit))
+    manifests = /** @type {Manifest[]} */ (await fetchAvroRecords(manifestListUrl, resolver))
   } else if (snapshot.manifests) {
     // Use manifest URLs directly from snapshot
     manifests = snapshot.manifests
@@ -32,21 +33,21 @@ export async function icebergManifests(metadata, requestInit) {
     throw new Error('No manifest information found in snapshot')
   }
 
-  return await fetchManifests(manifests)
+  return await fetchManifests(manifests, resolver)
 }
 
 /**
  * Fetch manifest entries from a list of manifests in parallel.
  *
  * @param {Manifest[]} manifests
- * @param {RequestInit} [requestInit]
+ * @param {Resolver} resolver
  * @returns {Promise<ManifestList>}
  */
-async function fetchManifests(manifests, requestInit) {
+async function fetchManifests(manifests, resolver) {
   // Fetch manifest entries in parallel
   return await Promise.all(manifests.map(async manifest => {
     const url = manifest.manifest_path
-    const entries = /** @type {ManifestEntry[]} */ (await fetchAvroRecords(url, requestInit))
+    const entries = /** @type {ManifestEntry[]} */ (await fetchAvroRecords(url, resolver))
 
     // Inherit sequence number from manifest if not present in entry
     for (const entry of entries) {

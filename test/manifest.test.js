@@ -1,14 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import { icebergManifests } from '../src/manifest.js'
 import { icebergMetadata } from '../src/metadata.js'
+import { urlResolver } from '../src/fetch.js'
 
 describe('Iceberg Manifests', () => {
   const tableUrl = 'https://s3.amazonaws.com/hyperparam-iceberg/spark/bunnies'
+  const resolver = urlResolver()
 
   it('fetches iceberg manifests', async () => {
     const metadataFileName = 'v5.metadata.json'
     const metadata = await icebergMetadata({ tableUrl, metadataFileName })
-    const manifests = await icebergManifests(metadata)
+    const manifests = await icebergManifests(metadata, resolver)
 
     expect(manifests.length).toBe(3)
     const { url, entries } = manifests[2]
@@ -29,5 +31,13 @@ describe('Iceberg Manifests', () => {
         split_offsets: [4n],
       },
     })
+  })
+
+  it('defaults resolver for direct manifest reads', async () => {
+    const metadataFileName = 'v5.metadata.json'
+    const metadata = await icebergMetadata({ tableUrl, metadataFileName })
+    const manifests = await icebergManifests(metadata)
+
+    expect(manifests.length).toBe(3)
   })
 })

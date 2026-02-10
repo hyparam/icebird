@@ -61,18 +61,31 @@ const data = await icebergRead({
 
 ## Authentication
 
-You can add authentication to all http requests by passing a `requestInit` argument that will be passed to `fetch`:
+To add authentication or other custom `fetch` options, create a resolver and lister with `requestInit` and pass those into the public APIs:
 
 ```javascript
-import { icebergRead } from 'icebird'
+import { icebergMetadata, icebergRead, s3Lister, urlResolver } from 'icebird'
+
+const requestInit = {
+  headers: {
+    Authorization: 'Bearer my_token',
+  },
+}
+
+const resolver = urlResolver({ requestInit })
+const lister = s3Lister({ requestInit })
+
+const metadata = await icebergMetadata({
+  tableUrl,
+  resolver,
+  lister,
+})
 
 const data = await icebergRead({
   tableUrl,
-  requestInit: {
-    headers: {
-      Authorization: 'Bearer my_token',
-    },
-  }
+  metadata,
+  resolver,
+  lister,
 })
 ```
 
