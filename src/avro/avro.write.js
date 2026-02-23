@@ -39,7 +39,7 @@ export function avroWrite({ writer, schema, records, blockSize = 512 }) {
       }
     }
     appendZigZag(writer, blockWriter.offset) // block size
-    writer.appendBuffer(blockWriter.getBuffer())
+    writer.appendBytes(blockWriter.getBytes())
     writer.appendBytes(sync)
   }
 

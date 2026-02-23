@@ -30,7 +30,7 @@ describe('Avro round-trip', () => {
     const writer = new ByteWriter()
     avroWrite({ writer, schema, records })
 
-    const reader = { view: new DataView(writer.getBuffer()), offset: 0 }
+    const reader = { view: writer.view, offset: 0 }
     const { metadata, syncMarker } = avroMetadata(reader)
     const rows = avroRead({ reader, metadata, syncMarker })
 
@@ -55,7 +55,7 @@ describe('Avro round-trip', () => {
     const writer = new ByteWriter()
     avroWrite({ writer, schema, records: recs })
 
-    const reader = { view: new DataView(writer.getBuffer()), offset: 0 }
+    const reader = { view: writer.view, offset: 0 }
     const { metadata, syncMarker } = avroMetadata(reader)
     const got = avroRead({ reader, metadata, syncMarker })
 
@@ -81,7 +81,7 @@ describe('Avro round-trip', () => {
     const writer = new ByteWriter()
     avroWrite({ writer, schema, records: original })
 
-    const reader = { view: new DataView(writer.getBuffer()), offset: 0 }
+    const reader = { view: writer.view, offset: 0 }
     const { metadata, syncMarker } = avroMetadata(reader)
     const round = avroRead({ reader, metadata, syncMarker })
 
@@ -111,7 +111,7 @@ describe('Avro round-trip', () => {
     const writer = new ByteWriter()
     avroWrite({ writer, schema, records: recs })
 
-    const reader = { view: new DataView(writer.getBuffer()), offset: 0 }
+    const reader = { view: writer.view, offset: 0 }
     const { metadata, syncMarker } = avroMetadata(reader)
     const got = avroRead({ reader, metadata, syncMarker })
 

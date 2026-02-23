@@ -112,5 +112,7 @@ Icebird aims to support reading any Iceberg table, but currently only supports a
  - https://iceberg.apache.org/spec/
  - https://avro.apache.org/docs/1.12.0/specification/
  - https://github.com/hyparam/hyparquet
+ - https://github.com/hyparam/hyparquet-writer
  - https://github.com/apache/iceberg
  - https://github.com/apache/iceberg-python
+ - https://github.com/apache/iceberg-rust
