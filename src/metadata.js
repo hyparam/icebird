@@ -1,42 +1,64 @@
-import { translateS3Url } from './fetch.js'
+import { resolveText, s3Lister, urlResolver } from './fetch.js'
+
+/**
+ * @import {Resolver, Lister} from '../src/types.js'
+ */
+
+/**
+ * Compare two metadata version strings numerically.
+ *
+ * @param {string} a
+ * @param {string} b
+ * @returns {number}
+ */
+function compareMetadataVersions(a, b) {
+  return metadataVersionNumber(a) - metadataVersionNumber(b)
+}
+
+/**
+ * Extract the numeric version from a version string like "v5".
+ *
+ * @param {string} version
+ * @returns {number}
+ */
+function metadataVersionNumber(version) {
+  const match = version.match(/^v(\d+)$/)
+  if (!match) return Number.NEGATIVE_INFINITY
+  return Number(match[1])
+}
 
 /**
  * Fetches the iceberg metadata version using the version hint file.
- * If the version hint file is not found, tries to list S3 to find the latest metadata file.
+ * If the version hint file is not found, tries to list metadata dir to find the latest metadata file.
  *
  * @param {object} options
  * @param {string} options.tableUrl - Base URL of the table (e.g. "s3://my-bucket/path/to/table")
- * @param {RequestInit} [options.requestInit] - Optional fetch request initialization
+ * @param {Resolver} [options.resolver] - Resolves a path to an AsyncBuffer
+ * @param {Lister} [options.lister] - Lists files in a directory
  * @returns {Promise<string>} The snapshot version
  */
-export function icebergLatestVersion({ tableUrl, requestInit }) {
+export function icebergLatestVersion({ tableUrl, resolver, lister }) {
+  resolver ??= urlResolver()
+  lister ??= s3Lister()
   const url = `${tableUrl}/metadata/version-hint.text`
-  const safeUrl = translateS3Url(url)
-  // fetch version-hint.text
-  return fetch(safeUrl, requestInit)
-    .then(async res => {
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
-      const text = await res.text()
+  return resolveText(resolver, url)
+    .then(text => {
       const version = parseInt(text)
       if (isNaN(version)) throw new Error(`invalid version: ${text}`)
       return `v${version}`
     })
-    .catch(err => {
-      // version hint not found, try listing S3 bucket
-      const s3parts = s3ParseUrl(tableUrl)
-      if (s3parts) {
-        const { bucket, prefix } = s3parts
-        return s3ListVersions(bucket, prefix + '/metadata/')
-          .then(files => {
-            if (files.length === 0) throw new Error('no metadata files found')
-            return files[files.length - 1]
-          })
-          .catch(err => {
-            throw new Error(`failed to list S3 objects: ${err.message}`)
-          })
-      } else {
-        throw err
-      }
+    .catch(() => {
+      // version hint not found, try listing metadata dir
+      const metadataDir = `${tableUrl}/metadata`
+      return lister(metadataDir)
+        .then(files => {
+          const versions = files
+            .filter(f => f.endsWith('.metadata.json'))
+            .map(f => f.replace(/\.metadata\.json$/, ''))
+            .sort(compareMetadataVersions)
+          if (versions.length === 0) throw new Error('no metadata files found')
+          return versions[versions.length - 1]
+        })
     })
     .catch(err => {
       throw new Error(`failed to determine latest iceberg version: ${err.message}`)
@@ -48,30 +70,29 @@ export function icebergLatestVersion({ tableUrl, requestInit }) {
  *
  * @param {object} options
  * @param {string} options.tableUrl - Base URL of the table (e.g. "s3://my-bucket/path/to/table")
- * @param {RequestInit} [options.requestInit] - Optional fetch request initialization
+ * @param {Resolver} [options.resolver] - Resolves a path to an AsyncBuffer
+ * @param {Lister} [options.lister] - Lists files in a directory
  * @returns {Promise<string[]>} A list of iceberg table versions
  */
-export function icebergListVersions({ tableUrl, requestInit }) {
+export function icebergListVersions({ tableUrl, resolver, lister }) {
+  resolver ??= urlResolver()
+  lister ??= s3Lister()
   const url = `${tableUrl}/metadata/version-hint.text`
-  const safeUrl = translateS3Url(url)
-  // fetch version-hint.text
-  return fetch(safeUrl, requestInit)
-    .then(async res => {
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
-      const text = await res.text()
+  return resolveText(resolver, url)
+    .then(text => {
       const version = parseInt(text)
       if (isNaN(version)) throw new Error(`invalid version: ${text}`)
       return Array.from({ length: version }, (_, i) => `v${i + 1}`)
     })
-    .catch(err => {
-      // version hint not found, try listing S3 bucket
-      const s3parts = s3ParseUrl(tableUrl)
-      if (s3parts) {
-        const { bucket, prefix } = s3parts
-        return s3ListVersions(bucket, prefix + '/metadata/')
-      } else {
-        throw err
-      }
+    .catch(() => {
+      // version hint not found, try listing metadata dir
+      const metadataDir = `${tableUrl}/metadata`
+      return lister(metadataDir)
+        .then(files => files
+          .filter(f => f.endsWith('.metadata.json'))
+          .map(f => f.replace(/\.metadata\.json$/, ''))
+          .sort(compareMetadataVersions)
+        )
     })
     .catch(err => {
       throw new Error(`failed to determine latest iceberg version: ${err.message}`)
@@ -86,95 +107,50 @@ export function icebergListVersions({ tableUrl, requestInit }) {
  * @param {object} options
  * @param {string} options.tableUrl - Base URL of the table (e.g. "s3://my-bucket/path/to/table")
  * @param {string} [options.metadataFileName] - Name of the metadata JSON file
- * @param {RequestInit} [options.requestInit] - Optional fetch request initialization
+ * @param {Resolver} [options.resolver] - Resolves a path to an AsyncBuffer
+ * @param {Lister} [options.lister] - Lists files in a directory
  * @returns {Promise<TableMetadata>} The table metadata as a JSON object
  */
-export async function icebergMetadata({ tableUrl, metadataFileName, requestInit }) {
+export async function icebergMetadata({ tableUrl, metadataFileName, resolver, lister }) {
+  resolver ??= urlResolver()
+  lister ??= s3Lister()
   if (!metadataFileName) {
-    const version = await icebergLatestVersion({ tableUrl, requestInit })
+    const version = await icebergLatestVersion({ tableUrl, resolver, lister })
     metadataFileName = `${version}.metadata.json`
   }
   const url = `${tableUrl}/metadata/${metadataFileName}`
-  const safeUrl = translateS3Url(url)
-  return fetch(safeUrl, requestInit)
-    .then(res => {
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
-      return res.json()
-    })
-    .catch(err => {
+  return resolveText(resolver, url)
+    .then(text => JSON.parse(text))
+    .catch(async err => {
+      // v{N}.metadata.json failed, try listing to find the real filename
+      try {
+        const metadataDir = `${tableUrl}/metadata`
+        const files = await lister(metadataDir)
+        const match = findMetadataFile(files, metadataFileName)
+        if (match) {
+          const text = await resolveText(resolver, `${metadataDir}/${match}`)
+          return JSON.parse(text)
+        }
+      } catch { /* lister failed, fall through */ }
       throw new Error(`failed to get iceberg metadata: ${err.message}`)
     })
 }
 
 /**
- * Lists objects in an S3 bucket with a specific prefix.
+ * Find a metadata file matching a version from a list of filenames.
+ * Handles both vN.metadata.json and NNNNN-uuid.metadata.json naming conventions.
  *
- * @param {string} bucket
- * @param {string} prefix
- * @returns {Promise<{ key: string, lastModified: string }[]>}
+ * @param {string[]} files
+ * @param {string} metadataFileName - e.g. "v1.metadata.json"
+ * @returns {string | undefined}
  */
-function s3list(bucket, prefix) {
-  const url = `https://${bucket}.s3.amazonaws.com/?list-type=2&prefix=${prefix}&delimiter=/`
-  return fetch(url)
-    .then(res => {
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
-      return res.text()
-    })
-    .then(text => {
-      // Janky parse XML response with regex:
-      const regex = /<Contents>(.*?)<\/Contents>/gs
-      const matches = text.match(regex) || []
-      const results = []
-      for (const match of matches) {
-        const keyMatch = match.match(/<Key>(.*?)<\/Key>/)
-        const lastModifiedMatch = match.match(/<LastModified>(.*?)<\/LastModified>/)
-        if (!keyMatch || !lastModifiedMatch) throw new Error('failed to parse S3 list response')
-        const key = keyMatch[1]
-        const lastModified = lastModifiedMatch[1]
-        results.push({ key, lastModified })
-      }
-      return results
-    })
-    .catch(err => {
-      throw new Error(`failed to list S3 objects: ${err.message}`)
-    })
-}
-
-/**
- * @param {string} bucket
- * @param {string} prefix
- * @returns {Promise<string[]>}
- */
-function s3ListVersions(bucket, prefix) {
-  return s3list(bucket, prefix)
-    .then(files => {
-      // sort most recent files first
-      const sorted = files
-        .filter(f => f.key.endsWith('.metadata.json'))
-        .sort((a, b) => a.lastModified.localeCompare(b.lastModified))
-      return sorted.map(file => file.key.split('/').slice(-1)[0]
-        .replace(/\.metadata\.json$/, ''))
-    })
-    .catch(err => {
-      throw new Error(`failed to list S3 objects: ${err.message}`)
-    })
-}
-
-/**
- * Checks if a URL is an S3 URL.
- *
- * @param {string} url
- * @returns {{ bucket: string, prefix: string } | undefined}
- */
-function s3ParseUrl(url) {
-  if (url.startsWith('s3://') || url.startsWith('s3a://')) {
-    const parts = url.split('/')
-    return { bucket: parts[2], prefix: parts.slice(3).join('/') }
-  } else if (url.startsWith('https://s3.amazonaws.com/')) {
-    const parts = url.split('/')
-    return { bucket: parts[3], prefix: parts.slice(4).join('/') }
-  } else if (url.match(/https:\/\/\w+\.s3\.amazonaws\.com\//)) {
-    const parts = url.split('/')
-    return { bucket: parts[2], prefix: parts.slice(3).join('/') }
-  }
+function findMetadataFile(files, metadataFileName) {
+  // Direct match
+  if (files.includes(metadataFileName)) return metadataFileName
+  // Extract version number from vN.metadata.json
+  const match = metadataFileName.match(/^v(\d+)\.metadata\.json$/)
+  if (!match) return undefined
+  const versionNum = match[1].padStart(5, '0')
+  // Look for NNNNN-*.metadata.json
+  return files.find(f => f.startsWith(versionNum) && f.endsWith('.metadata.json'))
 }

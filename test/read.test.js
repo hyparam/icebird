@@ -10,17 +10,17 @@ describe.concurrent('icebergRead', () => {
   it('throws for fetch errors', async () => {
     // not found
     await expect(() => icebergRead({ tableUrl: 'https://hyperparam.app' }))
-      .rejects.toThrow('failed to determine latest iceberg version: 404 Not Found')
+      .rejects.toThrow('failed to determine latest iceberg version')
 
     // invalid dns
     await expect(() => icebergRead({ tableUrl: 'https://nope.hyperparam.app' }))
-      .rejects.toThrow('failed to determine latest iceberg version: fetch failed')
+      .rejects.toThrow('failed to determine latest iceberg version')
 
     // with metadataFileName
     await expect(() => icebergRead({
       tableUrl: 'https://hyperparam.app',
       metadataFileName: 'invalid.metadata.json',
-    })).rejects.toThrow('failed to get iceberg metadata: 404 Not Found')
+    })).rejects.toThrow('failed to get iceberg metadata')
   })
 
   it('throws for invalid row range', async () => {

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { icebergRead } from '../src/read.js'
 
 describe.concurrent('icebergRead from java iceberg table', () => {
@@ -92,14 +92,10 @@ describe.concurrent('icebergRead from java iceberg table', () => {
   })
 
   it('reads data v5 with equality updated row', async () => {
-    const fetchSpy = vi.spyOn(global, 'fetch')
-
     const data = await icebergRead({
       tableUrl,
       metadataFileName: 'v5.metadata.json',
     })
-
-    expect(fetchSpy).toHaveBeenCalledTimes(21)
 
     expect(data.length).toBe(15)
     const newZealands = data.filter(row => row['Breed Name'] === 'New Zealand')
