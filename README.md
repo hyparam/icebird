@@ -139,32 +139,35 @@ const { metadata } = await restCatalogLoadTable(ctx, {
 
 Icebird aims to support reading any Iceberg table, but currently only supports a subset of the features. The following features are supported:
 
-| Feature | Supported |
-| ------- | --------- |
-| Read Iceberg v1 Tables | ✅ |
-| Read Iceberg v2 Tables | ✅ |
-| Read Iceberg v3 Tables | ❌ |
-| Parquet Storage | ✅ |
-| Avro Storage | ✅ |
-| ORC Storage | ❌ |
-| Puffin Storage | ❌ |
-| File-based Catalog (version-hint.text) | ✅ |
-| REST Catalog | ✅ |
-| Hive Catalog | ❌ |
-| Glue Catalog | ❌ |
-| Service-based Catalog | ❌ |
-| Position Deletes | ✅ |
-| Equality Deletes | ✅ |
-| Binary Deletion Vectors | ❌ |
-| Rename Columns | ✅ |
-| Efficient Partitioned Read Queries | ❌ |
-| All Parquet Compression Codecs | ✅ |
-| All Parquet Types | ✅ |
-| Variant Types | ❌ |
-| Geometry Types | ❌ |
-| Geography Types | ❌ |
-| Sorting | ❌ |
-| Encryption | ❌ |
+| Feature | Supported | Notes |
+| ------- | --------- | ----- |
+| Read Iceberg v1 Tables | ✅ | |
+| Read Iceberg v2 Tables | ✅ | |
+| Read Iceberg v3 Tables | ❌ | Needs deletion vectors / Puffin support and stricter delete planning. |
+| Parquet Storage | ✅ | |
+| Avro Storage | ✅ | |
+| ORC Storage | ❌ | |
+| Puffin Storage | ❌ | Needed for v3 deletion vectors. |
+| File-based Catalog (version-hint.text) | ✅ | |
+| REST Catalog | ✅ | |
+| Hive Catalog | ❌ | |
+| Glue Catalog | ❌ | |
+| Service-based Catalog | ❌ | |
+| Position Deletes | ✅ | Parquet position delete files only; v3 deletion vectors are not supported. |
+| Equality Deletes | ⚠️ | Needs `equality_ids`, null-match semantics, and partition scope handling. |
+| Binary Deletion Vectors | ❌ | Required before broad v3 table support. |
+| Delete Partition Scope | ❌ | Needed for correct delete application on partitioned tables. |
+| Rename Columns | ✅ | |
+| Efficient Partitioned Read Queries | ❌ | |
+| Gzip Metadata JSON | ✅ | Supports `.gz.metadata.json` and `metadata.json.gz`. |
+| All Parquet Compression Codecs | ✅ | |
+| All Parquet Types | ✅ | |
+| Variant Types | ✅ | |
+| Geometry Types | ✅ | |
+| Geography Types | ✅ | |
+| Row Lineage | ✅ | v3 `_row_id` and `_last_updated_sequence_number` inheritance. |
+| Sorting | ❌ | |
+| Encryption | ❌ | |
 
 ## References
 

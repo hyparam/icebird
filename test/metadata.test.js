@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { gzipSync } from 'node:zlib'
 import { icebergLatestVersion, icebergListVersions, icebergMetadata } from '../src/metadata.js'
 import { urlResolver } from '../src/fetch.js'
 
@@ -64,5 +65,57 @@ describe.concurrent('Iceberg Metadata', () => {
 
     await expect(icebergLatestVersion({ tableUrl, resolver, lister })).resolves.toBe('v10')
     await expect(icebergListVersions({ tableUrl, resolver, lister })).resolves.toEqual(['v1', 'v2', 'v10'])
+  })
+
+  it('sorts compressed fallback metadata versions numerically', async () => {
+    /** @returns {Promise<string[]>} */
+    function lister() {
+      return Promise.resolve([
+        'v10.gz.metadata.json',
+        '00003-abc.metadata.json.gz',
+        'v2.metadata.json.gz',
+      ])
+    }
+    /** @type {Resolver} */
+    const resolver = {
+      reader() {
+        throw new Error('version hint missing')
+      },
+    }
+
+    await expect(icebergLatestVersion({ tableUrl, resolver, lister })).resolves.toBe('v10')
+    await expect(icebergListVersions({ tableUrl, resolver, lister }))
+      .resolves.toEqual(['v2', '00003-abc', 'v10'])
+  })
+
+  it('reads gzip-compressed metadata discovered by listing', async () => {
+    const localTableUrl = 'http://test/gzip-table'
+    const metadata = {
+      'format-version': 2,
+      'current-schema-id': 0,
+      location: localTableUrl,
+    }
+    const metadataBytes = gzipSync(JSON.stringify(metadata))
+    const files = new Map([
+      [`${localTableUrl}/metadata/version-hint.text`, new TextEncoder().encode('2').buffer],
+      [
+        `${localTableUrl}/metadata/v2.metadata.json.gz`,
+        metadataBytes.buffer.slice(metadataBytes.byteOffset, metadataBytes.byteOffset + metadataBytes.byteLength),
+      ],
+    ])
+    /** @type {Resolver} */
+    const resolver = {
+      reader(path) {
+        const buf = files.get(path)
+        if (!buf) throw new Error(`not found: ${path}`)
+        return buf
+      },
+    }
+    /** @returns {Promise<string[]>} */
+    function lister() {
+      return Promise.resolve(['v2.metadata.json.gz'])
+    }
+
+    await expect(icebergMetadata({ tableUrl: localTableUrl, resolver, lister })).resolves.toEqual(metadata)
   })
 })

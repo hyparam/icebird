@@ -5,26 +5,53 @@ import { resolveText, s3Lister, urlResolver } from './fetch.js'
  */
 
 /**
- * Compare two metadata version strings numerically.
+ * Extract the numeric version from an Iceberg metadata filename.
  *
- * @param {string} a
- * @param {string} b
- * @returns {number}
+ * @param {string} file
+ * @returns {number|undefined}
  */
-function compareMetadataVersions(a, b) {
-  return metadataVersionNumber(a) - metadataVersionNumber(b)
+function metadataFileVersionNumber(file) {
+  const match = file.match(/^(?:v(\d+)|(\d+)-.+)(?:\.metadata\.json|\.gz\.metadata\.json|\.metadata\.json\.gz)$/)
+  if (!match) return undefined
+  return Number(match[1] ?? match[2])
 }
 
 /**
- * Extract the numeric version from a version string like "v5".
+ * Strip an Iceberg metadata suffix, preserving the version naming style.
  *
- * @param {string} version
- * @returns {number}
+ * @param {string} file
+ * @returns {string|undefined}
  */
-function metadataVersionNumber(version) {
-  const match = version.match(/^v(\d+)$/)
-  if (!match) return Number.NEGATIVE_INFINITY
-  return Number(match[1])
+function metadataFileVersionName(file) {
+  if (metadataFileVersionNumber(file) === undefined) return undefined
+  return file.replace(/(?:\.metadata\.json\.gz|\.gz\.metadata\.json|\.metadata\.json)$/, '')
+}
+
+/**
+ * Return normalized version names from metadata filenames.
+ *
+ * @param {string[]} files
+ * @returns {string[]}
+ */
+function metadataVersions(files) {
+  /** @type {Map<number, string>} */
+  const versions = new Map()
+  for (const file of files) {
+    const version = metadataFileVersionNumber(file)
+    const name = metadataFileVersionName(file)
+    if (version === undefined || name === undefined) continue
+    const current = versions.get(version)
+    const paddedVersion = String(version).padStart(5, '0')
+    if (
+      current === undefined ||
+      metadataFilePreference(file, paddedVersion) < metadataFilePreference(`${current}.metadata.json`, paddedVersion)
+    ) {
+      versions.set(version, name)
+    }
+  }
+  return [...versions.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([, name]) => name)
 }
 
 /**
@@ -52,10 +79,7 @@ export function icebergLatestVersion({ tableUrl, resolver, lister }) {
       const metadataDir = `${tableUrl}/metadata`
       return lister(metadataDir)
         .then(files => {
-          const versions = files
-            .filter(f => f.endsWith('.metadata.json'))
-            .map(f => f.replace(/\.metadata\.json$/, ''))
-            .sort(compareMetadataVersions)
+          const versions = metadataVersions(files)
           if (versions.length === 0) throw new Error('no metadata files found')
           return versions[versions.length - 1]
         })
@@ -87,12 +111,7 @@ export function icebergListVersions({ tableUrl, resolver, lister }) {
     .catch(() => {
       // version hint not found, try listing metadata dir
       const metadataDir = `${tableUrl}/metadata`
-      return lister(metadataDir)
-        .then(files => files
-          .filter(f => f.endsWith('.metadata.json'))
-          .map(f => f.replace(/\.metadata\.json$/, ''))
-          .sort(compareMetadataVersions)
-        )
+      return lister(metadataDir).then(metadataVersions)
     })
     .catch(err => {
       throw new Error(`failed to determine latest iceberg version: ${err.message}`)
@@ -148,9 +167,26 @@ function findMetadataFile(files, metadataFileName) {
   // Direct match
   if (files.includes(metadataFileName)) return metadataFileName
   // Extract version number from vN.metadata.json
-  const match = metadataFileName.match(/^v(\d+)\.metadata\.json$/)
-  if (!match) return undefined
-  const versionNum = match[1].padStart(5, '0')
-  // Look for NNNNN-*.metadata.json
-  return files.find(f => f.startsWith(versionNum) && f.endsWith('.metadata.json'))
+  const version = metadataFileVersionNumber(metadataFileName)
+  if (version === undefined) return undefined
+  const versionNum = String(version).padStart(5, '0')
+  const matches = files
+    .filter(f => metadataFileVersionNumber(f) === version)
+    .sort((a, b) => metadataFilePreference(a, versionNum) - metadataFilePreference(b, versionNum))
+  return matches[0]
+}
+
+/**
+ * @param {string} file
+ * @param {string} paddedVersion
+ * @returns {number}
+ */
+function metadataFilePreference(file, paddedVersion) {
+  if (file === `v${Number(paddedVersion)}.metadata.json`) return 0
+  if (file === `v${Number(paddedVersion)}.gz.metadata.json`) return 1
+  if (file === `v${Number(paddedVersion)}.metadata.json.gz`) return 2
+  if (file.startsWith(`${paddedVersion}-`) && file.endsWith('.metadata.json')) return 3
+  if (file.startsWith(`${paddedVersion}-`) && file.endsWith('.gz.metadata.json')) return 4
+  if (file.startsWith(`${paddedVersion}-`) && file.endsWith('.metadata.json.gz')) return 5
+  return 6
 }

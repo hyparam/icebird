@@ -151,8 +151,33 @@ export async function fetchDeleteMaps(deleteEntries, resolver) {
  */
 export async function resolveText(resolver, path) {
   const ab = await resolver.reader(path)
-  const buf = await ab.slice(0, ab.byteLength)
+  let buf = await ab.slice(0, ab.byteLength)
+  if (isGzip(buf)) {
+    buf = await decompressGzip(buf)
+  }
   return new TextDecoder().decode(buf)
+}
+
+/**
+ * @param {ArrayBuffer} buf
+ * @returns {boolean}
+ */
+function isGzip(buf) {
+  if (buf.byteLength < 2) return false
+  const view = new Uint8Array(buf, 0, 2)
+  return view[0] === 0x1f && view[1] === 0x8b
+}
+
+/**
+ * @param {ArrayBuffer} buf
+ * @returns {Promise<ArrayBuffer>}
+ */
+async function decompressGzip(buf) {
+  if (!globalThis.DecompressionStream) {
+    throw new Error('gzip decompression is not supported in this environment')
+  }
+  const stream = new Blob([buf]).stream().pipeThrough(new DecompressionStream('gzip'))
+  return await new Response(stream).arrayBuffer()
 }
 
 /**
