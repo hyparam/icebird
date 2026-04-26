@@ -65,8 +65,8 @@ interface Field {
   required: boolean
   type: string // TODO
   doc?: string
-  'initial-default': any
-  'write-default': any
+  'initial-default'?: any
+  'write-default'?: any
 }
 
 export interface PartitionSpec {

@@ -56,6 +56,30 @@ describe('createIceberg', () => {
 
   })
 
+  it('creates a table with a provided schema', async () => {
+    /** @type {Record<string, ByteWriter>} */
+    const writers = {}
+    const writer = vi.fn(path => {
+      writers[path] = new ByteWriter()
+      return writers[path]
+    })
+    const resolver = { reader: vi.fn(), writer }
+    /** @type {import('../src/types.js').Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        { id: 2, name: 'name', required: false, type: 'string' },
+      ],
+    }
+    const metadata = await icebergCreate({ tableUrl, resolver, schema })
+
+    expect(metadata.schemas).toEqual([schema])
+    expect(metadata['last-column-id']).toBe(2)
+    expect(metadata['current-schema-id']).toBe(0)
+  })
+
   it('throws an error if tableUrl is not provided', async () => {
     const resolver = { reader: vi.fn(), writer: vi.fn() }
     await expect(icebergCreate({ tableUrl: '', resolver })).rejects.toThrow('tableUrl is required')
