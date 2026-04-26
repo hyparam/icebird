@@ -3,6 +3,7 @@ import { compressors } from 'hyparquet-compressors'
 import { fetchDeleteMaps, urlResolver } from './fetch.js'
 import { icebergMetadata } from './metadata.js'
 import { icebergManifests, splitManifestEntries } from './manifest.js'
+import { deleteFileAppliesToDataEntry } from './delete.js'
 import { equalityMatch, sanitize } from './utils.js'
 
 /**
@@ -69,7 +70,8 @@ export async function icebergRead({
   let rowsNeeded = totalRowsToRead
   // TODO: Fetch data files in parallel
   for (let i = fileIndex; i < dataEntries.length && rowsNeeded !== 0; i++) {
-    const { data_file, sequence_number } = dataEntries[i]
+    const dataEntry = dataEntries[i]
+    const { data_file, sequence_number } = dataEntry
     // assert(status !== 2)
 
     // Check sequence numbers
@@ -130,13 +132,18 @@ export async function icebergRead({
     }))
 
     // If delete files apply to this data file, filter the rows
-    const { positionDeletesMap, equalityDeletesMap } = await deleteMaps
+    const { positionDeletesMap, equalityDeleteGroups } = await deleteMaps
 
-    const positionDeletes = positionDeletesMap.get(data_file.file_path)
-    if (positionDeletes) {
+    const positionDeleteGroups = positionDeletesMap.get(data_file.file_path)
+    if (positionDeleteGroups) {
+      const positionDeletes = new Set()
+      for (const group of positionDeleteGroups) {
+        if (!deleteFileAppliesToDataEntry(dataEntry, group.deleteEntry, metadata, 'position')) continue
+        for (const pos of group.positions) positionDeletes.add(pos)
+      }
       rowEntries = rowEntries.filter(entry => !positionDeletes.has(entry.pos))
     }
-    for (const [deleteSequenceNumber, deleteRows] of equalityDeletesMap) {
+    for (const group of equalityDeleteGroups) {
       // An equality delete file must be applied to a data file when all of the following are true:
       // - The data file's data sequence number is strictly less than the delete's data sequence number
       // - The data file's partition (both spec id and partition values) is equal to the delete file's
@@ -147,9 +154,9 @@ export async function icebergRead({
       // - Position deletes (vectors and files) must be applied to data files from the same commit,
       //   when the data and delete file data sequence numbers are equal.
       //   This allows deleting rows that were added in the same commit.
-      if (deleteSequenceNumber <= sequence_number) continue // Skip deletes that are too old
+      if (!deleteFileAppliesToDataEntry(dataEntry, group.deleteEntry, metadata, 'equality')) continue
       rowEntries = rowEntries.filter(({ row }) => {
-        return !deleteRows.some(predicate => equalityMatch(row, predicate, dataColumnNamesById))
+        return !group.rows.some(predicate => equalityMatch(row, predicate, dataColumnNamesById))
       })
     }
 

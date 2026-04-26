@@ -51,7 +51,8 @@ export function equalityMatch(row, deletePredicate, columnNamesById) {
  * @param {any} b
  * @returns {boolean}
  */
-function valuesEqual(a, b) {
+export function valuesEqual(a, b) {
+  if (typeof a === 'number' && typeof b === 'number' && Number.isNaN(a) && Number.isNaN(b)) return true
   if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime()
   if (a instanceof Uint8Array && b instanceof Uint8Array) {
     if (a.length !== b.length) return false

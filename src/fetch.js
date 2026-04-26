@@ -94,19 +94,19 @@ export function s3ParseUrl(url) {
 
 /**
  * Reads delete files from delete manifests.
- * Position deletes are grouped by target data file.
- * Equality deletes are grouped by sequence number.
+ * Position deletes are grouped by target data file. Delete entry metadata is
+ * preserved so scan planning can apply partition and sequence scope later.
  *
  * @param {ManifestEntry[]} deleteEntries
  * @param {Resolver} resolver
- * @returns {Promise<{positionDeletesMap: Map<string, Set<bigint>>, equalityDeletesMap: Map<bigint, Record<number, any>[]>}>}
+ * @returns {Promise<{positionDeletesMap: Map<string, {deleteEntry: ManifestEntry, positions: Set<bigint>}[]>, equalityDeleteGroups: {deleteEntry: ManifestEntry, rows: Record<number, any>[]}[]}>}
  */
 export async function fetchDeleteMaps(deleteEntries, resolver) {
   // Build maps of delete entries keyed by target data file path
-  /** @type {Map<string, Set<bigint>>} */
+  /** @type {Map<string, {deleteEntry: ManifestEntry, positions: Set<bigint>}[]>} */
   const positionDeletesMap = new Map()
-  /** @type {Map<bigint, Record<number, any>[]>} */
-  const equalityDeletesMap = new Map()
+  /** @type {{deleteEntry: ManifestEntry, rows: Record<number, any>[]}[]} */
+  const equalityDeleteGroups = []
 
   // Fetch delete files in parallel
   await Promise.all(deleteEntries.map(async deleteEntry => {
@@ -125,27 +125,29 @@ export async function fetchDeleteMaps(deleteEntries, resolver) {
           length: content_size_in_bytes,
           referencedDataFile: referenced_data_file,
         })
-        let set = positionDeletesMap.get(referenced_data_file)
-        if (!set) {
-          set = new Set()
-          positionDeletesMap.set(referenced_data_file, set)
-        }
+        const set = new Set()
         for (const pos of positions) {
           set.add(pos)
         }
+        addPositionDeleteGroup(positionDeletesMap, referenced_data_file, deleteEntry, set)
       } else {
         const deleteRows = await parquetReadObjects({ file, compressors })
+        /** @type {Map<string, Set<bigint>>} */
+        const positionsByPath = new Map()
         for (const deleteRow of deleteRows) {
           const { file_path, pos } = deleteRow
           if (!file_path) throw new Error('position delete missing target file path')
           if (pos === undefined) throw new Error('position delete missing pos')
           // note: pos is relative to the data file's row order
-          let set = positionDeletesMap.get(file_path)
+          let set = positionsByPath.get(file_path)
           if (!set) {
             set = new Set()
-            positionDeletesMap.set(file_path, set)
+            positionsByPath.set(file_path, set)
           }
           set.add(pos)
+        }
+        for (const [targetPath, positions] of positionsByPath) {
+          addPositionDeleteGroup(positionDeletesMap, targetPath, deleteEntry, positions)
         }
       }
     } else if (content === 2) { // equality delete
@@ -162,18 +164,30 @@ export async function fetchDeleteMaps(deleteEntries, resolver) {
       const columnNamesById = equalityColumnNamesById(metadata, equalityIds)
       const columns = equalityIds.map(id => columnNamesById[id])
       const deleteRows = await parquetReadObjects({ file, metadata, columns, compressors })
-      let list = equalityDeletesMap.get(sequence_number)
-      if (!list) {
-        list = []
-        equalityDeletesMap.set(sequence_number, list)
-      }
+      const rows = []
       for (const deleteRow of deleteRows) {
-        list.push(equalityPredicate(deleteRow, equalityIds, columnNamesById))
+        rows.push(equalityPredicate(deleteRow, equalityIds, columnNamesById))
       }
+      equalityDeleteGroups.push({ deleteEntry, rows })
     }
   }))
 
-  return { positionDeletesMap, equalityDeletesMap }
+  return { positionDeletesMap, equalityDeleteGroups }
+}
+
+/**
+ * @param {Map<string, {deleteEntry: ManifestEntry, positions: Set<bigint>}[]>} positionDeletesMap
+ * @param {string} targetPath
+ * @param {ManifestEntry} deleteEntry
+ * @param {Set<bigint>} positions
+ */
+function addPositionDeleteGroup(positionDeletesMap, targetPath, deleteEntry, positions) {
+  let groups = positionDeletesMap.get(targetPath)
+  if (!groups) {
+    groups = []
+    positionDeletesMap.set(targetPath, groups)
+  }
+  groups.push({ deleteEntry, positions })
 }
 
 /**

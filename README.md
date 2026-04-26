@@ -143,7 +143,7 @@ Icebird aims to support reading any Iceberg table, but currently only supports a
 | ------- | --------- | ----- |
 | Read Iceberg v1 Tables | ✅ | |
 | Read Iceberg v2 Tables | ✅ | |
-| Read Iceberg v3 Tables | ❌ | Needs stricter delete planning before broad v3 support. |
+| Read Iceberg v3 Tables | ❌ | Needs broader v3 fixture coverage before broad v3 support. |
 | Parquet Storage | ✅ | |
 | Avro Storage | ✅ | |
 | ORC Storage | ❌ | |
@@ -154,9 +154,9 @@ Icebird aims to support reading any Iceberg table, but currently only supports a
 | Glue Catalog | ❌ | |
 | Service-based Catalog | ❌ | |
 | Position Deletes | ✅ | Supports Parquet position delete files and Puffin deletion vectors. |
-| Equality Deletes | ⚠️ | Needs delete partition scope handling. |
+| Equality Deletes | ✅ | |
 | Binary Deletion Vectors | ✅ | Supports uncompressed Puffin `deletion-vector-v1` blobs. |
-| Delete Partition Scope | ❌ | Needed for correct delete application on partitioned tables. |
+| Delete Partition Scope | ✅ | Applies sequence and partition scope before filtering rows. |
 | Rename Columns | ✅ | |
 | Efficient Partitioned Read Queries | ❌ | |
 | Gzip Metadata JSON | ✅ | Supports `.gz.metadata.json` and `metadata.json.gz`. |

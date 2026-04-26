@@ -63,7 +63,10 @@ describe('puffin deletion vectors', () => {
       },
     })
 
-    expect(positionDeletesMap.get(referencedDataFile)).toEqual(new Set([2n, 4n]))
+    expect(positionDeletesMap.get(referencedDataFile)).toEqual([{
+      deleteEntry: expect.objectContaining({ sequence_number: 1n }),
+      positions: new Set([2n, 4n]),
+    }])
   })
 })
 

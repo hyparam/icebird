@@ -268,6 +268,7 @@ export interface ManifestEntry {
   snapshot_id?: bigint
   sequence_number?: bigint
   file_sequence_number?: bigint
+  partition_spec_id?: number
   data_file: DataFile
 }
 
