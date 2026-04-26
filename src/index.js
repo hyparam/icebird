@@ -1,3 +1,4 @@
+export { icebergAppend } from './write/append.js'
 export { icebergCreate } from './create.js'
 export { restCatalogConnect, restCatalogListNamespaces, restCatalogListTables, restCatalogLoadTable } from './catalog.rest.js'
 export { s3Lister, urlResolver } from './fetch.js'
