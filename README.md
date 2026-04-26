@@ -89,6 +89,52 @@ const data = await icebergRead({
 })
 ```
 
+## REST Catalog
+
+To read a table from an [Iceberg REST Catalog](https://iceberg.apache.org/rest-catalog-spec/), connect to the catalog and load the table metadata, then pass it to `icebergRead`:
+
+```javascript
+import {
+  icebergRead,
+  restCatalogConnect,
+  restCatalogListTables,
+  restCatalogLoadTable,
+} from 'icebird'
+
+const requestInit = {
+  headers: { Authorization: 'Bearer my_token' },
+}
+
+const ctx = await restCatalogConnect({
+  url: 'https://catalog.example.com',
+  warehouse: 'my-warehouse', // optional
+  requestInit,
+})
+
+const tables = await restCatalogListTables(ctx, { namespace: 'analytics' })
+
+const { metadata } = await restCatalogLoadTable(ctx, {
+  namespace: 'analytics',
+  table: 'orders',
+})
+
+const data = await icebergRead({
+  tableUrl: metadata.location,
+  metadata,
+  rowStart: 0,
+  rowEnd: 10,
+})
+```
+
+Multi-level namespaces can be passed as an array:
+
+```javascript
+const { metadata } = await restCatalogLoadTable(ctx, {
+  namespace: ['db', 'sub'],
+  table: 'orders',
+})
+```
+
 ## Supported Features
 
 Icebird aims to support reading any Iceberg table, but currently only supports a subset of the features. The following features are supported:
@@ -103,7 +149,7 @@ Icebird aims to support reading any Iceberg table, but currently only supports a
 | ORC Storage | ❌ |
 | Puffin Storage | ❌ |
 | File-based Catalog (version-hint.text) | ✅ |
-| REST Catalog | ❌ |
+| REST Catalog | ✅ |
 | Hive Catalog | ❌ |
 | Glue Catalog | ❌ |
 | Service-based Catalog | ❌ |

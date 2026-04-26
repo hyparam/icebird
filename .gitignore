@@ -3,3 +3,4 @@ package-lock.json
 coverage
 *.tgz
 types
+AGENTS.md
