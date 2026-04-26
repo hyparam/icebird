@@ -3,6 +3,25 @@ import type { AsyncBuffer } from 'hyparquet'
 export type Resolver = (path: string, byteLength?: number) => AsyncBuffer | Promise<AsyncBuffer>
 export type Lister = (path: string) => Promise<string[]>
 
+export interface RestCatalogContext {
+  url: string
+  prefix: string
+  defaults: Record<string, string>
+  overrides: Record<string, string>
+  requestInit?: RequestInit
+}
+
+export interface TableIdentifier {
+  namespace: string[]
+  name: string
+}
+
+export interface LoadTableResponse {
+  metadataLocation?: string
+  metadata: TableMetadata
+  config: Record<string, string>
+}
+
 export interface TableMetadata {
   'format-version': number
   'table-uuid': string
