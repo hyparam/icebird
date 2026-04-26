@@ -6,11 +6,13 @@ import { ByteWriter } from 'hyparquet-writer'
  * @param {AvroRecord} options.schema
  * @param {Record<string, any>[]} options.records
  * @param {number} [options.blockSize]
+ * @param {Record<string, string>} [options.metadata] - extra file-level metadata
  */
-export function avroWrite({ writer, schema, records, blockSize = 512 }) {
+export function avroWrite({ writer, schema, records, blockSize = 512, metadata }) {
   writer.appendUint32(0x016a624f) // Obj\x01
 
   const meta = {
+    ...metadata,
     'avro.schema': typeof schema === 'string' ? schema : JSON.stringify(schema),
     'avro.codec': 'null',
   }
