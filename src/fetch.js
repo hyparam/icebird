@@ -35,8 +35,10 @@ export function translateS3Url(url) {
  * @returns {Resolver}
  */
 export function urlResolver({ requestInit } = {}) {
-  return function resolve(url, byteLength) {
-    return asyncBufferFromUrl({ url: translateS3Url(url), byteLength, requestInit })
+  return {
+    reader(url, byteLength) {
+      return asyncBufferFromUrl({ url: translateS3Url(url), byteLength, requestInit })
+    },
   }
 }
 
@@ -106,7 +108,7 @@ export async function fetchDeleteMaps(deleteEntries, resolver) {
   // Fetch delete files in parallel
   await Promise.all(deleteEntries.map(async deleteEntry => {
     const { content, file_path, file_size_in_bytes } = deleteEntry.data_file
-    const asyncBuffer = await resolver(file_path, Number(file_size_in_bytes))
+    const asyncBuffer = await resolver.reader(file_path, Number(file_size_in_bytes))
     const file = cachedAsyncBuffer(asyncBuffer)
     const deleteRows = await parquetReadObjects({ file, compressors })
     for (const deleteRow of deleteRows) {
@@ -148,7 +150,7 @@ export async function fetchDeleteMaps(deleteEntries, resolver) {
  * @returns {Promise<string>}
  */
 export async function resolveText(resolver, path) {
-  const ab = await resolver(path)
+  const ab = await resolver.reader(path)
   const buf = await ab.slice(0, ab.byteLength)
   return new TextDecoder().decode(buf)
 }
@@ -161,7 +163,7 @@ export async function resolveText(resolver, path) {
  * @returns {Promise<Record<string, any>[]>} The decoded Avro records
  */
 export async function fetchAvroRecords(url, resolver) {
-  const ab = await resolver(url)
+  const ab = await resolver.reader(url)
   const buffer = await ab.slice(0, ab.byteLength)
   const reader = { view: new DataView(buffer), offset: 0 }
   const { metadata, syncMarker } = await avroMetadata(reader)

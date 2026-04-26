@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest'
 import { icebergLatestVersion, icebergListVersions, icebergMetadata } from '../src/metadata.js'
 import { urlResolver } from '../src/fetch.js'
 
+/**
+ * @import {Resolver} from '../src/types.js'
+ */
+
 describe.concurrent('Iceberg Metadata', () => {
   const tableUrl = 'https://s3.amazonaws.com/hyperparam-iceberg/spark/bunnies'
 
@@ -51,9 +55,11 @@ describe.concurrent('Iceberg Metadata', () => {
         'v1.metadata.json',
       ])
     }
-    /** @returns {Promise<never>} */
-    function resolver() {
-      throw new Error('version hint missing')
+    /** @type {Resolver} */
+    const resolver = {
+      reader() {
+        throw new Error('version hint missing')
+      },
     }
 
     await expect(icebergLatestVersion({ tableUrl, resolver, lister })).resolves.toBe('v10')

@@ -1,6 +1,10 @@
 import type { AsyncBuffer } from 'hyparquet'
+import type { Writer } from 'hyparquet-writer/src/types.js'
 
-export type Resolver = (path: string, byteLength?: number) => AsyncBuffer | Promise<AsyncBuffer>
+export interface Resolver {
+  reader: (path: string, byteLength?: number) => AsyncBuffer | Promise<AsyncBuffer>
+  writer?: (path: string) => Writer
+}
 export type Lister = (path: string) => Promise<string[]>
 
 export interface RestCatalogContext {

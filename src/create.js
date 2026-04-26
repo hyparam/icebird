@@ -2,15 +2,16 @@ import { translateS3Url } from './fetch.js'
 import { uuid4 } from './utils.js'
 
 /**
+ * @import {Resolver} from '../src/types.js'
  * @param {object} options
  * @param {string} options.tableUrl - Base S3 URL of the table.
- * @param {(file: string) => Writer} options.writerFactory - Function to create writers for files in storage.
+ * @param {Resolver} options.resolver - Resolver with a writer method.
  * @param {Schema} [options.schema] - The schema of the table.
  * @returns {Promise<TableMetadata>} The Iceberg table metadata as a JSON object.
  */
 export async function icebergCreate ({
   tableUrl,
-  writerFactory,
+  resolver,
   schema,
 }) {
   if (!tableUrl) throw new Error('tableUrl is required')
@@ -46,15 +47,17 @@ export async function icebergCreate ({
     // statistics: [],
   }
 
+  if (!resolver.writer) throw new Error('resolver.writer is required')
+
   // write initial metadata
-  const metadataWriter = writerFactory(metadataUrl)
+  const metadataWriter = resolver.writer(metadataUrl)
   const metadataBytes = new TextEncoder().encode(JSON.stringify(metadata, null, 2))
   metadataWriter.appendBytes(metadataBytes)
   metadataWriter.finish()
 
   // write version-hint.text
   const versionHintUrl = translateS3Url(`${tableUrl}/version-hint.text`)
-  const versionHintWriter = writerFactory(versionHintUrl)
+  const versionHintWriter = resolver.writer(versionHintUrl)
   const versionHintBytes = new TextEncoder().encode(String(metadataVersion))
   versionHintWriter.appendBytes(versionHintBytes)
   versionHintWriter.finish()
@@ -63,7 +66,6 @@ export async function icebergCreate ({
 }
 
 /**
- * @import {Writer} from 'hyparquet-writer/src/types.js'
  * @import {Field, PartitionField, PartitionSpec, Schema, SortOrder, TableMetadata} from '../src/types.js'
  * @param {Field[]} fields
  * @returns {number}

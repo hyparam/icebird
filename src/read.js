@@ -84,7 +84,7 @@ export async function icebergRead({
     const fileRowEnd = fileRowStart + rowsToRead
 
     // Read the data file
-    const resolved = await resolver(data_file.file_path, Number(data_file.file_size_in_bytes))
+    const resolved = await resolver.reader(data_file.file_path, Number(data_file.file_size_in_bytes))
     const asyncBuffer = cachedAsyncBuffer(resolved)
 
     // Read iceberg schema from parquet metadata

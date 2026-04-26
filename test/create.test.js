@@ -18,11 +18,12 @@ describe('createIceberg', () => {
   it('creates a new Iceberg table', async () => {
     /** @type {Record<string, ByteWriter>} */
     const writers = {}
-    const writerFactory = vi.fn(path => {
+    const writer = vi.fn(path => {
       writers[path] = new ByteWriter()
       return writers[path]
     })
-    const metadata = await icebergCreate({ tableUrl, writerFactory })
+    const resolver = { reader: vi.fn(), writer }
+    const metadata = await icebergCreate({ tableUrl, resolver })
 
     // Check the metadata structure
     expect(metadata).toMatchObject({
@@ -47,16 +48,16 @@ describe('createIceberg', () => {
       'default-sort-order-id': 0,
     })
 
-    // Check that the writerFactory was called correctly
-    expect(writerFactory).toHaveBeenCalledWith(`${translatedTableUrl}/metadata/v1.metadata.json`)
-    expect(writerFactory).toHaveBeenCalledWith(`${translatedTableUrl}/version-hint.text`)
+    // Check that the writer was called correctly
+    expect(writer).toHaveBeenCalledWith(`${translatedTableUrl}/metadata/v1.metadata.json`)
+    expect(writer).toHaveBeenCalledWith(`${translatedTableUrl}/version-hint.text`)
     expect(writers[`${translatedTableUrl}/metadata/v1.metadata.json`].offset).toBe(573)
     expect(writers[`${translatedTableUrl}/version-hint.text`].offset).toBe(1)
 
   })
 
   it('throws an error if tableUrl is not provided', async () => {
-    const writerFactory = vi.fn()
-    await expect(icebergCreate({ tableUrl: '', writerFactory })).rejects.toThrow('tableUrl is required')
+    const resolver = { reader: vi.fn(), writer: vi.fn() }
+    await expect(icebergCreate({ tableUrl: '', resolver })).rejects.toThrow('tableUrl is required')
   })
 })
