@@ -2,6 +2,7 @@ import { asyncBufferFromUrl, cachedAsyncBuffer, parquetMetadataAsync, parquetRea
 import { compressors } from 'hyparquet-compressors'
 import { avroRead } from './avro/avro.read.js'
 import { avroMetadata } from './avro/avro.metadata.js'
+import { puffinReadDeletionVector } from './puffin/puffin.js'
 import { sanitize } from './utils.js'
 
 /**
@@ -114,18 +115,38 @@ export async function fetchDeleteMaps(deleteEntries, resolver) {
     const file = cachedAsyncBuffer(asyncBuffer)
 
     if (content === 1) { // position delete
-      const deleteRows = await parquetReadObjects({ file, compressors })
-      for (const deleteRow of deleteRows) {
-        const { file_path, pos } = deleteRow
-        if (!file_path) throw new Error('position delete missing target file path')
-        if (pos === undefined) throw new Error('position delete missing pos')
-        // note: pos is relative to the data file's row order
-        let set = positionDeletesMap.get(file_path)
+      if (isDeletionVector(deleteEntry)) {
+        const { referenced_data_file, content_offset, content_size_in_bytes } = deleteEntry.data_file
+        if (!referenced_data_file) throw new Error('deletion vector missing referenced_data_file')
+        if (content_offset == null) throw new Error('deletion vector missing content_offset')
+        if (content_size_in_bytes == null) throw new Error('deletion vector missing content_size_in_bytes')
+        const positions = await puffinReadDeletionVector(file, {
+          offset: content_offset,
+          length: content_size_in_bytes,
+          referencedDataFile: referenced_data_file,
+        })
+        let set = positionDeletesMap.get(referenced_data_file)
         if (!set) {
           set = new Set()
-          positionDeletesMap.set(file_path, set)
+          positionDeletesMap.set(referenced_data_file, set)
         }
-        set.add(pos)
+        for (const pos of positions) {
+          set.add(pos)
+        }
+      } else {
+        const deleteRows = await parquetReadObjects({ file, compressors })
+        for (const deleteRow of deleteRows) {
+          const { file_path, pos } = deleteRow
+          if (!file_path) throw new Error('position delete missing target file path')
+          if (pos === undefined) throw new Error('position delete missing pos')
+          // note: pos is relative to the data file's row order
+          let set = positionDeletesMap.get(file_path)
+          if (!set) {
+            set = new Set()
+            positionDeletesMap.set(file_path, set)
+          }
+          set.add(pos)
+        }
       }
     } else if (content === 2) { // equality delete
       const { sequence_number } = deleteEntry
@@ -153,6 +174,17 @@ export async function fetchDeleteMaps(deleteEntries, resolver) {
   }))
 
   return { positionDeletesMap, equalityDeletesMap }
+}
+
+/**
+ * @param {ManifestEntry} deleteEntry
+ * @returns {boolean}
+ */
+function isDeletionVector(deleteEntry) {
+  const dataFile = deleteEntry.data_file
+  return dataFile.file_format.toLowerCase() === 'puffin' ||
+    dataFile.content_offset != null ||
+    dataFile.content_size_in_bytes != null
 }
 
 /**

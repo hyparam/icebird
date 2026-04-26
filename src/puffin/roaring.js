@@ -87,7 +87,7 @@ export function readRoaringBitmap32(bytes) {
  */
 function isRunContainer(runContainers, index) {
   if (!runContainers) return false
-  return Boolean(runContainers[Math.floor(index / 8)] & (1 << (index % 8)))
+  return Boolean(runContainers[Math.floor(index / 8)] & 1 << index % 8)
 }
 
 /**

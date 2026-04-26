@@ -117,7 +117,7 @@ function roaringBitmap32Length(bytes) {
  */
 function isRunContainer(runContainers, index) {
   if (!runContainers) return false
-  return Boolean(runContainers[Math.floor(index / 8)] & (1 << (index % 8)))
+  return Boolean(runContainers[Math.floor(index / 8)] & 1 << index % 8)
 }
 
 let crcTable
@@ -130,9 +130,9 @@ function crc32(bytes) {
   crcTable ??= makeCrcTable()
   let crc = 0xffffffff
   for (const byte of bytes) {
-    crc = crcTable[(crc ^ byte) & 0xff] ^ (crc >>> 8)
+    crc = crcTable[(crc ^ byte) & 0xff] ^ crc >>> 8
   }
-  return (crc ^ 0xffffffff) >>> 0
+  return ~crc >>> 0
 }
 
 /**
@@ -143,7 +143,7 @@ function makeCrcTable() {
   for (let i = 0; i < table.length; i++) {
     let c = i
     for (let j = 0; j < 8; j++) {
-      c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+      c = c & 1 ? 0xedb88320 ^ c >>> 1 : c >>> 1
     }
     table[i] = c >>> 0
   }
