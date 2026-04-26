@@ -108,6 +108,40 @@ describe('icebergStageAppend', () => {
     expect(read).toEqual(records)
   })
 
+  it('assigns row lineage for v3 appends', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/stage-v3'
+    const { resolver } = memResolver()
+
+    const created = await icebergCreate({ tableUrl, resolver, schema })
+    const v3Metadata = { ...created, 'format-version': 3, 'next-row-id': 100 }
+    const records = [{ id: 1n, name: 'alice' }, { id: 2n, name: 'bob' }]
+
+    const staged = await icebergStageAppend({ tableUrl, metadata: v3Metadata, records, resolver })
+    expect(staged.requirements).toContainEqual({ type: 'assert-next-row-id', 'next-row-id': 100 })
+    expect(staged.snapshot['first-row-id']).toBe(100)
+    expect(staged.snapshot['added-rows']).toBe(2)
+
+    const committed = await fileCatalogCommit({ tableUrl, metadata: v3Metadata, staged, resolver })
+    expect(committed['next-row-id']).toBe(102)
+
+    const read = await icebergRead({ tableUrl, metadata: committed, resolver })
+    expect(read).toEqual([
+      {
+        id: 1n,
+        name: 'alice',
+        _row_id: 100n,
+        _last_updated_sequence_number: 1n,
+      },
+      {
+        id: 2n,
+        name: 'bob',
+        _row_id: 101n,
+        _last_updated_sequence_number: 1n,
+      },
+    ])
+  })
+
   it('carries forward prior manifests across two sequential commits', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
     const tableUrl = 'http://test/stage3'

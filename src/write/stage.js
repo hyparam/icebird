@@ -6,7 +6,7 @@ import { writeManifestList } from './manifest-list.js'
 import { computeColumnStats } from './stats.js'
 
 /**
- * @import {Manifest, Resolver, Snapshot, StagedUpdate, TableMetadata} from '../../src/types.js'
+ * @import {Manifest, Resolver, Snapshot, StagedUpdate, TableMetadata, TableRequirement} from '../../src/types.js'
  */
 
 /**
@@ -17,7 +17,7 @@ import { computeColumnStats } from './stats.js'
  * No metadata.json or version-hint is written — pass the result to a commit
  * function (`fileCatalogCommit`, or a future `restCatalogCommitTable`).
  *
- * Only supports v2 tables with a flat unpartitioned schema and primitive
+ * Only supports v2/v3 tables with a flat unpartitioned schema and primitive
  * column types.
  *
  * @param {object} options
@@ -30,9 +30,11 @@ import { computeColumnStats } from './stats.js'
 export async function icebergStageAppend({ tableUrl, metadata, records, resolver }) {
   if (!tableUrl) throw new Error('tableUrl is required')
   if (!resolver?.writer) throw new Error('resolver.writer is required')
-  if (metadata['format-version'] !== 2) {
+  if (metadata['format-version'] !== 2 && metadata['format-version'] !== 3) {
     throw new Error(`unsupported format-version: ${metadata['format-version']}`)
   }
+  const formatVersion = /** @type {2|3} */ (metadata['format-version'])
+  const rowLineage = formatVersion >= 3
   const partitionSpec = metadata['partition-specs'].find(s => s['spec-id'] === metadata['default-spec-id'])
   if (!partitionSpec || partitionSpec.fields.length) {
     throw new Error('icebergStageAppend only supports unpartitioned tables')
@@ -45,6 +47,7 @@ export async function icebergStageAppend({ tableUrl, metadata, records, resolver
   const dataUuid = uuid4()
   const manifestUuid = uuid4()
   const timestampMs = Date.now()
+  const firstRowId = rowLineage ? BigInt(metadata['next-row-id'] ?? 0) : undefined
 
   // 1. Write parquet data file
   const dataPath = `${tableUrl}/data/${dataUuid}.parquet`
@@ -74,6 +77,7 @@ export async function icebergStageAppend({ tableUrl, metadata, records, resolver
       upper_bounds: stats.upper_bounds,
       sort_order_id: 0,
     },
+    formatVersion,
   })
   const manifestLength = BigInt(manifestWriter.offset)
 
@@ -97,9 +101,10 @@ export async function icebergStageAppend({ tableUrl, metadata, records, resolver
   // 3. Carry forward manifests from prior snapshot, then write new manifest list
   const priorManifests = await loadPriorManifests(metadata, resolver)
   const allManifests = [newManifest, ...priorManifests]
+  const addedRows = rowLineage ? assignFirstRowIds(allManifests, firstRowId ?? 0n) : 0n
   const manifestListPath = `${tableUrl}/metadata/snap-${snapshotId}-1-${manifestUuid}.avro`
   const listWriter = resolver.writer(translateS3Url(manifestListPath))
-  writeManifestList({ writer: listWriter, snapshotId, sequenceNumber, manifests: allManifests })
+  writeManifestList({ writer: listWriter, snapshotId, sequenceNumber, manifests: allManifests, formatVersion })
 
   // 4. Build the new snapshot
   const prevSummary = currentSnapshot(metadata)?.summary
@@ -129,19 +134,31 @@ export async function icebergStageAppend({ tableUrl, metadata, records, resolver
     },
     'schema-id': metadata['current-schema-id'],
   }
+  if (rowLineage) {
+    snapshot['first-row-id'] = toMetadataLong(firstRowId ?? 0n)
+    snapshot['added-rows'] = toMetadataLong(addedRows)
+  }
   const parentId = metadata['current-snapshot-id']
   if (parentId !== undefined) snapshot['parent-snapshot-id'] = parentId
+  /** @type {TableRequirement[]} */
+  const requirements = [
+    { type: 'assert-table-uuid', uuid: metadata['table-uuid'] },
+    {
+      type: 'assert-ref-snapshot-id',
+      ref: 'main',
+      'snapshot-id': metadata['current-snapshot-id'] ?? null,
+    },
+  ]
+  if (rowLineage) {
+    requirements.push({
+      type: 'assert-next-row-id',
+      'next-row-id': toMetadataLong(metadata['next-row-id'] ?? 0),
+    })
+  }
 
   return {
     snapshot,
-    requirements: [
-      { type: 'assert-table-uuid', uuid: metadata['table-uuid'] },
-      {
-        type: 'assert-ref-snapshot-id',
-        ref: 'main',
-        'snapshot-id': metadata['current-snapshot-id'] ?? null,
-      },
-    ],
+    requirements,
     updates: [
       { action: 'add-snapshot', snapshot },
       {
@@ -174,6 +191,48 @@ async function loadPriorManifests(metadata, resolver) {
   const snap = currentSnapshot(metadata)
   if (!snap?.['manifest-list']) return []
   return /** @type {Manifest[]} */ (await fetchAvroRecords(snap['manifest-list'], resolver))
+}
+
+/**
+ * Assign v3 first_row_id values to data manifests that do not already have
+ * them and return the number of newly assigned row IDs.
+ *
+ * @param {Manifest[]} manifests
+ * @param {bigint} firstRowId
+ * @returns {bigint}
+ */
+function assignFirstRowIds(manifests, firstRowId) {
+  let nextFirstRowId = firstRowId
+  let assignedRows = 0n
+  for (const manifest of manifests) {
+    if (manifest.content !== 0) {
+      manifest.first_row_id = undefined
+      continue
+    }
+
+    const rowIdRange = BigInt(manifest.added_rows_count ?? 0) + BigInt(manifest.existing_rows_count ?? 0)
+    if (manifest.first_row_id == null) {
+      manifest.first_row_id = nextFirstRowId
+      nextFirstRowId += rowIdRange
+      assignedRows += rowIdRange
+    } else {
+      const manifestEnd = BigInt(manifest.first_row_id) + rowIdRange
+      if (manifestEnd > nextFirstRowId) nextFirstRowId = manifestEnd
+    }
+  }
+  return assignedRows
+}
+
+/**
+ * @param {number|bigint} value
+ * @returns {number}
+ */
+function toMetadataLong(value) {
+  const out = Number(value)
+  if (!Number.isSafeInteger(out)) {
+    throw new Error(`metadata long exceeds JavaScript safe integer range: ${value}`)
+  }
+  return out
 }
 
 /**

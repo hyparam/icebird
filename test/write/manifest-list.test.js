@@ -57,4 +57,40 @@ describe('writeManifestList', () => {
       deleted_rows_count: 0n,
     })
   })
+
+  it('writes v3 first_row_id metadata', async () => {
+    /** @type {Manifest} */
+    const manifest = {
+      manifest_path: 's3://bucket/table/metadata/m0.avro',
+      manifest_length: 1234n,
+      partition_spec_id: 0,
+      content: 0,
+      added_snapshot_id: 999n,
+      added_files_count: 1,
+      existing_files_count: 0,
+      deleted_files_count: 0,
+      added_rows_count: 3n,
+      existing_rows_count: 0n,
+      deleted_rows_count: 0n,
+      first_row_id: 100n,
+    }
+    const writer = new ByteWriter()
+    writeManifestList({
+      writer,
+      snapshotId: 999n,
+      sequenceNumber: 1n,
+      manifests: [manifest],
+      formatVersion: 3,
+    })
+    const buffer = writer.getBuffer()
+
+    const reader = { view: new DataView(buffer), offset: 0 }
+    const { metadata, syncMarker } = await avroMetadata(reader)
+    expect(metadata['format-version']).toBe('3')
+
+    const records = await avroRead({ reader, metadata, syncMarker })
+    expect(records[0]).toMatchObject({
+      first_row_id: 100n,
+    })
+  })
 })

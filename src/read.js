@@ -9,7 +9,7 @@ import { equalityMatch, sanitize } from './utils.js'
  * Reads data from the Iceberg table with optional row-level delete processing.
  * Row indices are zero-based and rowEnd is exclusive.
  *
- * @import {Resolver, Lister} from '../src/types.js'
+ * @import {Lister, NameMapping, Resolver, Schema, TableMetadata} from '../src/types.js'
  * @param {object} options
  * @param {string} options.tableUrl - Base URL or path of the table.
  * @param {number} [options.rowStart] - The starting global row index to fetch (inclusive).
@@ -44,6 +44,7 @@ export async function icebergRead({
   const currentSchemaId = metadata['current-schema-id']
   const schema = metadata.schemas.find(s => s['schema-id'] === currentSchemaId)
   if (!schema) throw new Error('current schema not found in metadata')
+  const rowLineage = metadata['format-version'] >= 3
 
   // Get manifest URLs for data and delete files
   const { dataEntries, deleteEntries } = splitManifestEntries(manifestList)
@@ -108,22 +109,31 @@ export async function icebergRead({
         parquetColumnNames.push(undefined)
       }
     }
+    const lineageColumns = rowLineage ? rowLineageColumnNames(parquetIcebergSchema) : {}
+    const columns = parquetColumnNames.filter(n => n !== undefined)
+    for (const column of [lineageColumns.rowId, lineageColumns.lastUpdatedSequenceNumber]) {
+      if (column && !columns.includes(column)) columns.push(column)
+    }
 
-    let rows = await parquetReadObjects({
+    const rows = await parquetReadObjects({
       file: asyncBuffer,
       metadata: parquetMetadata,
-      columns: parquetColumnNames.filter(n => n !== undefined),
+      columns,
       rowStart: fileRowStart,
       rowEnd: fileRowEnd,
       compressors,
     })
+    let rowEntries = rows.map((row, idx) => ({
+      row,
+      pos: BigInt(fileRowStart + idx),
+    }))
 
     // If delete files apply to this data file, filter the rows
     const { positionDeletesMap, equalityDeletesMap } = await deleteMaps
 
     const positionDeletes = positionDeletesMap.get(data_file.file_path)
     if (positionDeletes) {
-      rows = rows.filter((_, idx) => !positionDeletes.has(BigInt(idx + fileRowStart)))
+      rowEntries = rowEntries.filter(entry => !positionDeletes.has(entry.pos))
     }
     for (const [deleteSequenceNumber, deleteRows] of equalityDeletesMap) {
       // An equality delete file must be applied to a data file when all of the following are true:
@@ -137,11 +147,11 @@ export async function icebergRead({
       //   when the data and delete file data sequence numbers are equal.
       //   This allows deleting rows that were added in the same commit.
       if (deleteSequenceNumber <= sequence_number) continue // Skip deletes that are too old
-      rows = rows.filter(row => !deleteRows.some(predicate => equalityMatch(row, predicate)))
+      rowEntries = rowEntries.filter(({ row }) => !deleteRows.some(predicate => equalityMatch(row, predicate)))
     }
 
     // Map parquet column names to iceberg names by field id
-    for (const row of rows) {
+    for (const { row, pos } of rowEntries) {
       /** @type {Record<string, any>} */
       const out = {}
       for (let i = 0; i < schema.fields.length; i++) {
@@ -188,11 +198,21 @@ export async function icebergRead({
           }
         }
       }
+      if (rowLineage) {
+        applyRowLineage(out, {
+          row,
+          pos,
+          firstRowId: data_file.first_row_id,
+          sequenceNumber: sequence_number,
+          rowIdColumn: lineageColumns.rowId,
+          lastUpdatedSequenceNumberColumn: lineageColumns.lastUpdatedSequenceNumber,
+        })
+      }
       results.push(out)
     }
 
     if (rowsNeeded !== Infinity) {
-      rowsNeeded -= rows.length
+      rowsNeeded -= rowEntries.length
       if (rowsNeeded <= 0) break
     }
   }
@@ -203,7 +223,6 @@ export async function icebergRead({
 /**
  * Recursively find the name mapping object that belongs to a particular field‑id.
  *
- * @import {TableMetadata, NameMapping} from '../src/types.js'
  * @param {NameMapping[]} mappings
  * @param {number} fieldId
  * @returns {NameMapping|undefined}
@@ -215,5 +234,65 @@ function nameMappingById(mappings, fieldId) {
       const hit = nameMappingById(m.fields, fieldId)
       if (hit) return hit
     }
+  }
+}
+
+/**
+ * @param {Schema} parquetIcebergSchema
+ * @returns {{rowId?: string, lastUpdatedSequenceNumber?: string}}
+ */
+function rowLineageColumnNames(parquetIcebergSchema) {
+  return {
+    rowId: columnNameByFieldId(parquetIcebergSchema, 2147483540),
+    lastUpdatedSequenceNumber: columnNameByFieldId(parquetIcebergSchema, 2147483539),
+  }
+}
+
+/**
+ * @param {Schema} schema
+ * @param {number} fieldId
+ * @returns {string|undefined}
+ */
+function columnNameByFieldId(schema, fieldId) {
+  const field = schema.fields.find(f => f.id === fieldId)
+  return field ? sanitize(field.name) : undefined
+}
+
+/**
+ * @param {Record<string, any>} out
+ * @param {object} options
+ * @param {Record<string, any>} options.row
+ * @param {bigint} options.pos
+ * @param {bigint | number | undefined} options.firstRowId
+ * @param {bigint} options.sequenceNumber
+ * @param {string} [options.rowIdColumn]
+ * @param {string} [options.lastUpdatedSequenceNumberColumn]
+ */
+function applyRowLineage(out, {
+  row,
+  pos,
+  firstRowId,
+  sequenceNumber,
+  rowIdColumn,
+  lastUpdatedSequenceNumberColumn,
+}) {
+  const storedRowId = rowIdColumn ? row[rowIdColumn] : undefined
+  const storedLastUpdatedSequenceNumber = lastUpdatedSequenceNumberColumn
+    ? row[lastUpdatedSequenceNumberColumn]
+    : undefined
+  if (storedRowId != null) {
+    out._row_id = storedRowId
+  } else if (firstRowId != null) {
+    out._row_id = BigInt(firstRowId) + pos
+  } else {
+    out._row_id = null
+  }
+
+  if (storedLastUpdatedSequenceNumber != null) {
+    out._last_updated_sequence_number = storedLastUpdatedSequenceNumber
+  } else if (firstRowId != null) {
+    out._last_updated_sequence_number = sequenceNumber
+  } else {
+    out._last_updated_sequence_number = null
   }
 }

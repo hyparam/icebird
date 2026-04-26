@@ -48,7 +48,7 @@ export interface TableMetadata {
   refs?: Record<string, SnapshotRef>
   statistics?: TableStatistics[]
   'partition-statistics'?: PartitionStatistics[]
-  'next-row-id'?: bigint // required in V3
+  'next-row-id'?: number | bigint // required in V3
   // 'encryption-keys'?: EncryptionKeys[]
 }
 
@@ -179,7 +179,7 @@ export interface Snapshot {
     'total-equality-deletes': string
   }
   'schema-id'?: number
-  'first-row-id'?: bigint // V3
+  'first-row-id'?: number // V3
   'added-rows'?: number // V3
 }
 
@@ -210,6 +210,7 @@ export interface SnapshotRef {
 export type TableRequirement =
   | { type: 'assert-table-uuid', uuid: string }
   | { type: 'assert-ref-snapshot-id', ref: string, 'snapshot-id': number | null }
+  | { type: 'assert-next-row-id', 'next-row-id': number }
 
 /**
  * Subset of Iceberg REST `TableUpdate`s that the staging API emits.
@@ -259,7 +260,7 @@ export interface Manifest {
   deleted_rows_count: bigint
   partitions?: FieldSummary[]
   // key_metadata?: unknown
-  first_row_id?: bigint
+  first_row_id?: bigint | number
 }
 
 export interface ManifestEntry {
@@ -294,7 +295,7 @@ export interface DataFile {
   split_offsets?: bigint[]
   equality_ids?: number[]
   sort_order_id?: number
-  first_row_id?: bigint
+  first_row_id?: bigint | number
   referenced_data_file?: string
   content_offset?: bigint
   content_size_in_bytes?: bigint

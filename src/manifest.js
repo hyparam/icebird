@@ -72,9 +72,31 @@ async function fetchManifests(manifests, resolver) {
         }
       }
     }
+    assignFirstRowIds(manifest, entries)
 
     return { url, entries }
   }))
+}
+
+/**
+ * Apply v3 first-row-id inheritance from the manifest list into data file
+ * entries. Delete files never inherit row IDs.
+ *
+ * @param {Manifest} manifest
+ * @param {ManifestEntry[]} entries
+ */
+function assignFirstRowIds(manifest, entries) {
+  if (manifest.content !== 0 || manifest.first_row_id == null) return
+
+  let nextFirstRowId = BigInt(manifest.first_row_id)
+  for (const entry of entries) {
+    const dataFile = entry.data_file
+    if (dataFile.content !== 0) continue
+    if (dataFile.first_row_id == null) {
+      dataFile.first_row_id = nextFirstRowId
+      nextFirstRowId += BigInt(dataFile.record_count)
+    }
+  }
 }
 
 /**

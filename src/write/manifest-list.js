@@ -2,19 +2,18 @@ import { avroWrite } from '../avro/avro.write.js'
 
 /**
  * @import {Writer} from 'hyparquet-writer'
- * @import {AvroRecord, Manifest} from '../../src/types.js'
+ * @import {AvroField, AvroRecord, Manifest} from '../../src/types.js'
  */
 
 /**
- * Avro schema for a v2 manifest list entry. Field ids and order match the
- * Iceberg v2 spec.
+ * Build an Avro schema for a manifest list entry.
  *
- * @type {AvroRecord}
+ * @param {2|3} formatVersion
+ * @returns {AvroRecord}
  */
-const manifestFileSchema = {
-  type: 'record',
-  name: 'manifest_file',
-  fields: [
+function manifestFileSchema(formatVersion) {
+  /** @type {AvroField[]} */
+  const fields = [
     { name: 'manifest_path', type: 'string', 'field-id': 500 },
     { name: 'manifest_length', type: 'long', 'field-id': 501 },
     { name: 'partition_spec_id', type: 'int', 'field-id': 502 },
@@ -34,7 +33,16 @@ const manifestFileSchema = {
       default: null,
       'field-id': 507,
     },
-  ],
+  ]
+  if (formatVersion >= 3) {
+    fields.push({ name: 'first_row_id', type: ['null', 'long'], default: null, 'field-id': 520 })
+  }
+
+  return {
+    type: 'record',
+    name: 'manifest_file',
+    fields,
+  }
 }
 
 /**
@@ -45,31 +53,39 @@ const manifestFileSchema = {
  * @param {bigint} options.snapshotId
  * @param {bigint} options.sequenceNumber
  * @param {Manifest[]} options.manifests
+ * @param {2|3} [options.formatVersion]
  */
-export function writeManifestList({ writer, snapshotId, sequenceNumber, manifests }) {
-  const records = manifests.map(m => ({
-    manifest_path: m.manifest_path,
-    manifest_length: m.manifest_length,
-    partition_spec_id: m.partition_spec_id,
-    content: m.content,
-    sequence_number: m.sequence_number ?? sequenceNumber,
-    min_sequence_number: m.min_sequence_number ?? sequenceNumber,
-    added_snapshot_id: m.added_snapshot_id,
-    added_files_count: m.added_files_count,
-    existing_files_count: m.existing_files_count,
-    deleted_files_count: m.deleted_files_count,
-    added_rows_count: m.added_rows_count,
-    existing_rows_count: m.existing_rows_count,
-    deleted_rows_count: m.deleted_rows_count,
-    partitions: [],
-  }))
+export function writeManifestList({ writer, snapshotId, sequenceNumber, manifests, formatVersion = 2 }) {
+  const records = manifests.map(m => {
+    /** @type {Record<string, any>} */
+    const record = {
+      manifest_path: m.manifest_path,
+      manifest_length: m.manifest_length,
+      partition_spec_id: m.partition_spec_id,
+      content: m.content,
+      sequence_number: m.sequence_number ?? sequenceNumber,
+      min_sequence_number: m.min_sequence_number ?? sequenceNumber,
+      added_snapshot_id: m.added_snapshot_id,
+      added_files_count: m.added_files_count,
+      existing_files_count: m.existing_files_count,
+      deleted_files_count: m.deleted_files_count,
+      added_rows_count: m.added_rows_count,
+      existing_rows_count: m.existing_rows_count,
+      deleted_rows_count: m.deleted_rows_count,
+      partitions: [],
+    }
+    if (formatVersion >= 3) {
+      record.first_row_id = m.content === 0 ? m.first_row_id ?? null : null
+    }
+    return record
+  })
 
   avroWrite({
     writer,
-    schema: manifestFileSchema,
+    schema: manifestFileSchema(formatVersion),
     records,
     metadata: {
-      'format-version': '2',
+      'format-version': String(formatVersion),
       'snapshot-id': String(snapshotId),
       'sequence-number': String(sequenceNumber),
     },
