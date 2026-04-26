@@ -78,6 +78,11 @@ export function checkRequirements(metadata, requirements) {
       if (current !== req['snapshot-id']) {
         throw new Error(`requirement failed: ref ${req.ref} expected snapshot ${req['snapshot-id']}, got ${current}`)
       }
+    } else if (req.type === 'assert-next-row-id') {
+      const current = Number(metadata['next-row-id'] ?? 0)
+      if (current !== req['next-row-id']) {
+        throw new Error(`requirement failed: next-row-id expected ${req['next-row-id']}, got ${current}`)
+      }
     } else {
       throw new Error(`unknown requirement: ${JSON.stringify(req)}`)
     }
@@ -105,6 +110,10 @@ export function applyUpdates(metadata, updates) {
         snapshots: [...next.snapshots ?? [], snap],
         'last-sequence-number': Math.max(next['last-sequence-number'] ?? 0, snap['sequence-number']),
         'last-updated-ms': snap['timestamp-ms'],
+      }
+      if (next['format-version'] >= 3 && snap['first-row-id'] !== undefined && snap['added-rows'] !== undefined) {
+        const nextRowId = snap['first-row-id'] + snap['added-rows']
+        next['next-row-id'] = Math.max(Number(next['next-row-id'] ?? 0), nextRowId)
       }
     } else if (up.action === 'set-snapshot-ref') {
       /** @type {SnapshotRef} */

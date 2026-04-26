@@ -2,51 +2,59 @@ import { avroWrite } from '../avro/avro.write.js'
 
 /**
  * @import {Writer} from 'hyparquet-writer'
- * @import {AvroRecord, DataFile, Schema} from '../../src/types.js'
+ * @import {AvroField, AvroRecord, DataFile, Schema} from '../../src/types.js'
  */
 
 /**
- * Avro schema for a v2 manifest entry with an unpartitioned data file.
- * Field order and ids match the Iceberg v2 spec so other readers can parse it.
+ * Build an Avro schema for an unpartitioned data manifest entry.
  *
- * @type {AvroRecord}
+ * @param {2|3} formatVersion
+ * @returns {AvroRecord}
  */
-const manifestEntrySchema = {
-  type: 'record',
-  name: 'manifest_entry',
-  fields: [
-    { name: 'status', type: 'int', 'field-id': 0 },
-    { name: 'snapshot_id', type: ['null', 'long'], default: null, 'field-id': 1 },
-    { name: 'sequence_number', type: ['null', 'long'], default: null, 'field-id': 3 },
-    { name: 'file_sequence_number', type: ['null', 'long'], default: null, 'field-id': 4 },
+function manifestEntrySchema(formatVersion) {
+  /** @type {AvroField[]} */
+  const dataFileFields = [
+    { name: 'content', type: 'int', 'field-id': 134 },
+    { name: 'file_path', type: 'string', 'field-id': 100 },
+    { name: 'file_format', type: 'string', 'field-id': 101 },
     {
-      name: 'data_file',
-      'field-id': 2,
-      type: {
-        type: 'record',
-        name: 'r2',
-        fields: [
-          { name: 'content', type: 'int', 'field-id': 134 },
-          { name: 'file_path', type: 'string', 'field-id': 100 },
-          { name: 'file_format', type: 'string', 'field-id': 101 },
-          {
-            name: 'partition',
-            'field-id': 102,
-            type: { type: 'record', name: 'r102', fields: [] },
-          },
-          { name: 'record_count', type: 'long', 'field-id': 103 },
-          { name: 'file_size_in_bytes', type: 'long', 'field-id': 104 },
-          mapField('column_sizes', 108, 'k117_v118', 117, 118, 'long'),
-          mapField('value_counts', 109, 'k119_v120', 119, 120, 'long'),
-          mapField('null_value_counts', 110, 'k121_v122', 121, 122, 'long'),
-          mapField('nan_value_counts', 137, 'k138_v139', 138, 139, 'long'),
-          mapField('lower_bounds', 125, 'k126_v127', 126, 127, 'bytes'),
-          mapField('upper_bounds', 128, 'k129_v130', 129, 130, 'bytes'),
-          { name: 'sort_order_id', type: ['null', 'int'], default: null, 'field-id': 140 },
-        ],
-      },
+      name: 'partition',
+      'field-id': 102,
+      type: { type: 'record', name: 'r102', fields: [] },
     },
-  ],
+    { name: 'record_count', type: 'long', 'field-id': 103 },
+    { name: 'file_size_in_bytes', type: 'long', 'field-id': 104 },
+    mapField('column_sizes', 108, 'k117_v118', 117, 118, 'long'),
+    mapField('value_counts', 109, 'k119_v120', 119, 120, 'long'),
+    mapField('null_value_counts', 110, 'k121_v122', 121, 122, 'long'),
+    mapField('nan_value_counts', 137, 'k138_v139', 138, 139, 'long'),
+    mapField('lower_bounds', 125, 'k126_v127', 126, 127, 'bytes'),
+    mapField('upper_bounds', 128, 'k129_v130', 129, 130, 'bytes'),
+    { name: 'sort_order_id', type: ['null', 'int'], default: null, 'field-id': 140 },
+  ]
+  if (formatVersion >= 3) {
+    dataFileFields.push({ name: 'first_row_id', type: ['null', 'long'], default: null, 'field-id': 142 })
+  }
+
+  return {
+    type: 'record',
+    name: 'manifest_entry',
+    fields: [
+      { name: 'status', type: 'int', 'field-id': 0 },
+      { name: 'snapshot_id', type: ['null', 'long'], default: null, 'field-id': 1 },
+      { name: 'sequence_number', type: ['null', 'long'], default: null, 'field-id': 3 },
+      { name: 'file_sequence_number', type: ['null', 'long'], default: null, 'field-id': 4 },
+      {
+        name: 'data_file',
+        'field-id': 2,
+        type: {
+          type: 'record',
+          name: 'r2',
+          fields: dataFileFields,
+        },
+      },
+    ],
+  }
 }
 
 /**
@@ -59,7 +67,7 @@ const manifestEntrySchema = {
  * @param {number} keyId
  * @param {number} valueId
  * @param {'long'|'bytes'} valueType
- * @returns {import('../../src/types.js').AvroField}
+ * @returns {AvroField}
  */
 function mapField(name, fieldId, recName, keyId, valueId, valueType) {
   return {
@@ -115,36 +123,43 @@ function encodeMap(m) {
  * @param {Schema} options.schema - current table schema (embedded in metadata)
  * @param {bigint} options.snapshotId
  * @param {DataFile} options.dataFile
+ * @param {2|3} [options.formatVersion]
  */
-export function writeDataManifest({ writer, schema, snapshotId, dataFile }) {
+export function writeDataManifest({ writer, schema, snapshotId, dataFile, formatVersion = 2 }) {
+  /** @type {Record<string, any>} */
+  const dataFileRecord = {
+    content: dataFile.content,
+    file_path: dataFile.file_path,
+    file_format: dataFile.file_format.toUpperCase(),
+    partition: {},
+    record_count: dataFile.record_count,
+    file_size_in_bytes: dataFile.file_size_in_bytes,
+    column_sizes: encodeMap(dataFile.column_sizes),
+    value_counts: encodeMap(dataFile.value_counts),
+    null_value_counts: encodeMap(dataFile.null_value_counts),
+    nan_value_counts: encodeMap(dataFile.nan_value_counts),
+    lower_bounds: encodeMap(dataFile.lower_bounds),
+    upper_bounds: encodeMap(dataFile.upper_bounds),
+    sort_order_id: dataFile.sort_order_id ?? 0,
+  }
+  if (formatVersion >= 3) {
+    dataFileRecord.first_row_id = dataFile.first_row_id ?? null
+  }
+
   const record = {
     status: 1,
     snapshot_id: snapshotId,
     sequence_number: null,
     file_sequence_number: null,
-    data_file: {
-      content: dataFile.content,
-      file_path: dataFile.file_path,
-      file_format: dataFile.file_format.toUpperCase(),
-      partition: {},
-      record_count: dataFile.record_count,
-      file_size_in_bytes: dataFile.file_size_in_bytes,
-      column_sizes: encodeMap(dataFile.column_sizes),
-      value_counts: encodeMap(dataFile.value_counts),
-      null_value_counts: encodeMap(dataFile.null_value_counts),
-      nan_value_counts: encodeMap(dataFile.nan_value_counts),
-      lower_bounds: encodeMap(dataFile.lower_bounds),
-      upper_bounds: encodeMap(dataFile.upper_bounds),
-      sort_order_id: dataFile.sort_order_id ?? 0,
-    },
+    data_file: dataFileRecord,
   }
 
   avroWrite({
     writer,
-    schema: manifestEntrySchema,
+    schema: manifestEntrySchema(formatVersion),
     records: [record],
     metadata: {
-      'format-version': '2',
+      'format-version': String(formatVersion),
       content: 'data',
       schema: icebergSchemaJson(schema),
       'partition-spec': '[]',

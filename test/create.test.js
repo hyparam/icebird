@@ -3,6 +3,10 @@ import { icebergCreate } from '../src/create.js'
 import * as fetchModule from '../src/fetch.js'
 import { ByteWriter } from 'hyparquet-writer'
 
+/**
+ * @import {Schema} from '../src/types.js'
+ */
+
 describe('createIceberg', () => {
   const tableUrl = 's3://test-bucket/table-path'
   const translatedTableUrl = 'https://test-bucket.s3.amazonaws.com/table-path'
@@ -64,7 +68,7 @@ describe('createIceberg', () => {
       return writers[path]
     })
     const resolver = { reader: vi.fn(), writer }
-    /** @type {import('../src/types.js').Schema} */
+    /** @type {Schema} */
     const schema = {
       type: 'struct',
       'schema-id': 0,

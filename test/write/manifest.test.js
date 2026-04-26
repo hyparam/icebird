@@ -82,4 +82,17 @@ describe('writeDataManifest', () => {
     expect(df.nan_value_counts).toBeUndefined()
     expect(df.column_sizes).toBeUndefined()
   })
+
+  it('writes v3 first_row_id as null for new data files', async () => {
+    const writer = new ByteWriter()
+    writeDataManifest({ writer, schema, snapshotId: 12345n, dataFile, formatVersion: 3 })
+    const buffer = writer.getBuffer()
+
+    const reader = { view: new DataView(buffer), offset: 0 }
+    const { metadata, syncMarker } = await avroMetadata(reader)
+    expect(metadata['format-version']).toBe('3')
+
+    const records = await avroRead({ reader, metadata, syncMarker })
+    expect(records[0].data_file.first_row_id).toBeUndefined()
+  })
 })
