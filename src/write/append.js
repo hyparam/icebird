@@ -3,6 +3,7 @@ import { uuid4 } from '../utils.js'
 import { writeParquet } from './parquet.js'
 import { writeDataManifest } from './manifest.js'
 import { writeManifestList } from './manifest-list.js'
+import { computeColumnStats } from './stats.js'
 
 /**
  * @import {Resolver, Manifest, Schema, Snapshot, TableMetadata} from '../../src/types.js'
@@ -49,6 +50,7 @@ export async function icebergAppend({ tableUrl, metadata, records, resolver }) {
   const dataFileSize = BigInt(dataWriter.offset)
 
   // 2. Write manifest
+  const stats = computeColumnStats(records, schema)
   const manifestPath = `${tableUrl}/metadata/${manifestUuid}-m0.avro`
   const manifestWriter = resolver.writer(translateS3Url(manifestPath))
   writeDataManifest({
@@ -62,6 +64,11 @@ export async function icebergAppend({ tableUrl, metadata, records, resolver }) {
       partition: {},
       record_count: BigInt(records.length),
       file_size_in_bytes: dataFileSize,
+      value_counts: stats.value_counts,
+      null_value_counts: stats.null_value_counts,
+      nan_value_counts: stats.nan_value_counts,
+      lower_bounds: stats.lower_bounds,
+      upper_bounds: stats.upper_bounds,
       sort_order_id: 0,
     },
   })

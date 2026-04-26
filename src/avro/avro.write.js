@@ -61,8 +61,12 @@ function writeType(writer, schema, value) {
     const unionIndex = schema.findIndex(s => {
       if (Array.isArray(s)) throw new Error('nested unions not supported')
 
-      // normalise branch to a tag string we can test against
-      const tag = typeof s === 'string' ? s : 'logicalType' in s ? s.logicalType : s.type
+      // normalise branch to a tag string we can test against. For complex
+      // types (record/array) the structural type wins over any logicalType
+      // annotation (e.g. an Iceberg array with logicalType=map is still an array).
+      const tag = typeof s === 'string' ? s
+        : s.type === 'record' || s.type === 'array' ? s.type
+          : s.logicalType
 
       if (value == null) return tag === 'null'
       if (tag === 'boolean') return typeof value === 'boolean'
@@ -109,6 +113,18 @@ function writeType(writer, schema, value) {
       appendZigZag(writer, b.length)
       writer.appendBytes(b)
     }
+  } else if (schema.type === 'record') {
+    for (const f of schema.fields) {
+      writeType(writer, f.type, value[f.name])
+    }
+  } else if (schema.type === 'array') {
+    if (value.length) {
+      appendZigZag(writer, value.length)
+      for (const it of value) {
+        writeType(writer, schema.items, it)
+      }
+    }
+    writer.appendVarInt(0)
   } else if ('logicalType' in schema) {
     if (schema.logicalType === 'date') {
       appendZigZag(writer, value instanceof Date ? Math.floor(value.getTime() / 86400000) : value)
@@ -135,18 +151,6 @@ function writeType(writer, schema, value) {
     } else {
       throw new Error(`unknown logical type ${schema.logicalType}`)
     }
-  } else if (schema.type === 'record') {
-    for (const f of schema.fields) {
-      writeType(writer, f.type, value[f.name])
-    }
-  } else if (schema.type === 'array') {
-    if (value.length) {
-      appendZigZag(writer, value.length)
-      for (const it of value) {
-        writeType(writer, schema.items, it)
-      }
-    }
-    writer.appendVarInt(0)
   } else {
     throw new Error(`unknown schema type ${JSON.stringify(schema)}`)
   }
