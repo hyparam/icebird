@@ -102,7 +102,7 @@ export async function icebergRead({
     for (const field of schema.fields) {
       const parquetField = parquetIcebergSchema.fields.find(f => f.id === field.id)
       // May be undefined if the field was added later
-      if (parquetField) {
+      if (parquetField && field.type !== 'unknown') {
         parquetColumnNames.push(sanitize(parquetField.name))
       } else {
         parquetColumnNames.push(undefined)
@@ -184,7 +184,7 @@ export async function icebergRead({
             out[field.name] = field['initial-default']
           } else {
             // 4. Return null in all other cases.
-            out[field.name] = undefined
+            out[field.name] = null
           }
         }
       }

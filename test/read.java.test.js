@@ -57,7 +57,7 @@ describe.concurrent('icebergRead from java iceberg table', () => {
       'Ear Type': 'Lop',
       Temperament: 'Calm',
       'Popularity Rank': 3n,
-      __happy__: undefined,
+      __happy__: null,
     })
   })
 
@@ -77,6 +77,7 @@ describe.concurrent('icebergRead from java iceberg table', () => {
       'Ear Type': 'Lop',
       Temperament: 'Sociable',
       'Popularity Rank': 8n,
+      __happy__: null,
     })
     const newZealandRow = data.find(row => row['Breed Name'] === 'New Zealand')
     expect(newZealandRow).toEqual({
@@ -88,6 +89,7 @@ describe.concurrent('icebergRead from java iceberg table', () => {
       'Ear Type': 'Erect',
       Temperament: 'Affectionate',
       'Popularity Rank': 21n,
+      __happy__: null,
     })
   })
 

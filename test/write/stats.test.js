@@ -82,4 +82,29 @@ describe('computeColumnStats', () => {
     expect(stats.lower_bounds).toEqual({})
     expect(stats.upper_bounds).toEqual({})
   })
+
+  it('serializes nanosecond timestamp bounds and skips unknown columns', () => {
+    /** @type {Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'ts', required: false, type: 'timestamp_ns' },
+        { id: 2, name: 'placeholder', required: false, type: 'unknown' },
+      ],
+    }
+    const records = [
+      { ts: new Date('2024-01-02T00:00:00.001Z'), placeholder: 'ignored' },
+      { ts: 1704153600000000000n, placeholder: 'ignored' },
+    ]
+
+    const stats = computeColumnStats(records, schema)
+    const lo = new DataView(stats.lower_bounds[1].buffer).getBigInt64(0, true)
+    const hi = new DataView(stats.upper_bounds[1].buffer).getBigInt64(0, true)
+
+    expect(lo).toBe(1704153600000000000n)
+    expect(hi).toBe(1704153600001000000n)
+    expect(stats.value_counts[2]).toBeUndefined()
+    expect(stats.null_value_counts[2]).toBeUndefined()
+  })
 })

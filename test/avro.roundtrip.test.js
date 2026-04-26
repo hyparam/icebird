@@ -88,6 +88,30 @@ describe('Avro round-trip', () => {
     expect(round[0].ts.getTime()).toBe(original[0].ts.getTime())
   })
 
+  it('logical timestamp-nanos', () => {
+    /** @type {AvroType} */
+    const schema = {
+      type: 'record',
+      name: 'EventNanos',
+      fields: [
+        {
+          name: 'ts',
+          type: { type: 'long', logicalType: 'timestamp-nanos' },
+        },
+      ],
+    }
+
+    const ts = new Date('2024-01-02T03:04:05.006Z')
+    const writer = new ByteWriter()
+    avroWrite({ writer, schema, records: [{ ts }] })
+
+    const reader = { view: writer.view, offset: 0 }
+    const { metadata, syncMarker } = avroMetadata(reader)
+    const round = avroRead({ reader, metadata, syncMarker })
+
+    expect(round[0].ts.getTime()).toBe(ts.getTime())
+  })
+
   it('array + map round-trip', () => {
     /** @type {AvroType} */
     const schema = {

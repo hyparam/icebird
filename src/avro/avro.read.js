@@ -106,6 +106,9 @@ function readType(reader, type) {
     } else if (type.logicalType === 'timestamp-micros' && type.type === 'long') {
       const value = readZigZagBigInt(reader)
       return new Date(Number(value / 1000n))
+    } else if (type.logicalType === 'timestamp-nanos' && type.type === 'long') {
+      const value = readZigZagBigInt(reader)
+      return new Date(Number(value / 1000000n))
     } else if (type.logicalType === 'decimal' && 'precision' in type) {
       const bytes = readType(reader, type.type)
       const scale = type.scale || 0

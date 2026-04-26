@@ -135,6 +135,11 @@ function writeType(writer, schema, value) {
         writer,
         value instanceof Date ? BigInt(value.getTime()) * 1000n : BigInt(value)
       )
+    } else if (schema.logicalType === 'timestamp-nanos') {
+      appendZigZag64(
+        writer,
+        value instanceof Date ? BigInt(value.getTime()) * 1000000n : BigInt(value)
+      )
     } else if (schema.logicalType === 'decimal') {
       const scale = 'scale' in schema ? schema.scale ?? 0 : 0
       let u

@@ -1,5 +1,5 @@
 /**
- * @import {Field, Schema} from '../../src/types.js'
+ * @import {Field, IcebergType, Schema} from '../../src/types.js'
  */
 
 /**
@@ -34,11 +34,15 @@ export function computeColumnStats(records, schema) {
   const upper_bounds = {}
 
   for (const field of schema.fields) {
+    const type = typeName(field.type)
+    if (type === 'unknown') continue
+
     let nulls = 0n
     let nans = 0n
     let min
     let max
-    const isFloat = field.type === 'float' || field.type === 'double'
+    const isFloat = type === 'float' || type === 'double'
+    const trackBounds = hasComparableBounds(field)
     for (const record of records) {
       const v = record[field.name]
       if (v === null || v === undefined) {
@@ -49,8 +53,10 @@ export function computeColumnStats(records, schema) {
         nans++
         continue
       }
-      if (min === undefined || compare(v, min, field) < 0) min = v
-      if (max === undefined || compare(v, max, field) > 0) max = v
+      if (trackBounds) {
+        if (min === undefined || compare(v, min, field) < 0) min = v
+        if (max === undefined || compare(v, max, field) > 0) max = v
+      }
     }
     value_counts[field.id] = BigInt(records.length)
     null_value_counts[field.id] = nulls
@@ -77,20 +83,24 @@ export function computeColumnStats(records, schema) {
  * @returns {number}
  */
 function compare(a, b, field) {
-  switch (field.type) {
+  switch (typeName(field.type)) {
   case 'boolean':
     return (a ? 1 : 0) - (b ? 1 : 0)
   case 'int':
   case 'float':
   case 'double':
     return a < b ? -1 : a > b ? 1 : 0
-  case 'long':
-  case 'timestamp':
-  case 'timestamptz': {
+  case 'long': {
     const ai = typeof a === 'bigint' ? a : BigInt(a)
     const bi = typeof b === 'bigint' ? b : BigInt(b)
     return ai < bi ? -1 : ai > bi ? 1 : 0
   }
+  case 'timestamp':
+  case 'timestamptz':
+    return compareBigInt(timestampToMicros(a), timestampToMicros(b))
+  case 'timestamp_ns':
+  case 'timestamptz_ns':
+    return compareBigInt(timestampToNanos(a), timestampToNanos(b))
   case 'string':
     return a < b ? -1 : a > b ? 1 : 0
   case 'binary':
@@ -99,6 +109,35 @@ function compare(a, b, field) {
   default:
     return a < b ? -1 : a > b ? 1 : 0
   }
+}
+
+/**
+ * @param {bigint} a
+ * @param {bigint} b
+ * @returns {number}
+ */
+function compareBigInt(a, b) {
+  return a < b ? -1 : a > b ? 1 : 0
+}
+
+/**
+ * @param {any} value
+ * @returns {bigint}
+ */
+function timestampToMicros(value) {
+  return typeof value === 'bigint' ? value
+    : value instanceof Date ? BigInt(value.getTime()) * 1000n
+      : BigInt(value)
+}
+
+/**
+ * @param {any} value
+ * @returns {bigint}
+ */
+function timestampToNanos(value) {
+  return typeof value === 'bigint' ? value
+    : value instanceof Date ? BigInt(value.getTime()) * 1000000n
+      : BigInt(value)
 }
 
 /**
@@ -125,7 +164,7 @@ function compareBytes(a, b) {
  * @returns {Uint8Array|undefined}
  */
 function serializeValue(value, field) {
-  switch (field.type) {
+  switch (typeName(field.type)) {
   case 'boolean': {
     return new Uint8Array([value ? 1 : 0])
   }
@@ -152,11 +191,15 @@ function serializeValue(value, field) {
   case 'timestamp':
   case 'timestamptz': {
     // micros since epoch, 8-byte little-endian
-    const micros = typeof value === 'bigint' ? value
-      : value instanceof Date ? BigInt(value.getTime()) * 1000n
-        : BigInt(value)
     const buf = new ArrayBuffer(8)
-    new DataView(buf).setBigInt64(0, micros, true)
+    new DataView(buf).setBigInt64(0, timestampToMicros(value), true)
+    return new Uint8Array(buf)
+  }
+  case 'timestamp_ns':
+  case 'timestamptz_ns': {
+    // nanos since epoch, 8-byte little-endian
+    const buf = new ArrayBuffer(8)
+    new DataView(buf).setBigInt64(0, timestampToNanos(value), true)
     return new Uint8Array(buf)
   }
   case 'string': {
@@ -173,6 +216,28 @@ function serializeValue(value, field) {
   default:
     return undefined
   }
+}
+
+/**
+ * Return whether Icebird can produce Iceberg lower/upper bounds for a field.
+ *
+ * @param {Field} field
+ * @returns {boolean}
+ */
+function hasComparableBounds(field) {
+  const type = typeName(field.type)
+  if (type.startsWith('geometry') || type.startsWith('geography')) {
+    return false
+  }
+  return type !== 'unknown' && type !== 'variant'
+}
+
+/**
+ * @param {IcebergType} type
+ * @returns {string}
+ */
+function typeName(type) {
+  return typeof type === 'string' ? type : type.type
 }
 
 /**
