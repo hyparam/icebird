@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { icebergRead } from '../src/read.js'
+import { localResolver } from './helpers.js'
 
 describe.concurrent('icebergRead from table with renamed column', () => {
-  const tableUrl = 'https://s3.amazonaws.com/hyperparam-iceberg/spark/rename_column'
+  const tableUrl = 's3://hyperparam-iceberg/spark/rename_column'
+  const resolver = localResolver('test/files')
 
   it('reads pre-renamed column', async () => {
-    const data = await icebergRead({ tableUrl, metadataFileName: 'v2.metadata.json' })
+    const data = await icebergRead({ tableUrl, resolver, metadataFileName: 'v2.metadata.json' })
     expect(data).toEqual([
       {
         id: 3,
@@ -39,7 +41,7 @@ describe.concurrent('icebergRead from table with renamed column', () => {
   })
 
   it('reads renamed column', async () => {
-    const data = await icebergRead({ tableUrl, metadataFileName: 'v3.metadata.json' })
+    const data = await icebergRead({ tableUrl, resolver, metadataFileName: 'v3.metadata.json' })
     expect(data).toEqual([
       {
         id: 3,

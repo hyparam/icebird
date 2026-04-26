@@ -1,33 +1,29 @@
 import { describe, expect, it } from 'vitest'
 import { gzipSync } from 'node:zlib'
 import { icebergLatestVersion, icebergListVersions, icebergMetadata } from '../src/metadata.js'
-import { urlResolver } from '../src/fetch.js'
+import { localLister, localResolver } from './helpers.js'
 
 /**
  * @import {Resolver} from '../src/types.js'
  */
 
 describe.concurrent('Iceberg Metadata', () => {
-  const tableUrl = 'https://s3.amazonaws.com/hyperparam-iceberg/spark/bunnies'
+  const tableUrl = 's3://hyperparam-iceberg/spark/bunnies'
+  const resolver = localResolver('test/files')
+  const lister = localLister('test/files')
 
   it('fetches the latest sequence number from version-hint.text', async () => {
-    const version = await icebergLatestVersion({ tableUrl })
+    const version = await icebergLatestVersion({ tableUrl, resolver, lister })
     expect(version).toBe('v5')
   })
 
   it('fetches iceberg versions from version-hint.text', async () => {
-    const versions = await icebergListVersions({ tableUrl })
+    const versions = await icebergListVersions({ tableUrl, resolver, lister })
     expect(versions).toEqual(['v1', 'v2', 'v3', 'v4', 'v5'])
   })
 
   it('fetches latest iceberg metadata with custom resolver', async () => {
-    const requestInit = {
-      headers: {
-        Dummy: 'Bearer my_token',
-      },
-    }
-    const resolver = urlResolver({ requestInit })
-    const metadata = await icebergMetadata({ tableUrl, resolver })
+    const metadata = await icebergMetadata({ tableUrl, resolver, lister })
     expect(metadata).toMatchObject({
       'current-schema-id': 1,
       'format-version': 2,
@@ -38,7 +34,7 @@ describe.concurrent('Iceberg Metadata', () => {
 
   it('fetches previous iceberg metadata', async () => {
     const metadataFileName = 'v3.metadata.json'
-    const metadata = await icebergMetadata({ tableUrl, metadataFileName })
+    const metadata = await icebergMetadata({ tableUrl, metadataFileName, resolver, lister })
     expect(metadata).toMatchObject({
       'current-schema-id': 0,
       'format-version': 2,

@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { icebergRead } from '../src/read.js'
+import { localResolver } from './helpers.js'
 
 describe.concurrent('icebergRead from spark iceberg table', () => {
-  const tableUrl = 'https://s3.amazonaws.com/hyperparam-iceberg/spark/bunnies'
+  const tableUrl = 's3://hyperparam-iceberg/spark/bunnies'
+  const resolver = localResolver('test/files')
 
   it('reads data from iceberg', async () => {
-    const data = await icebergRead({ tableUrl, metadataFileName: 'v1.metadata.json' })
+    const data = await icebergRead({ tableUrl, metadataFileName: 'v1.metadata.json', resolver })
 
     // Verify we got correct number of rows
     expect(data).toBeInstanceOf(Array)
@@ -42,7 +44,7 @@ describe.concurrent('icebergRead from spark iceberg table', () => {
   })
 
   it('reads data v3 with deleted row', async () => {
-    const data = await icebergRead({ tableUrl, metadataFileName: 'v3.metadata.json' })
+    const data = await icebergRead({ tableUrl, metadataFileName: 'v3.metadata.json', resolver })
 
     expect(data.length).toBe(20)
     expect(data[0]).toEqual({
@@ -58,7 +60,7 @@ describe.concurrent('icebergRead from spark iceberg table', () => {
   })
 
   it('reads data v5 with added column', async () => {
-    const data = await icebergRead({ tableUrl, metadataFileName: 'v5.metadata.json' })
+    const data = await icebergRead({ tableUrl, metadataFileName: 'v5.metadata.json', resolver })
 
     expect(data.length).toBe(20)
     expect(data[0]).toEqual({

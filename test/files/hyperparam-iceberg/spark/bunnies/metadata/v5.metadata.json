@@ -1,0 +1,217 @@
+{
+  "format-version" : 2,
+  "table-uuid" : "50d305b7-f929-4857-869f-68d7e9b570e5",
+  "location" : "s3a://hyperparam-iceberg/spark/bunnies",
+  "last-sequence-number" : 3,
+  "last-updated-ms" : 1743310561983,
+  "last-column-id" : 9,
+  "current-schema-id" : 1,
+  "schemas" : [ {
+    "type" : "struct",
+    "schema-id" : 0,
+    "fields" : [ {
+      "id" : 1,
+      "name" : "Breed Name",
+      "required" : false,
+      "type" : "string"
+    }, {
+      "id" : 2,
+      "name" : "Average Weight",
+      "required" : false,
+      "type" : "double"
+    }, {
+      "id" : 3,
+      "name" : "Fur Length",
+      "required" : false,
+      "type" : "double"
+    }, {
+      "id" : 4,
+      "name" : "Lifespan",
+      "required" : false,
+      "type" : "long"
+    }, {
+      "id" : 5,
+      "name" : "Origin Country",
+      "required" : false,
+      "type" : "string"
+    }, {
+      "id" : 6,
+      "name" : "Ear Type",
+      "required" : false,
+      "type" : "string"
+    }, {
+      "id" : 7,
+      "name" : "Temperament",
+      "required" : false,
+      "type" : "string"
+    }, {
+      "id" : 8,
+      "name" : "Popularity Rank",
+      "required" : false,
+      "type" : "long"
+    } ]
+  }, {
+    "type" : "struct",
+    "schema-id" : 1,
+    "fields" : [ {
+      "id" : 1,
+      "name" : "Breed Name",
+      "required" : false,
+      "type" : "string"
+    }, {
+      "id" : 2,
+      "name" : "Average Weight",
+      "required" : false,
+      "type" : "double"
+    }, {
+      "id" : 3,
+      "name" : "Fur Length",
+      "required" : false,
+      "type" : "double"
+    }, {
+      "id" : 4,
+      "name" : "Lifespan",
+      "required" : false,
+      "type" : "long"
+    }, {
+      "id" : 5,
+      "name" : "Origin Country",
+      "required" : false,
+      "type" : "string"
+    }, {
+      "id" : 6,
+      "name" : "Ear Type",
+      "required" : false,
+      "type" : "string"
+    }, {
+      "id" : 7,
+      "name" : "Temperament",
+      "required" : false,
+      "type" : "string"
+    }, {
+      "id" : 8,
+      "name" : "Popularity Rank",
+      "required" : false,
+      "type" : "long"
+    }, {
+      "id" : 9,
+      "name" : "breed_name_length",
+      "required" : false,
+      "type" : "int"
+    } ]
+  } ],
+  "default-spec-id" : 0,
+  "partition-specs" : [ {
+    "spec-id" : 0,
+    "fields" : [ ]
+  } ],
+  "last-partition-id" : 999,
+  "default-sort-order-id" : 0,
+  "sort-orders" : [ {
+    "order-id" : 0,
+    "fields" : [ ]
+  } ],
+  "properties" : {
+    "owner" : "platypii",
+    "write.delete.mode" : "merge-on-read",
+    "write.parquet.compression-codec" : "zstd"
+  },
+  "current-snapshot-id" : 2701171901096418979,
+  "refs" : {
+    "main" : {
+      "snapshot-id" : 2701171901096418979,
+      "type" : "branch"
+    }
+  },
+  "snapshots" : [ {
+    "sequence-number" : 1,
+    "snapshot-id" : 7505300640432048841,
+    "timestamp-ms" : 1743310454186,
+    "summary" : {
+      "operation" : "append",
+      "spark.app.id" : "local-1743310444231",
+      "added-data-files" : "1",
+      "added-records" : "21",
+      "added-files-size" : "3224",
+      "changed-partition-count" : "1",
+      "total-records" : "21",
+      "total-files-size" : "3224",
+      "total-data-files" : "1",
+      "total-delete-files" : "0",
+      "total-position-deletes" : "0",
+      "total-equality-deletes" : "0"
+    },
+    "manifest-list" : "s3a://hyperparam-iceberg/spark/bunnies/metadata/snap-7505300640432048841-1-bbd21bb7-5974-4d4b-bd54-82fb9b0ed6bf.avro",
+    "schema-id" : 0
+  }, {
+    "sequence-number" : 2,
+    "snapshot-id" : 469881615898633426,
+    "parent-snapshot-id" : 7505300640432048841,
+    "timestamp-ms" : 1743310500792,
+    "summary" : {
+      "operation" : "overwrite",
+      "spark.app.id" : "local-1743310486098",
+      "added-position-delete-files" : "1",
+      "added-delete-files" : "1",
+      "added-files-size" : "1437",
+      "added-position-deletes" : "1",
+      "changed-partition-count" : "1",
+      "total-records" : "21",
+      "total-files-size" : "4661",
+      "total-data-files" : "1",
+      "total-delete-files" : "1",
+      "total-position-deletes" : "1",
+      "total-equality-deletes" : "0"
+    },
+    "manifest-list" : "s3a://hyperparam-iceberg/spark/bunnies/metadata/snap-469881615898633426-1-ac75cc9f-cc0c-4712-8337-fe4b0c473459.avro",
+    "schema-id" : 0
+  }, {
+    "sequence-number" : 3,
+    "snapshot-id" : 2701171901096418979,
+    "parent-snapshot-id" : 469881615898633426,
+    "timestamp-ms" : 1743310561983,
+    "summary" : {
+      "operation" : "overwrite",
+      "spark.app.id" : "local-1743310545784",
+      "added-data-files" : "1",
+      "deleted-data-files" : "1",
+      "added-records" : "20",
+      "deleted-records" : "21",
+      "added-files-size" : "3560",
+      "removed-files-size" : "3224",
+      "changed-partition-count" : "1",
+      "total-records" : "20",
+      "total-files-size" : "4997",
+      "total-data-files" : "1",
+      "total-delete-files" : "1",
+      "total-position-deletes" : "1",
+      "total-equality-deletes" : "0"
+    },
+    "manifest-list" : "s3a://hyperparam-iceberg/spark/bunnies/metadata/snap-2701171901096418979-1-91d5eea0-314d-4056-8818-59b825cbd38a.avro",
+    "schema-id" : 1
+  } ],
+  "statistics" : [ ],
+  "snapshot-log" : [ {
+    "timestamp-ms" : 1743310454186,
+    "snapshot-id" : 7505300640432048841
+  }, {
+    "timestamp-ms" : 1743310500792,
+    "snapshot-id" : 469881615898633426
+  }, {
+    "timestamp-ms" : 1743310561983,
+    "snapshot-id" : 2701171901096418979
+  } ],
+  "metadata-log" : [ {
+    "timestamp-ms" : 1743310454186,
+    "metadata-file" : "s3a://hyperparam-iceberg/spark/bunnies/metadata/v1.metadata.json"
+  }, {
+    "timestamp-ms" : 1743310490963,
+    "metadata-file" : "s3a://hyperparam-iceberg/spark/bunnies/metadata/v2.metadata.json"
+  }, {
+    "timestamp-ms" : 1743310500792,
+    "metadata-file" : "s3a://hyperparam-iceberg/spark/bunnies/metadata/v3.metadata.json"
+  }, {
+    "timestamp-ms" : 1743310551476,
+    "metadata-file" : "s3a://hyperparam-iceberg/spark/bunnies/metadata/v4.metadata.json"
+  } ]
+}

@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import { icebergRead } from '../src/read.js'
+import { localResolver } from './helpers.js'
 
 describe.concurrent('icebergRead from java iceberg table', () => {
-  const tableUrl = 'https://s3.amazonaws.com/hyperparam-iceberg/java/bunnies'
+  const tableUrl = 's3://hyperparam-iceberg/java/bunnies'
+  const resolver = localResolver('test/files')
 
   it('reads data from iceberg table', async () => {
     const data = await icebergRead({
       tableUrl,
+      resolver,
       metadataFileName: 'v2.metadata.json',
     })
 
@@ -44,6 +47,7 @@ describe.concurrent('icebergRead from java iceberg table', () => {
   it('reads data v3 with added column', async () => {
     const data = await icebergRead({
       tableUrl,
+      resolver,
       metadataFileName: 'v3.metadata.json',
     })
 
@@ -64,6 +68,7 @@ describe.concurrent('icebergRead from java iceberg table', () => {
   it('reads data v4 with deleted rows', async () => {
     const data = await icebergRead({
       tableUrl,
+      resolver,
       metadataFileName: 'v4.metadata.json',
     })
 
@@ -96,6 +101,7 @@ describe.concurrent('icebergRead from java iceberg table', () => {
   it('reads data v5 with equality updated row', async () => {
     const data = await icebergRead({
       tableUrl,
+      resolver,
       metadataFileName: 'v5.metadata.json',
     })
 

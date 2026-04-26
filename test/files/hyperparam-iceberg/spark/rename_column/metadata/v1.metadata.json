@@ -1,0 +1,70 @@
+{
+  "format-version" : 2,
+  "table-uuid" : "d6d0afa0-5fb3-46e8-94c4-8ea619f9bdd2",
+  "location" : "s3a://hyperparam-iceberg/spark/rename_column",
+  "last-sequence-number" : 0,
+  "last-updated-ms" : 1743405302285,
+  "last-column-id" : 5,
+  "current-schema-id" : 0,
+  "schemas" : [ {
+    "type" : "struct",
+    "schema-id" : 0,
+    "fields" : [ {
+      "id" : 1,
+      "name" : "id",
+      "required" : false,
+      "type" : "int"
+    }, {
+      "id" : 2,
+      "name" : "name",
+      "required" : false,
+      "type" : "string"
+    }, {
+      "id" : 3,
+      "name" : "date",
+      "required" : false,
+      "type" : "date"
+    }, {
+      "id" : 4,
+      "name" : "price",
+      "required" : false,
+      "type" : "decimal(10, 2)"
+    }, {
+      "id" : 5,
+      "name" : "active",
+      "required" : false,
+      "type" : "boolean"
+    } ]
+  } ],
+  "default-spec-id" : 0,
+  "partition-specs" : [ {
+    "spec-id" : 0,
+    "fields" : [ {
+      "name" : "id_bucket",
+      "transform" : "bucket[4]",
+      "source-id" : 1,
+      "field-id" : 1000
+    }, {
+      "name" : "date",
+      "transform" : "identity",
+      "source-id" : 3,
+      "field-id" : 1001
+    } ]
+  } ],
+  "last-partition-id" : 1001,
+  "default-sort-order-id" : 0,
+  "sort-orders" : [ {
+    "order-id" : 0,
+    "fields" : [ ]
+  } ],
+  "properties" : {
+    "owner" : "platypii",
+    "write.parquet.compression-codec" : "zstd"
+  },
+  "current-snapshot-id" : -1,
+  "refs" : { },
+  "snapshots" : [ ],
+  "statistics" : [ ],
+  "snapshot-log" : [ ],
+  "metadata-log" : [ ]
+}

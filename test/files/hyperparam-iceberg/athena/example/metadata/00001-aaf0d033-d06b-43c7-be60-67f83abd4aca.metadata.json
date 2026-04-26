@@ -1,0 +1,78 @@
+{
+  "format-version" : 2,
+  "table-uuid" : "82207f47-010d-4865-90f8-c563cc85cb5b",
+  "location" : "s3://hyperparam-iceberg/athena/example",
+  "last-sequence-number" : 1,
+  "last-updated-ms" : 1743474984216,
+  "last-column-id" : 2,
+  "current-schema-id" : 0,
+  "schemas" : [ {
+    "type" : "struct",
+    "schema-id" : 0,
+    "fields" : [ {
+      "id" : 1,
+      "name" : "id",
+      "required" : false,
+      "type" : "int"
+    }, {
+      "id" : 2,
+      "name" : "name",
+      "required" : false,
+      "type" : "string"
+    } ]
+  } ],
+  "default-spec-id" : 0,
+  "partition-specs" : [ {
+    "spec-id" : 0,
+    "fields" : [ ]
+  } ],
+  "last-partition-id" : 999,
+  "default-sort-order-id" : 0,
+  "sort-orders" : [ {
+    "order-id" : 0,
+    "fields" : [ ]
+  } ],
+  "properties" : {
+    "write.format.default" : "PARQUET",
+    "write.object-storage.enabled" : "true",
+    "write.object-storage.path" : "s3://hyperparam-iceberg/athena/example/data",
+    "write.parquet.compression-codec" : "zstd"
+  },
+  "current-snapshot-id" : 6838723292707092922,
+  "refs" : {
+    "main" : {
+      "snapshot-id" : 6838723292707092922,
+      "type" : "branch"
+    }
+  },
+  "snapshots" : [ {
+    "sequence-number" : 1,
+    "snapshot-id" : 6838723292707092922,
+    "timestamp-ms" : 1743474984216,
+    "summary" : {
+      "operation" : "append",
+      "trino_query_id" : "20250401_023623_00108_u4nkm",
+      "added-data-files" : "1",
+      "added-records" : "2",
+      "added-files-size" : "345",
+      "changed-partition-count" : "1",
+      "total-records" : "2",
+      "total-files-size" : "345",
+      "total-data-files" : "1",
+      "total-delete-files" : "0",
+      "total-position-deletes" : "0",
+      "total-equality-deletes" : "0"
+    },
+    "manifest-list" : "s3://hyperparam-iceberg/athena/example/metadata/snap-6838723292707092922-1-3d82674b-df1e-49b5-a7a9-05b61567065a.avro",
+    "schema-id" : 0
+  } ],
+  "statistics" : [ ],
+  "snapshot-log" : [ {
+    "timestamp-ms" : 1743474984216,
+    "snapshot-id" : 6838723292707092922
+  } ],
+  "metadata-log" : [ {
+    "timestamp-ms" : 1743474980940,
+    "metadata-file" : "s3://hyperparam-iceberg/athena/example/metadata/00000-eedf51e6-8c09-463b-8850-844ee6ec1de0.metadata.json"
+  } ]
+}
