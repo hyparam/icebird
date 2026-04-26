@@ -30,18 +30,37 @@ export function sanitize(name) {
 
 /**
  * Helper to check if a row matches an equality delete predicate.
- * For simplicity, compares all fields (except file_path and pos) by strict equality.
  *
  * @param {Record<string, any>} row - row from a data file
- * @param {Record<string, any>} deletePredicate - row from an equality delete file
+ * @param {Record<string|number, any>} deletePredicate - equality values keyed by field id or column name
+ * @param {Record<number, string>} [columnNamesById] - data file parquet column name by Iceberg field id
  * @returns {boolean} true if row matches the predicate.
  */
-export function equalityMatch(row, deletePredicate) {
-  for (const key in deletePredicate) {
-    if (key === 'file_path' || key === 'pos') continue
-    if (deletePredicate[key] !== null && row[key] !== deletePredicate[key]) return false
+export function equalityMatch(row, deletePredicate, columnNamesById) {
+  for (const key of Object.keys(deletePredicate)) {
+    const columnName = columnNamesById ? columnNamesById[Number(key)] : key
+    if (columnName === 'file_path' || columnName === 'pos') continue
+    if (!columnName) return false
+    if (!valuesEqual(row[columnName], deletePredicate[key])) return false
   }
   return true
+}
+
+/**
+ * @param {any} a
+ * @param {any} b
+ * @returns {boolean}
+ */
+function valuesEqual(a, b) {
+  if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime()
+  if (a instanceof Uint8Array && b instanceof Uint8Array) {
+    if (a.length !== b.length) return false
+    for (let i = 0; i < a.length; i++) {
+      if (a[i] !== b[i]) return false
+    }
+    return true
+  }
+  return a === b
 }
 
 /**

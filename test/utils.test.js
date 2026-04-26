@@ -30,8 +30,28 @@ describe('sanitizes names', () => {
 describe('equalityMatch', () => {
   it('returns true for a matching row', () => {
     const row = { id: 1, category: 'books', price: 9.99 }
-    const deletePredicate = { id: 1, category: null }
+    const deletePredicate = { id: 1, category: 'books' }
     expect(equalityMatch(row, deletePredicate)).toBe(true)
+  })
+
+  it('matches null only when the row value is null', () => {
+    expect(equalityMatch(
+      { id: 1, category: null },
+      { id: 1, category: null }
+    )).toBe(true)
+    expect(equalityMatch(
+      { id: 1, category: 'books' },
+      { id: 1, category: null }
+    )).toBe(false)
+  })
+
+  it('matches field-id predicates using data column names', () => {
+    const row = { id: 1, renamed_category: 'books' }
+    const deletePredicate = { 1: 1, 2: 'books' }
+    expect(equalityMatch(row, deletePredicate, {
+      1: 'id',
+      2: 'renamed_category',
+    })).toBe(true)
   })
 
   it('returns false if one of the fields does not match', () => {

@@ -114,6 +114,7 @@ export async function icebergRead({
     for (const column of [lineageColumns.rowId, lineageColumns.lastUpdatedSequenceNumber]) {
       if (column && !columns.includes(column)) columns.push(column)
     }
+    const dataColumnNamesById = columnNamesById(parquetIcebergSchema)
 
     const rows = await parquetReadObjects({
       file: asyncBuffer,
@@ -147,7 +148,9 @@ export async function icebergRead({
       //   when the data and delete file data sequence numbers are equal.
       //   This allows deleting rows that were added in the same commit.
       if (deleteSequenceNumber <= sequence_number) continue // Skip deletes that are too old
-      rowEntries = rowEntries.filter(({ row }) => !deleteRows.some(predicate => equalityMatch(row, predicate)))
+      rowEntries = rowEntries.filter(({ row }) => {
+        return !deleteRows.some(predicate => equalityMatch(row, predicate, dataColumnNamesById))
+      })
     }
 
     // Map parquet column names to iceberg names by field id
@@ -256,6 +259,19 @@ function rowLineageColumnNames(parquetIcebergSchema) {
 function columnNameByFieldId(schema, fieldId) {
   const field = schema.fields.find(f => f.id === fieldId)
   return field ? sanitize(field.name) : undefined
+}
+
+/**
+ * @param {Schema} schema
+ * @returns {Record<number, string>}
+ */
+function columnNamesById(schema) {
+  /** @type {Record<number, string>} */
+  const out = {}
+  for (const field of schema.fields) {
+    out[field.id] = sanitize(field.name)
+  }
+  return out
 }
 
 /**

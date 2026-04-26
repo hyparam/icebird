@@ -1,9 +1,11 @@
-import { asyncBufferFromUrl, cachedAsyncBuffer, parquetReadObjects } from 'hyparquet'
+import { asyncBufferFromUrl, cachedAsyncBuffer, parquetMetadataAsync, parquetReadObjects } from 'hyparquet'
 import { compressors } from 'hyparquet-compressors'
 import { avroRead } from './avro/avro.read.js'
 import { avroMetadata } from './avro/avro.metadata.js'
+import { sanitize } from './utils.js'
 
 /**
+ * @import {FileMetaData} from 'hyparquet'
  * @import {ManifestEntry, Lister, Resolver} from '../src/types.js'
  */
 
@@ -96,13 +98,13 @@ export function s3ParseUrl(url) {
  *
  * @param {ManifestEntry[]} deleteEntries
  * @param {Resolver} resolver
- * @returns {Promise<{positionDeletesMap: Map<string, Set<bigint>>, equalityDeletesMap: Map<bigint, Record<string, any>[]>}>}
+ * @returns {Promise<{positionDeletesMap: Map<string, Set<bigint>>, equalityDeletesMap: Map<bigint, Record<number, any>[]>}>}
  */
 export async function fetchDeleteMaps(deleteEntries, resolver) {
   // Build maps of delete entries keyed by target data file path
   /** @type {Map<string, Set<bigint>>} */
   const positionDeletesMap = new Map()
-  /** @type {Map<bigint, Record<string, any>[]>} */
+  /** @type {Map<bigint, Record<number, any>[]>} */
   const equalityDeletesMap = new Map()
 
   // Fetch delete files in parallel
@@ -110,9 +112,10 @@ export async function fetchDeleteMaps(deleteEntries, resolver) {
     const { content, file_path, file_size_in_bytes } = deleteEntry.data_file
     const asyncBuffer = await resolver.reader(file_path, Number(file_size_in_bytes))
     const file = cachedAsyncBuffer(asyncBuffer)
-    const deleteRows = await parquetReadObjects({ file, compressors })
-    for (const deleteRow of deleteRows) {
-      if (content === 1) { // position delete
+
+    if (content === 1) { // position delete
+      const deleteRows = await parquetReadObjects({ file, compressors })
+      for (const deleteRow of deleteRows) {
         const { file_path, pos } = deleteRow
         if (!file_path) throw new Error('position delete missing target file path')
         if (pos === undefined) throw new Error('position delete missing pos')
@@ -123,23 +126,71 @@ export async function fetchDeleteMaps(deleteEntries, resolver) {
           positionDeletesMap.set(file_path, set)
         }
         set.add(pos)
-      } else if (content === 2) { // equality delete
-        // save the entire delete row (restrict this to equalityIds?)
-        const { sequence_number } = deleteEntry
-        if (sequence_number === undefined) {
-          throw new Error('equality delete missing sequence number')
-        }
-        let list = equalityDeletesMap.get(sequence_number)
-        if (!list) {
-          list = []
-          equalityDeletesMap.set(sequence_number, list)
-        }
-        list.push(deleteRow)
+      }
+    } else if (content === 2) { // equality delete
+      const { sequence_number } = deleteEntry
+      const equalityIds = deleteEntry.data_file.equality_ids
+      if (sequence_number === undefined) {
+        throw new Error('equality delete missing sequence number')
+      }
+      if (!equalityIds?.length) {
+        throw new Error('equality delete missing equality_ids')
+      }
+
+      const metadata = await parquetMetadataAsync(file)
+      const columnNamesById = equalityColumnNamesById(metadata, equalityIds)
+      const columns = equalityIds.map(id => columnNamesById[id])
+      const deleteRows = await parquetReadObjects({ file, metadata, columns, compressors })
+      let list = equalityDeletesMap.get(sequence_number)
+      if (!list) {
+        list = []
+        equalityDeletesMap.set(sequence_number, list)
+      }
+      for (const deleteRow of deleteRows) {
+        list.push(equalityPredicate(deleteRow, equalityIds, columnNamesById))
       }
     }
   }))
 
   return { positionDeletesMap, equalityDeletesMap }
+}
+
+/**
+ * Map equality field ids to physical parquet column names in a delete file.
+ *
+ * @param {FileMetaData} parquetMetadata
+ * @param {number[]} equalityIds
+ * @returns {Record<number, string>}
+ */
+function equalityColumnNamesById(parquetMetadata, equalityIds) {
+  const kv = parquetMetadata.key_value_metadata?.find(k => k.key === 'iceberg.schema')
+  if (!kv?.value) throw new Error('equality delete missing iceberg.schema parquet metadata')
+  const schema = JSON.parse(kv.value)
+  /** @type {Record<number, string>} */
+  const out = {}
+  for (const id of equalityIds) {
+    const field = schema.fields.find((/** @type {{ id: number }} */ f) => f.id === id)
+    if (!field) throw new Error(`equality delete missing field id ${id} in parquet schema`)
+    out[id] = sanitize(field.name)
+  }
+  return out
+}
+
+/**
+ * Keep only the columns identified by equality_ids, keyed by Iceberg field id.
+ *
+ * @param {Record<string, any>} deleteRow
+ * @param {number[]} equalityIds
+ * @param {Record<number, string>} columnNamesById
+ * @returns {Record<number, any>}
+ */
+function equalityPredicate(deleteRow, equalityIds, columnNamesById) {
+  /** @type {Record<number, any>} */
+  const out = {}
+  for (const id of equalityIds) {
+    out[id] = deleteRow[columnNamesById[id]]
+  }
+  return out
 }
 
 /**
