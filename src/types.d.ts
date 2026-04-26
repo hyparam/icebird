@@ -59,15 +59,58 @@ export interface Schema {
   fields: Field[]
 }
 
-interface Field {
+export interface Field {
   id: number
   name: string
   required: boolean
-  type: string // TODO
+  type: IcebergType
   doc?: string
   'initial-default'?: any
   'write-default'?: any
 }
+
+export type IcebergType =
+  'unknown' |
+  'boolean' |
+  'int' |
+  'long' |
+  'float' |
+  'double' |
+  'date' |
+  'time' |
+  'timestamp' |
+  'timestamptz' |
+  'timestamp_ns' |
+  'timestamptz_ns' |
+  'string' |
+  'uuid' |
+  `fixed[${number}]` |
+  'binary' |
+  `decimal(${number},${number})` |
+  `decimal(${number}, ${number})` |
+  'variant' |
+  'geometry' |
+  `geometry(${string})` |
+  'geography' |
+  `geography(${string})` |
+  IcebergNestedType
+
+export type IcebergNestedType =
+  | Schema
+  | {
+      type: 'list'
+      'element-id': number
+      'element-required': boolean
+      element: IcebergType
+    }
+  | {
+      type: 'map'
+      'key-id': number
+      key: IcebergType
+      'value-id': number
+      'value-required': boolean
+      value: IcebergType
+    }
 
 export interface PartitionSpec {
   'spec-id': number
@@ -316,6 +359,11 @@ type AvroTimestampMicros = {
   logicalType: 'timestamp-micros'
 }
 
+type AvroTimestampNanos = {
+  type: 'long'
+  logicalType: 'timestamp-nanos'
+}
+
 type AvroLogicalTypeType =
   'date' |
   'decimal' |
@@ -326,6 +374,7 @@ type AvroLogicalTypeType =
   'time-micros' |
   'timestamp-millis' |
   'timestamp-micros' |
+  'timestamp-nanos' |
   'uuid'
 
 // catch-all: "implementations must ignore unknown logical types when reading"
@@ -334,7 +383,13 @@ type AvroGenericLogicalType = {
   logicalType: AvroLogicalTypeType
 }
 
-type AvroLogicalType = AvroDate | AvroDecimal | AvroTimestampMillis | AvroTimestampMicros | AvroGenericLogicalType
+type AvroLogicalType =
+  AvroDate |
+  AvroDecimal |
+  AvroTimestampMillis |
+  AvroTimestampMicros |
+  AvroTimestampNanos |
+  AvroGenericLogicalType
 
 // Avro complex types: records, enums, arrays, maps, unions, fixed
 type AvroComplexType = AvroRecord | AvroArray | AvroUnion

@@ -54,4 +54,42 @@ describe('writeParquet', () => {
     expect(() => writeParquet({ writer, schema: bad, records: [] }))
       .toThrow('unsupported iceberg type: decimal(9,2)')
   })
+
+  it('writes v3 primitive parquet types', async () => {
+    const writer = new ByteWriter()
+    const ts = new Date('2024-01-02T03:04:05.006Z')
+    /** @type {Schema} */
+    const v3Schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'ts', required: false, type: 'timestamp_ns' },
+        { id: 2, name: 'tz', required: false, type: 'timestamptz_ns' },
+        { id: 3, name: 'placeholder', required: false, type: 'unknown' },
+      ],
+    }
+
+    writeParquet({
+      writer,
+      schema: v3Schema,
+      records: [{ ts, tz: ts, placeholder: 'ignored' }],
+    })
+    const file = writer.getBuffer()
+    const meta = parquetMetadata(file)
+
+    expect(meta.schema.find(s => s.name === 'placeholder')).toBeUndefined()
+    expect(meta.schema.find(s => s.name === 'ts')?.logical_type).toEqual({
+      type: 'TIMESTAMP',
+      isAdjustedToUTC: false,
+      unit: 'NANOS',
+    })
+    expect(meta.schema.find(s => s.name === 'tz')?.logical_type).toEqual({
+      type: 'TIMESTAMP',
+      isAdjustedToUTC: true,
+      unit: 'NANOS',
+    })
+
+    const rows = await parquetReadObjects({ file, compressors })
+    expect(rows).toEqual([{ ts, tz: ts }])
+  })
 })
