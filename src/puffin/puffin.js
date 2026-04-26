@@ -6,6 +6,7 @@ const PUFFIN_MAGIC = 0x50464131
  * Read a Puffin `deletion-vector-v1` blob selected by manifest offset/length.
  *
  * @import {AsyncBuffer} from 'hyparquet'
+ * @import {PuffinFileMetadata} from '../../src/puffin/types.js'
  * @param {AsyncBuffer} file
  * @param {object} options
  * @param {number|bigint} options.offset
@@ -70,21 +71,3 @@ function toSafeNumber(value) {
   if (!Number.isSafeInteger(out)) throw new Error(`puffin offset exceeds safe integer range: ${value}`)
   return out
 }
-
-/**
- * @typedef {object} PuffinFileMetadata
- * @property {PuffinBlobMetadata[]} blobs
- * @property {Record<string, string>} [properties]
- */
-
-/**
- * @typedef {object} PuffinBlobMetadata
- * @property {string} type
- * @property {number[]} fields
- * @property {number} snapshot-id
- * @property {number} sequence-number
- * @property {number} offset
- * @property {number} length
- * @property {string} [compression-codec]
- * @property {Record<string, string>} [properties]
- */

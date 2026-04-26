@@ -92,4 +92,47 @@ describe('writeParquet', () => {
     const rows = await parquetReadObjects({ file, compressors })
     expect(rows).toEqual([{ ts, tz: ts }])
   })
+
+  it('writes v3 geospatial parquet logical types', () => {
+    const writer = new ByteWriter()
+    const point = { type: 'Point', coordinates: [30, 10] }
+    /** @type {Schema} */
+    const v3Schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'geom', required: false, type: 'geometry(srid:4326)' },
+        { id: 2, name: 'geog', required: false, type: 'geography(srid:4326,spherical)' },
+      ],
+    }
+
+    writeParquet({
+      writer,
+      schema: v3Schema,
+      records: [{ geom: point, geog: point }],
+    })
+    const meta = parquetMetadata(writer.getBuffer())
+
+    expect(meta.schema.find(s => s.name === 'geom')).toMatchObject({
+      type: 'BYTE_ARRAY',
+      logical_type: { type: 'GEOMETRY' },
+    })
+    expect(meta.schema.find(s => s.name === 'geog')).toMatchObject({
+      type: 'BYTE_ARRAY',
+      logical_type: { type: 'GEOGRAPHY' },
+    })
+  })
+
+  it('rejects required unknown columns', () => {
+    const writer = new ByteWriter()
+    /** @type {Schema} */
+    const bad = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [{ id: 1, name: 'placeholder', required: true, type: 'unknown' }],
+    }
+
+    expect(() => writeParquet({ writer, schema: bad, records: [] }))
+      .toThrow('unsupported required iceberg type: unknown')
+  })
 })

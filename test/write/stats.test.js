@@ -107,4 +107,30 @@ describe('computeColumnStats', () => {
     expect(stats.value_counts[2]).toBeUndefined()
     expect(stats.null_value_counts[2]).toBeUndefined()
   })
+
+  it('omits bounds for v3 variant and geospatial columns', () => {
+    /** @type {Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'payload', required: false, type: 'variant' },
+        { id: 2, name: 'geom', required: false, type: 'geometry(srid:4326)' },
+        { id: 3, name: 'geog', required: false, type: 'geography(srid:4326,spherical)' },
+      ],
+    }
+    const pointA = new Uint8Array([1, 1, 0, 0, 0])
+    const pointB = new Uint8Array([1, 2, 0, 0, 0])
+    const records = [
+      { payload: { a: 1 }, geom: pointA, geog: pointB },
+      { payload: null, geom: pointB, geog: null },
+    ]
+
+    const stats = computeColumnStats(records, schema)
+
+    expect(stats.value_counts).toEqual({ 1: 2n, 2: 2n, 3: 2n })
+    expect(stats.null_value_counts).toEqual({ 1: 1n, 2: 0n, 3: 1n })
+    expect(stats.lower_bounds).toEqual({})
+    expect(stats.upper_bounds).toEqual({})
+  })
 })

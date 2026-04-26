@@ -49,7 +49,7 @@ export interface TableMetadata {
   statistics?: TableStatistics[]
   'partition-statistics'?: PartitionStatistics[]
   'next-row-id'?: number | bigint // required in V3
-  // 'encryption-keys'?: EncryptionKeys[]
+  'encryption-keys'?: EncryptionKey[] // V3
 }
 
 export interface Schema {
@@ -131,7 +131,8 @@ export type PartitionTransform =
   'month' |
   'day' |
   'hour' |
-  'void'
+  'void' |
+  string
 interface PartitionStatistics {
   'snapshot-id': bigint
   'statistics-path': string
@@ -181,6 +182,7 @@ export interface Snapshot {
   'schema-id'?: number
   'first-row-id'?: number // V3
   'added-rows'?: number // V3
+  'key-id'?: string // V3
 }
 
 interface TableStatistics {
@@ -201,6 +203,11 @@ export interface SnapshotRef {
   'min-snapshots-to-keep'?: number
   'max-snapshot-age-ms'?: number
   'max-ref-age-ms'?: number
+}
+
+interface EncryptionKey {
+  'key-id': string
+  'key-metadata': string
 }
 
 /**

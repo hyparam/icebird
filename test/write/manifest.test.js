@@ -95,4 +95,23 @@ describe('writeDataManifest', () => {
     const records = await avroRead({ reader, metadata, syncMarker })
     expect(records[0].data_file.first_row_id).toBeUndefined()
   })
+
+  it('writes v3 first_row_id when data file metadata already has one', async () => {
+    const writer = new ByteWriter()
+    writeDataManifest({
+      writer,
+      schema,
+      snapshotId: 12345n,
+      dataFile: { ...dataFile, first_row_id: 1000n },
+      formatVersion: 3,
+    })
+    const buffer = writer.getBuffer()
+
+    const reader = { view: new DataView(buffer), offset: 0 }
+    const { metadata, syncMarker } = await avroMetadata(reader)
+    expect(metadata['format-version']).toBe('3')
+
+    const records = await avroRead({ reader, metadata, syncMarker })
+    expect(records[0].data_file.first_row_id).toBe(1000n)
+  })
 })
