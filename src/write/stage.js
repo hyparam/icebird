@@ -6,24 +6,28 @@ import { writeManifestList } from './manifest-list.js'
 import { computeColumnStats } from './stats.js'
 
 /**
- * @import {Resolver, Manifest, Schema, Snapshot, TableMetadata} from '../../src/types.js'
+ * @import {Manifest, Resolver, Snapshot, StagedUpdate, TableMetadata} from '../../src/types.js'
  */
 
 /**
- * Append a single unpartitioned snapshot to an existing iceberg table.
+ * Build the data files, manifest, and manifest list for an unpartitioned
+ * append, then return the catalog-agnostic `StagedUpdate` payload (snapshot
+ * plus the requirements/updates a catalog must apply to commit it).
  *
- * Writes a parquet data file, a manifest, a manifest list, a new
- * vN+1.metadata.json, and updates version-hint.text. Only supports v2 tables
- * with a flat unpartitioned schema and primitive column types.
+ * No metadata.json or version-hint is written — pass the result to a commit
+ * function (`fileCatalogCommit`, or a future `restCatalogCommitTable`).
+ *
+ * Only supports v2 tables with a flat unpartitioned schema and primitive
+ * column types.
  *
  * @param {object} options
  * @param {string} options.tableUrl - Base URL of the table.
  * @param {TableMetadata} options.metadata - Current table metadata.
  * @param {Record<string, any>[]} options.records - Rows to append.
  * @param {Resolver} options.resolver - Resolver with a writer method.
- * @returns {Promise<TableMetadata>} The new table metadata, already persisted.
+ * @returns {Promise<StagedUpdate>}
  */
-export async function icebergAppend({ tableUrl, metadata, records, resolver }) {
+export async function icebergStageAppend({ tableUrl, metadata, records, resolver }) {
   if (!tableUrl) throw new Error('tableUrl is required')
   if (!resolver?.writer) throw new Error('resolver.writer is required')
   if (metadata['format-version'] !== 2) {
@@ -31,9 +35,8 @@ export async function icebergAppend({ tableUrl, metadata, records, resolver }) {
   }
   const partitionSpec = metadata['partition-specs'].find(s => s['spec-id'] === metadata['default-spec-id'])
   if (!partitionSpec || partitionSpec.fields.length) {
-    throw new Error('icebergAppend only supports unpartitioned tables')
+    throw new Error('icebergStageAppend only supports unpartitioned tables')
   }
-
   const schema = metadata.schemas.find(s => s['schema-id'] === metadata['current-schema-id'])
   if (!schema) throw new Error('current schema not found in metadata')
 
@@ -129,40 +132,27 @@ export async function icebergAppend({ tableUrl, metadata, records, resolver }) {
   const parentId = metadata['current-snapshot-id']
   if (parentId !== undefined) snapshot['parent-snapshot-id'] = parentId
 
-  // 5. Build and persist the new metadata
-  const priorMetadataLog = metadata['metadata-log'] ?? []
-  const currentVersion = priorMetadataLog.length + 1
-  const newVersion = currentVersion + 1
-  const currentMetadataPath = `${tableUrl}/metadata/v${currentVersion}.metadata.json`
-  const newMetadataPath = `${tableUrl}/metadata/v${newVersion}.metadata.json`
-
-  /** @type {TableMetadata} */
-  const newMetadata = {
-    ...metadata,
-    'last-sequence-number': Number(sequenceNumber),
-    'last-updated-ms': timestampMs,
-    'current-snapshot-id': snapshot['snapshot-id'],
-    snapshots: [...metadata.snapshots ?? [], snapshot],
-    'snapshot-log': [
-      ...metadata['snapshot-log'] ?? [],
-      { 'timestamp-ms': timestampMs, 'snapshot-id': snapshot['snapshot-id'] },
+  return {
+    snapshot,
+    requirements: [
+      { type: 'assert-table-uuid', uuid: metadata['table-uuid'] },
+      {
+        type: 'assert-ref-snapshot-id',
+        ref: 'main',
+        'snapshot-id': metadata['current-snapshot-id'] ?? null,
+      },
     ],
-    'metadata-log': [
-      ...priorMetadataLog,
-      { 'timestamp-ms': metadata['last-updated-ms'], 'metadata-file': currentMetadataPath },
+    updates: [
+      { action: 'add-snapshot', snapshot },
+      {
+        action: 'set-snapshot-ref',
+        'ref-name': 'main',
+        type: 'branch',
+        'snapshot-id': snapshot['snapshot-id'],
+      },
     ],
+    writtenFiles: [dataPath, manifestPath, manifestListPath],
   }
-
-  const metaWriter = resolver.writer(translateS3Url(newMetadataPath))
-  metaWriter.appendBytes(new TextEncoder().encode(JSON.stringify(newMetadata, null, 2)))
-  metaWriter.finish()
-
-  // 6. version-hint last so partial writes don't surface a torn commit
-  const hintWriter = resolver.writer(translateS3Url(`${tableUrl}/version-hint.text`))
-  hintWriter.appendBytes(new TextEncoder().encode(String(newVersion)))
-  hintWriter.finish()
-
-  return newMetadata
 }
 
 /**

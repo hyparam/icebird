@@ -45,7 +45,7 @@ export interface TableMetadata {
   'metadata-log'?: MetadataLog[]
   'sort-orders': SortOrder[] // optional in V1, required in V2+
   'default-sort-order-id': number // optional in V1, required in V2+
-  refs?: object
+  refs?: Record<string, SnapshotRef>
   statistics?: TableStatistics[]
   'partition-statistics'?: PartitionStatistics[]
   'next-row-id'?: bigint // required in V3
@@ -150,6 +150,49 @@ interface TableStatistics {
 interface SnapshotLog {
   'timestamp-ms': number
   'snapshot-id': number
+}
+
+export interface SnapshotRef {
+  'snapshot-id': number
+  type: 'branch' | 'tag'
+  'min-snapshots-to-keep'?: number
+  'max-snapshot-age-ms'?: number
+  'max-ref-age-ms'?: number
+}
+
+/**
+ * Subset of Iceberg REST `TableRequirement`s that the staging API emits.
+ * The full spec has more (assert-create, assert-last-assigned-*, etc).
+ */
+export type TableRequirement =
+  | { type: 'assert-table-uuid', uuid: string }
+  | { type: 'assert-ref-snapshot-id', ref: string, 'snapshot-id': number | null }
+
+/**
+ * Subset of Iceberg REST `TableUpdate`s that the staging API emits.
+ */
+export type TableUpdate =
+  | { action: 'add-snapshot', snapshot: Snapshot }
+  | {
+      action: 'set-snapshot-ref'
+      'ref-name': string
+      type: 'branch' | 'tag'
+      'snapshot-id': number
+      'min-snapshots-to-keep'?: number
+      'max-snapshot-age-ms'?: number
+      'max-ref-age-ms'?: number
+    }
+
+/**
+ * Output of an `icebergStage*` call: the snapshot just produced, the CAS
+ * preconditions and updates a catalog must apply, and the data/manifest files
+ * already written to storage (useful for cleanup on commit failure).
+ */
+export interface StagedUpdate {
+  snapshot: Snapshot
+  requirements: TableRequirement[]
+  updates: TableUpdate[]
+  writtenFiles: string[]
 }
 
 interface MetadataLog {
