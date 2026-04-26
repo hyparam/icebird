@@ -27,6 +27,10 @@ describe('writeDataManifest', () => {
     partition: {},
     record_count: 3n,
     file_size_in_bytes: 421n,
+    value_counts: { 1: 3n, 2: 3n },
+    null_value_counts: { 1: 0n, 2: 1n },
+    lower_bounds: { 1: new Uint8Array([1, 0, 0, 0, 0, 0, 0, 0]) },
+    upper_bounds: { 1: new Uint8Array([5, 0, 0, 0, 0, 0, 0, 0]) },
     sort_order_id: 0,
   }
 
@@ -58,5 +62,24 @@ describe('writeDataManifest', () => {
         sort_order_id: 0,
       },
     })
+
+    // Stat maps round-trip as Avro array-of-{key,value} records
+    const df = records[0].data_file
+    expect(df.value_counts).toEqual([
+      { key: 1, value: 3n },
+      { key: 2, value: 3n },
+    ])
+    expect(df.null_value_counts).toEqual([
+      { key: 1, value: 0n },
+      { key: 2, value: 1n },
+    ])
+    expect(df.lower_bounds).toEqual([
+      { key: 1, value: new Uint8Array([1, 0, 0, 0, 0, 0, 0, 0]) },
+    ])
+    expect(df.upper_bounds).toEqual([
+      { key: 1, value: new Uint8Array([5, 0, 0, 0, 0, 0, 0, 0]) },
+    ])
+    expect(df.nan_value_counts).toBeUndefined()
+    expect(df.column_sizes).toBeUndefined()
   })
 })
