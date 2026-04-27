@@ -1,5 +1,5 @@
 /**
- * Iceberg REST Catalog client (read-only).
+ * Iceberg REST Catalog client.
  *
  * Plain async functions over a stateless context object — no classes.
  * The catalog client never imports from the read path; callers glue the
@@ -98,6 +98,80 @@ export async function restCatalogLoadTable(ctx, { namespace, table }) {
     metadata: /** @type {TableMetadata} */ (body.metadata),
     config: body.config ?? {},
   }
+}
+
+/**
+ * Drop a table from the catalog. The optional `purgeRequested` flag asks the
+ * server to also delete the table's data and metadata files; servers may
+ * ignore it for managed tables. Resolves on a 2xx response, otherwise throws.
+ *
+ * @param {RestCatalogContext} ctx
+ * @param {object} options
+ * @param {string | string[]} options.namespace
+ * @param {string} options.table
+ * @param {boolean} [options.purgeRequested]
+ * @returns {Promise<void>}
+ */
+export async function restCatalogDropTable(ctx, { namespace, table, purgeRequested }) {
+  const ns = encodeNamespace(namespace)
+  const tbl = encodeURIComponent(table)
+  const query = purgeRequested ? '?purgeRequested=true' : ''
+  await restFetch(ctx, `namespaces/${ns}/tables/${tbl}${query}`, { method: 'DELETE' })
+}
+
+/**
+ * Create a namespace. Returns the namespace as the server stored it (which may
+ * include defaulted properties).
+ *
+ * @param {RestCatalogContext} ctx
+ * @param {object} options
+ * @param {string | string[]} options.namespace
+ * @param {Record<string, string>} [options.properties]
+ * @returns {Promise<{namespace: string[], properties: Record<string, string>}>}
+ */
+export async function restCatalogCreateNamespace(ctx, { namespace, properties }) {
+  const ns = Array.isArray(namespace) ? namespace : namespace.split('.')
+  const res = await restFetch(ctx, 'namespaces', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ namespace: ns, properties: properties ?? {} }),
+  })
+  const body = await res.json()
+  return {
+    namespace: body.namespace ?? ns,
+    properties: body.properties ?? {},
+  }
+}
+
+/**
+ * Drop a namespace. Resolves on a 2xx response, otherwise throws.
+ *
+ * @param {RestCatalogContext} ctx
+ * @param {object} options
+ * @param {string | string[]} options.namespace
+ * @returns {Promise<void>}
+ */
+export async function restCatalogDropNamespace(ctx, { namespace }) {
+  const ns = encodeNamespace(namespace)
+  await restFetch(ctx, `namespaces/${ns}`, { method: 'DELETE' })
+}
+
+/**
+ * Rename a table. Both `source` and `destination` are full table identifiers;
+ * the server may reject cross-namespace renames depending on its policy.
+ *
+ * @param {RestCatalogContext} ctx
+ * @param {object} options
+ * @param {TableIdentifier} options.source
+ * @param {TableIdentifier} options.destination
+ * @returns {Promise<void>}
+ */
+export async function restCatalogRenameTable(ctx, { source, destination }) {
+  await restFetch(ctx, 'tables/rename', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ source, destination }),
+  })
 }
 
 /**
