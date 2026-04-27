@@ -128,11 +128,16 @@ async function readDataFile({
   positionDeletesMap,
   equalityDeleteGroups,
 }) {
-  const { data_file, sequence_number } = dataEntry
+  const { data_file, sequence_number, partition_spec_id } = dataEntry
   // assert(status !== 2)
 
   // Check sequence numbers
   if (sequence_number === undefined) throw new Error('sequence number not found, check v2 inheritance logic')
+
+  // Use the spec the file was written under, not the table's current default
+  // spec, since partition spec can evolve. Field names in `data_file.partition`
+  // come from that historical spec.
+  const partitionSpec = metadata['partition-specs'].find(s => s['spec-id'] === partition_spec_id)
 
   // Read the data file
   const resolved = await resolver.reader(data_file.file_path, Number(data_file.file_size_in_bytes))
@@ -217,8 +222,6 @@ async function readDataFile({
       if (parquetColumnName) {
         mapped[field.name] = row[parquetColumnName]
       } else {
-        // current partition spec:
-        const partitionSpec = metadata['partition-specs'].find(s => s['spec-id'] === metadata['default-spec-id'])
         const partitionField = partitionSpec?.fields.find(pf => pf['source-id'] === field.id)
 
         /** @type {NameMapping | undefined} */
