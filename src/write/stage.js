@@ -18,8 +18,8 @@ import { computeColumnStats } from './stats.js'
  * No metadata.json or version-hint is written — pass the result to a commit
  * function (`fileCatalogCommit`, or a future `restCatalogCommitTable`).
  *
- * Only supports v2/v3 tables. Partitioning is supported with identity
- * transforms only; bucket/truncate/year/month/day/hour throw.
+ * Only supports v2/v3 tables. Partitioning is supported with identity, void,
+ * bucket[N], truncate[W], year, month, day, and hour transforms.
  *
  * @param {object} options
  * @param {string} options.tableUrl - Base URL of the table.

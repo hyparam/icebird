@@ -1,10 +1,12 @@
+import { applyTransform, transformResultType } from './transform.js'
+
 /**
  * @import {AvroField, AvroType, Field, IcebergType, PartitionSpec, Schema} from '../../src/types.js'
  */
 
 /**
- * Group records by their partition tuple. Identity and void transforms are
- * supported; bucket/truncate/year/month/day/hour throw.
+ * Group records by their partition tuple. Supports identity, void, bucket[N],
+ * truncate[W], year, month, day, and hour transforms.
  *
  * Returns one group per distinct tuple, preserving the order each tuple
  * first appears so output is stable for tests.
@@ -16,9 +18,6 @@
  */
 export function groupByPartition(records, schema, partitionSpec) {
   const sourceFields = partitionSpec.fields.map(pf => {
-    if (pf.transform !== 'identity' && pf.transform !== 'void') {
-      throw new Error(`unsupported partition transform: ${pf.transform} (only 'identity' and 'void' are implemented)`)
-    }
     const sourceId = pf['source-id']
     if (sourceId === undefined) {
       throw new Error(`partition field ${pf.name} is missing source-id`)
@@ -27,7 +26,12 @@ export function groupByPartition(records, schema, partitionSpec) {
     if (!sourceField) {
       throw new Error(`partition source field id ${sourceId} not found in schema`)
     }
-    return { partitionName: pf.name, sourceName: sourceField.name, transform: pf.transform }
+    return {
+      partitionName: pf.name,
+      sourceName: sourceField.name,
+      sourceType: sourceField.type,
+      transform: pf.transform,
+    }
   })
 
   /** @type {Map<string, { partition: Record<string, any>, records: Record<string, any>[] }>} */
@@ -36,13 +40,9 @@ export function groupByPartition(records, schema, partitionSpec) {
     /** @type {Record<string, any>} */
     const partition = {}
     const keyParts = []
-    for (const { partitionName, sourceName, transform } of sourceFields) {
-      if (transform === 'void') {
-        partition[partitionName] = null
-      } else {
-        const v = record[sourceName]
-        partition[partitionName] = v === undefined ? null : v
-      }
+    for (const { partitionName, sourceName, sourceType, transform } of sourceFields) {
+      const v = record[sourceName]
+      partition[partitionName] = applyTransform(transform, v === undefined ? null : v, sourceType)
       keyParts.push(partitionKeyPart(partition[partitionName]))
     }
     const key = JSON.stringify(keyParts)
@@ -59,10 +59,8 @@ export function groupByPartition(records, schema, partitionSpec) {
 /**
  * Build the Avro record type for the manifest entry's `partition` field
  * (`r102`) from the table's partition spec. Each partition field is a
- * nullable Avro field tagged with the partition spec's `field-id`.
- *
- * Identity and void transforms only. For void the field type matches the
- * source type (the value is always null at write time).
+ * nullable Avro field tagged with the partition spec's `field-id`, typed
+ * by the transform's result type.
  *
  * @param {Schema} schema
  * @param {PartitionSpec} partitionSpec
@@ -71,18 +69,16 @@ export function groupByPartition(records, schema, partitionSpec) {
 export function partitionAvroSchema(schema, partitionSpec) {
   /** @type {AvroField[]} */
   const fields = partitionSpec.fields.map(pf => {
-    if (pf.transform !== 'identity' && pf.transform !== 'void') {
-      throw new Error(`unsupported partition transform: ${pf.transform}`)
-    }
     const sourceField = schema.fields.find(f => f.id === pf['source-id'])
     if (!sourceField) {
       throw new Error(`partition source field id ${pf['source-id']} not found`)
     }
+    const resultType = transformResultType(pf.transform, sourceField.type)
     return {
       name: pf.name,
       'field-id': pf['field-id'],
       default: null,
-      type: ['null', icebergTypeToAvro(sourceField.type)],
+      type: ['null', icebergTypeToAvro(resultType)],
     }
   })
   return { type: 'record', name: 'r102', fields }
@@ -100,9 +96,9 @@ export function partitionSpecJson(partitionSpec) {
 }
 
 /**
- * Convert a record's partition values to the form expected by avroWrite:
- *  - 'long' wants bigint
- *  - dates as JS numbers / Date are accepted by the writer's logicalType
+ * Convert a record's partition values to the form expected by avroWrite. The
+ * partition values have already been transformed (so the relevant type is the
+ * transform's result type, not the source type).
  *
  * Returns a fresh object so we don't mutate the input.
  *
@@ -117,8 +113,9 @@ export function partitionToAvroRecord(partition, schema, partitionSpec) {
   for (const pf of partitionSpec.fields) {
     const sourceField = schema.fields.find(f => f.id === pf['source-id'])
     if (!sourceField) continue
+    const resultType = transformResultType(pf.transform, sourceField.type)
     const value = partition[pf.name]
-    out[pf.name] = value == null ? null : coerceForAvro(value, sourceField.type)
+    out[pf.name] = value == null ? null : coerceForAvro(value, resultType)
   }
   return out
 }

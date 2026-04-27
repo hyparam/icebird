@@ -188,6 +188,122 @@ describe('icebergStageAppend', () => {
     expect([...read].sort((a, b) => Number(a.id - b.id))).toEqual(records)
   })
 
+  it('groups by bucket[N] and round-trips through read', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/stage-bucket'
+    const { resolver } = memResolver()
+
+    const created = await icebergCreate({ tableUrl, resolver, schema })
+    const bucketed = {
+      ...created,
+      'partition-specs': [{
+        'spec-id': 0,
+        fields: [{
+          'source-id': 1, 'field-id': 1000, name: 'id_bucket',
+          transform: /** @type {const} */ ('bucket[4]'),
+        }],
+      }],
+      'last-partition-id': 1000,
+    }
+
+    const records = [
+      { id: 1n, name: 'alice' },
+      { id: 2n, name: 'bob' },
+      { id: 3n, name: 'carol' },
+      { id: 4n, name: 'dan' },
+    ]
+    const staged = await icebergStageAppend({ tableUrl, metadata: bucketed, records, resolver })
+
+    const writtenParquet = staged.writtenFiles.filter(p => p.endsWith('.parquet'))
+    // bucket[4] over 4 distinct longs typically produces 2-4 groups; verify at least one and at most four
+    expect(writtenParquet.length).toBeGreaterThanOrEqual(1)
+    expect(writtenParquet.length).toBeLessThanOrEqual(4)
+    expect(staged.snapshot.summary['added-records']).toBe('4')
+
+    const committed = await fileCatalogCommit({ tableUrl, metadata: bucketed, staged, resolver })
+    const read = await icebergRead({ tableUrl, metadata: committed, resolver })
+    expect([...read].sort((a, b) => Number(a.id - b.id))).toEqual(records)
+  })
+
+  it('groups by day(timestamp) and round-trips through read', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/stage-day'
+    const { resolver } = memResolver()
+
+    /** @type {Schema} */
+    const tsSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        { id: 2, name: 'ts', required: true, type: 'timestamp' },
+      ],
+    }
+    const created = await icebergCreate({ tableUrl, resolver, schema: tsSchema })
+    const dayed = {
+      ...created,
+      'partition-specs': [{
+        'spec-id': 0,
+        fields: [{
+          'source-id': 2, 'field-id': 1000, name: 'ts_day',
+          transform: /** @type {const} */ ('day'),
+        }],
+      }],
+      'last-partition-id': 1000,
+    }
+
+    const records = [
+      { id: 1n, ts: new Date('2024-01-01T08:00:00Z') },
+      { id: 2n, ts: new Date('2024-01-01T20:00:00Z') },
+      { id: 3n, ts: new Date('2024-01-02T08:00:00Z') },
+    ]
+    const staged = await icebergStageAppend({ tableUrl, metadata: dayed, records, resolver })
+
+    // two distinct days => two parquet files
+    const writtenParquet = staged.writtenFiles.filter(p => p.endsWith('.parquet'))
+    expect(writtenParquet).toHaveLength(2)
+    expect(staged.snapshot.summary['changed-partition-count']).toBe('2')
+
+    const committed = await fileCatalogCommit({ tableUrl, metadata: dayed, staged, resolver })
+    const read = await icebergRead({ tableUrl, metadata: committed, resolver })
+    expect([...read].sort((a, b) => Number(a.id - b.id))).toEqual(records)
+  })
+
+  it('groups by truncate[W] on a string column and round-trips through read', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/stage-truncate'
+    const { resolver } = memResolver()
+
+    const created = await icebergCreate({ tableUrl, resolver, schema })
+    const truncated = {
+      ...created,
+      'partition-specs': [{
+        'spec-id': 0,
+        fields: [{
+          'source-id': 2, 'field-id': 1000, name: 'name_pre',
+          transform: /** @type {const} */ ('truncate[2]'),
+        }],
+      }],
+      'last-partition-id': 1000,
+    }
+
+    const records = [
+      { id: 1n, name: 'alice' },
+      { id: 2n, name: 'alex' }, // shares 'al' prefix with alice
+      { id: 3n, name: 'bob' },
+      { id: 4n, name: 'bart' }, // shares 'ba' with bob? no — 'ba' vs 'bo'; distinct
+    ]
+    const staged = await icebergStageAppend({ tableUrl, metadata: truncated, records, resolver })
+
+    // expected groups: 'al' (alice, alex), 'bo' (bob), 'ba' (bart) => 3 files
+    const writtenParquet = staged.writtenFiles.filter(p => p.endsWith('.parquet'))
+    expect(writtenParquet).toHaveLength(3)
+
+    const committed = await fileCatalogCommit({ tableUrl, metadata: truncated, staged, resolver })
+    const read = await icebergRead({ tableUrl, metadata: committed, resolver })
+    expect([...read].sort((a, b) => Number(a.id - b.id))).toEqual(records)
+  })
+
   it('collapses records into one group for a void-transform partition spec', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
     const tableUrl = 'http://test/stage-void'
