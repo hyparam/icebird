@@ -88,4 +88,57 @@ describe('createIceberg', () => {
     const resolver = { reader: vi.fn(), writer: vi.fn() }
     await expect(icebergCreate({ tableUrl: '', resolver })).rejects.toThrow('tableUrl is required')
   })
+
+  it('persists properties, partitionSpec, and sortOrder', async () => {
+    const writer = vi.fn(() => new ByteWriter())
+    const resolver = { reader: vi.fn(), writer }
+    /** @type {Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        { id: 2, name: 'ts', required: false, type: 'timestamp' },
+      ],
+    }
+    const metadata = await icebergCreate({
+      tableUrl,
+      resolver,
+      schema,
+      partitionSpec: {
+        'spec-id': 0,
+        fields: [{ 'source-id': 2, 'field-id': 1000, name: 'ts_day', transform: 'day' }],
+      },
+      sortOrder: {
+        'order-id': 1,
+        fields: [{ transform: 'identity', 'source-id': 1, direction: 'asc', 'null-order': 'nulls-first' }],
+      },
+      properties: { 'write.format.default': 'parquet', 'write.parquet.compression-codec': 'zstd' },
+    })
+
+    expect(metadata['partition-specs'][0].fields).toHaveLength(1)
+    expect(metadata['last-partition-id']).toBe(1000)
+    expect(metadata['default-sort-order-id']).toBe(1)
+    expect(metadata['sort-orders'][0].fields).toHaveLength(1)
+    expect(metadata.properties).toEqual({
+      'write.format.default': 'parquet',
+      'write.parquet.compression-codec': 'zstd',
+    })
+  })
+
+  it('creates a v3 table with next-row-id', async () => {
+    const writer = vi.fn(() => new ByteWriter())
+    const resolver = { reader: vi.fn(), writer }
+    const metadata = await icebergCreate({ tableUrl, resolver, formatVersion: 3 })
+
+    expect(metadata['format-version']).toBe(3)
+    expect(metadata['next-row-id']).toBe(0)
+  })
+
+  it('throws on unsupported format-version', async () => {
+    const resolver = { reader: vi.fn(), writer: vi.fn() }
+    // @ts-expect-error testing invalid input
+    await expect(icebergCreate({ tableUrl, resolver, formatVersion: 1 }))
+      .rejects.toThrow('unsupported format-version: 1')
+  })
 })
