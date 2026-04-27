@@ -176,4 +176,59 @@ describe('createIceberg', () => {
     await expect(icebergCreate({ tableUrl, resolver, formatVersion: 1 }))
       .rejects.toThrow('unsupported format-version: 1')
   })
+
+  it.each([
+    'unknown',
+    'variant',
+    'timestamp_ns',
+    'timestamptz_ns',
+    'geometry',
+    'geometry(srid:4326)',
+    'geography',
+    'geography(srid:4326)',
+  ])('rejects v3-only type %s in a v2 table', async type => {
+    const resolver = { reader: vi.fn(), writer: vi.fn() }
+    /** @type {Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [{ id: 1, name: 'col', required: false, type: /** @type {any} */ (type) }],
+    }
+    await expect(icebergCreate({ tableUrl, resolver, schema }))
+      .rejects.toThrow(`type ${type} requires format-version 3`)
+  })
+
+  it('rejects v3-only type nested inside a v2 schema', async () => {
+    const resolver = { reader: vi.fn(), writer: vi.fn() }
+    /** @type {Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [{
+        id: 1,
+        name: 'tags',
+        required: false,
+        type: { type: 'list', 'element-id': 2, 'element-required': false, element: 'variant' },
+      }],
+    }
+    await expect(icebergCreate({ tableUrl, resolver, schema }))
+      .rejects.toThrow('type variant requires format-version 3 (field: tags.element)')
+  })
+
+  it('allows v3-only types in a v3 table', async () => {
+    const writer = vi.fn(() => new ByteWriter())
+    const resolver = { reader: vi.fn(), writer }
+    /** @type {Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'v', required: false, type: 'variant' },
+        { id: 2, name: 'ts', required: false, type: 'timestamp_ns' },
+      ],
+    }
+    const metadata = await icebergCreate({ tableUrl, resolver, schema, formatVersion: 3 })
+    expect(metadata['format-version']).toBe(3)
+    expect(metadata.schemas[0].fields).toHaveLength(2)
+  })
 })

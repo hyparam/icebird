@@ -1,4 +1,5 @@
 import { translateS3Url } from './fetch.js'
+import { validateSchemaForVersion } from './schema.js'
 import { uuid4 } from './utils.js'
 
 /**
@@ -35,6 +36,7 @@ export async function icebergCreate ({
 
   /** @type {Schema} */
   const initialSchema = schema ?? { type: 'struct', 'schema-id': 0, fields: [] } // default to no columns
+  validateSchemaForVersion(initialSchema, formatVersion)
 
   /** @type {PartitionSpec} */
   const initialPartitionSpec = partitionSpec ?? { 'spec-id': 0, fields: [] }

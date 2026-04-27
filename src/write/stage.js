@@ -1,4 +1,5 @@
 import { fetchAvroRecords, translateS3Url } from '../fetch.js'
+import { validateSchemaForVersion } from '../schema.js'
 import { uuid4 } from '../utils.js'
 import { writeParquet } from './parquet.js'
 import { writeDataManifest } from './manifest.js'
@@ -43,6 +44,7 @@ export async function icebergStageAppend({ tableUrl, metadata, records, resolver
   if (!partitionSpec) throw new Error('default partition spec not found in metadata')
   const schema = metadata.schemas.find(s => s['schema-id'] === metadata['current-schema-id'])
   if (!schema) throw new Error('current schema not found in metadata')
+  validateSchemaForVersion(schema, formatVersion)
 
   const snapshotId = newSnapshotId()
   const sequenceNumber = BigInt(metadata['last-sequence-number'] ?? 0) + 1n

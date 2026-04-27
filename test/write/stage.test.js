@@ -508,6 +508,32 @@ describe('icebergStageAppend', () => {
       records: [{ id: 1n, name: 'alice' }],
     })).rejects.toThrow(/unsupported write\.parquet\.compression-codec: gzip/)
   })
+
+  it('rejects appending to a v2 table whose schema uses a v3-only type', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/v3-type-in-v2'
+    const { resolver } = memResolver()
+
+    const created = await icebergCreate({ tableUrl, resolver, schema })
+    /** @type {TableMetadata} */
+    const tampered = {
+      ...created,
+      schemas: [{
+        type: 'struct',
+        'schema-id': 0,
+        fields: [
+          { id: 1, name: 'id', required: true, type: 'long' },
+          // forged: a v3-only type smuggled into a v2 metadata
+          { id: 2, name: 'doc', required: false, type: /** @type {any} */ ('variant') },
+        ],
+      }],
+    }
+
+    await expect(icebergStageAppend({
+      tableUrl, metadata: tampered, resolver,
+      records: [{ id: 1n, doc: { x: 1 } }],
+    })).rejects.toThrow(/type variant requires format-version 3/)
+  })
 })
 
 describe('fileCatalogCommit', () => {
