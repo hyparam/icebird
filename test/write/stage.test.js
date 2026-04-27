@@ -646,7 +646,7 @@ describe('fileCatalogCommit', () => {
     const tableUrl = 'http://test/schema'
     const { resolver } = memResolver()
 
-    const created = await icebergCreate({ tableUrl, resolver, schema })
+    const created = await icebergCreate({ tableUrl, resolver, schema, formatVersion: 3 })
 
     /** @type {Schema} */
     const v2 = {
@@ -673,6 +673,97 @@ describe('fileCatalogCommit', () => {
     expect(after.schemas[1].fields.find(f => f.name === 'tag')?.['write-default']).toBe('unknown')
     expect(after['current-schema-id']).toBe(1)
     expect(after['last-column-id']).toBe(99)
+  })
+
+  it('rejects add-schema with write-default on a v2 table', () => {
+    /** @type {TableMetadata} */
+    const meta = {
+      'format-version': 2,
+      'table-uuid': 'u',
+      location: 'http://test',
+      'last-sequence-number': 0,
+      'last-updated-ms': 0,
+      'last-column-id': 1,
+      'current-schema-id': 0,
+      schemas: [{ type: 'struct', 'schema-id': 0, fields: [] }],
+      'default-spec-id': 0,
+      'partition-specs': [{ 'spec-id': 0, fields: [] }],
+      'last-partition-id': 0,
+      'sort-orders': [{ 'order-id': 0, fields: [] }],
+      'default-sort-order-id': 0,
+    }
+    /** @type {Schema} */
+    const schemaWithDefault = {
+      type: 'struct',
+      'schema-id': -1,
+      fields: [
+        { id: 2, name: 'tag', required: false, type: 'string', 'write-default': 'unknown' },
+      ],
+    }
+    expect(() => applyUpdates(meta, [
+      { action: 'add-schema', schema: schemaWithDefault },
+    ])).toThrow(/write-default requires format-version 3/)
+  })
+
+  it('rejects add-schema when a new required field lacks initial-default', () => {
+    /** @type {TableMetadata} */
+    const meta = {
+      'format-version': 3,
+      'table-uuid': 'u',
+      location: 'http://test',
+      'last-sequence-number': 0,
+      'last-updated-ms': 0,
+      'last-column-id': 1,
+      'current-schema-id': 0,
+      schemas: [{
+        type: 'struct',
+        'schema-id': 0,
+        fields: [{ id: 1, name: 'id', required: true, type: 'long' }],
+      }],
+      'default-spec-id': 0,
+      'partition-specs': [{ 'spec-id': 0, fields: [] }],
+      'last-partition-id': 0,
+      'sort-orders': [{ 'order-id': 0, fields: [] }],
+      'default-sort-order-id': 0,
+      'next-row-id': 0,
+    }
+    /** @type {Schema} */
+    const newRequiredNoDefault = {
+      type: 'struct',
+      'schema-id': -1,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        { id: 2, name: 'tag', required: true, type: 'string' },
+      ],
+    }
+    expect(() => applyUpdates(meta, [
+      { action: 'add-schema', schema: newRequiredNoDefault },
+    ])).toThrow(/required field tag .* needs an initial-default/)
+
+    // carrying over an existing required field (id <= last-column-id) is fine
+    /** @type {Schema} */
+    const sameRequired = {
+      type: 'struct',
+      'schema-id': -1,
+      fields: [{ id: 1, name: 'id', required: true, type: 'long' }],
+    }
+    expect(() => applyUpdates(meta, [
+      { action: 'add-schema', schema: sameRequired },
+    ])).not.toThrow()
+
+    // adding a new required field with initial-default is allowed
+    /** @type {Schema} */
+    const newRequiredWithDefault = {
+      type: 'struct',
+      'schema-id': -1,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        { id: 2, name: 'tag', required: true, type: 'string', 'initial-default': 'unknown' },
+      ],
+    }
+    expect(() => applyUpdates(meta, [
+      { action: 'add-schema', schema: newRequiredWithDefault },
+    ])).not.toThrow()
   })
 
   it('rejects add-schema with a duplicate schema-id', () => {

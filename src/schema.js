@@ -3,10 +3,11 @@
  */
 
 /**
- * Reject schemas that use Iceberg types introduced in format-version 3
- * (`unknown`, `variant`, `timestamp_ns`, `timestamptz_ns`, `geometry`,
- * `geography`) when targeting an older format version. `geometry` and
- * `geography` carry an optional `(...)` CRS suffix, so we match by prefix.
+ * Reject schemas that use features introduced in format-version 3 when
+ * targeting an older format version. Covers v3-only types (`unknown`,
+ * `variant`, `timestamp_ns`, `timestamptz_ns`, `geometry`, `geography`) and
+ * default-value attributes (`initial-default`, `write-default`). `geometry`
+ * and `geography` carry an optional `(...)` CRS suffix, so we match by prefix.
  *
  * @param {Schema} schema
  * @param {number} formatVersion
@@ -15,6 +16,12 @@ export function validateSchemaForVersion(schema, formatVersion) {
   if (formatVersion >= 3) return
   for (const field of schema.fields) {
     checkTypeForV2(field.type, field.name)
+    if (field['initial-default'] !== undefined) {
+      throw new Error(`initial-default requires format-version 3 (field: ${field.name})`)
+    }
+    if (field['write-default'] !== undefined) {
+      throw new Error(`write-default requires format-version 3 (field: ${field.name})`)
+    }
   }
 }
 

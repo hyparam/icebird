@@ -172,10 +172,16 @@ export function applyUpdates(metadata, updates) {
       /** @type {Schema} */
       const newSchema = { ...up.schema, 'schema-id': schemaId }
       validateSchemaForVersion(newSchema, next['format-version'])
+      const priorLastColumnId = next['last-column-id'] ?? 0
+      for (const field of newSchema.fields) {
+        if (field.id > priorLastColumnId && field.required && field['initial-default'] === undefined) {
+          throw new Error(`add-schema: required field ${field.name} (id ${field.id}) needs an initial-default`)
+        }
+      }
       next = {
         ...next,
         schemas: [...schemas, newSchema],
-        'last-column-id': Math.max(next['last-column-id'] ?? 0, maxFieldId(newSchema.fields)),
+        'last-column-id': Math.max(priorLastColumnId, maxFieldId(newSchema.fields)),
       }
     } else if (up.action === 'set-current-schema') {
       let id = up['schema-id']
