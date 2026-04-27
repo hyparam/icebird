@@ -285,10 +285,10 @@ export interface ManifestEntry {
 }
 
 interface FieldSummary {
-  'contains-null': boolean
-  'contains-nan'?: boolean
-  'lower-bound'?: unknown
-  'upper-bound'?: unknown
+  contains_null: boolean
+  contains_nan?: boolean | null
+  lower_bound?: Uint8Array | null
+  upper_bound?: Uint8Array | null
 }
 
 export interface DataFile {

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { ByteWriter } from 'hyparquet-writer'
+import { fetchAvroRecords } from '../../src/fetch.js'
 import { fileCatalogCommit } from '../../src/write/commit.js'
 import { icebergCreate } from '../../src/create.js'
 import { icebergRead } from '../../src/read.js'
@@ -186,6 +187,49 @@ describe('icebergStageAppend', () => {
 
     expect(read).toHaveLength(3)
     expect([...read].sort((a, b) => Number(a.id - b.id))).toEqual(records)
+  })
+
+  it('emits manifest-list partition FieldSummary for an identity spec', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/stage-summary'
+    const { resolver } = memResolver()
+
+    /** @type {Schema} */
+    const partitionedSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        { id: 2, name: 'country', required: true, type: 'string' },
+      ],
+    }
+    const created = await icebergCreate({ tableUrl, resolver, schema: partitionedSchema })
+    const partitioned = {
+      ...created,
+      'partition-specs': [{
+        'spec-id': 0,
+        fields: [{ 'source-id': 2, 'field-id': 1000, name: 'country', transform: /** @type {const} */ ('identity') }],
+      }],
+      'last-partition-id': 1000,
+    }
+
+    const records = [
+      { id: 1n, country: 'us' },
+      { id: 2n, country: 'fr' },
+      { id: 3n, country: 'us' },
+    ]
+    const staged = await icebergStageAppend({ tableUrl, metadata: partitioned, records, resolver })
+    const manifestListPath = staged.snapshot['manifest-list']
+    if (!manifestListPath) throw new Error('manifest-list path missing')
+    const list = await fetchAvroRecords(manifestListPath, resolver)
+
+    expect(list).toHaveLength(1)
+    expect(list[0].partitions).toHaveLength(1)
+    const summary = list[0].partitions[0]
+    expect(summary.contains_null).toBe(false)
+    // string lower/upper bounds are UTF-8 of 'fr' / 'us'
+    expect(summary.lower_bound).toEqual(new TextEncoder().encode('fr'))
+    expect(summary.upper_bound).toEqual(new TextEncoder().encode('us'))
   })
 
   it('groups by bucket[N] and round-trips through read', async () => {

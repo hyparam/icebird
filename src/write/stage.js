@@ -4,10 +4,11 @@ import { writeParquet } from './parquet.js'
 import { writeDataManifest } from './manifest.js'
 import { writeManifestList } from './manifest-list.js'
 import { groupByPartition } from './partition.js'
-import { computeColumnStats } from './stats.js'
+import { computeColumnStats, computeFieldSummary } from './stats.js'
+import { transformResultType } from './transform.js'
 
 /**
- * @import {Manifest, Resolver, Snapshot, StagedUpdate, TableMetadata, TableRequirement} from '../../src/types.js'
+ * @import {FieldSummary, Manifest, PartitionSpec, Resolver, Schema, Snapshot, StagedUpdate, TableMetadata, TableRequirement} from '../../src/types.js'
  */
 
 /**
@@ -93,6 +94,12 @@ export async function icebergStageAppend({ tableUrl, metadata, records, resolver
   const totalAddedRows = writtenDataFiles.reduce((sum, f) => sum + BigInt(f.records.length), 0n)
   const totalAddedSize = writtenDataFiles.reduce((sum, f) => sum + f.dataFile.file_size_in_bytes, 0n)
 
+  const partitions = buildPartitionSummaries(
+    writtenDataFiles.map(f => f.dataFile.partition),
+    schema,
+    partitionSpec
+  )
+
   /** @type {Manifest} */
   const newManifest = {
     manifest_path: manifestPath,
@@ -108,6 +115,7 @@ export async function icebergStageAppend({ tableUrl, metadata, records, resolver
     added_rows_count: totalAddedRows,
     existing_rows_count: 0n,
     deleted_rows_count: 0n,
+    partitions,
   }
 
   // 3. Carry forward manifests from prior snapshot, then write new manifest list
@@ -245,6 +253,26 @@ function toMetadataLong(value) {
     throw new Error(`metadata long exceeds JavaScript safe integer range: ${value}`)
   }
   return out
+}
+
+/**
+ * Build per-partition-field summaries (in spec order) from the partition
+ * tuples of each data file. Values are already in the transform's
+ * result-type form, so we serialize bounds against that type.
+ *
+ * @param {Record<string, any>[]} partitions
+ * @param {Schema} schema
+ * @param {PartitionSpec} partitionSpec
+ * @returns {FieldSummary[]}
+ */
+function buildPartitionSummaries(partitions, schema, partitionSpec) {
+  return partitionSpec.fields.map(pf => {
+    const sourceField = schema.fields.find(f => f.id === pf['source-id'])
+    if (!sourceField) throw new Error(`partition source field id ${pf['source-id']} not found`)
+    const resultType = transformResultType(pf.transform, sourceField.type)
+    const values = partitions.map(p => p[pf.name])
+    return computeFieldSummary(values, resultType)
+  })
 }
 
 /**

@@ -1,5 +1,5 @@
 /**
- * @import {Field, IcebergType, Schema} from '../../src/types.js'
+ * @import {FieldSummary, IcebergType, Schema} from '../../src/types.js'
  */
 
 /**
@@ -42,7 +42,7 @@ export function computeColumnStats(records, schema) {
     let min
     let max
     const isFloat = type === 'float' || type === 'double'
-    const trackBounds = hasComparableBounds(field)
+    const trackBounds = hasComparableBounds(field.type)
     for (const record of records) {
       const v = record[field.name]
       if (v === null || v === undefined) {
@@ -54,19 +54,19 @@ export function computeColumnStats(records, schema) {
         continue
       }
       if (trackBounds) {
-        if (min === undefined || compare(v, min, field) < 0) min = v
-        if (max === undefined || compare(v, max, field) > 0) max = v
+        if (min === undefined || compare(v, min, field.type) < 0) min = v
+        if (max === undefined || compare(v, max, field.type) > 0) max = v
       }
     }
     value_counts[field.id] = BigInt(records.length)
     null_value_counts[field.id] = nulls
     if (isFloat) nan_value_counts[field.id] = nans
     if (min !== undefined) {
-      const lo = serializeValue(min, field)
+      const lo = serializeValue(min, field.type)
       if (lo) lower_bounds[field.id] = lo
     }
     if (max !== undefined) {
-      const hi = serializeValue(max, field)
+      const hi = serializeValue(max, field.type)
       if (hi) upper_bounds[field.id] = hi
     }
   }
@@ -79,11 +79,11 @@ export function computeColumnStats(records, schema) {
  *
  * @param {any} a
  * @param {any} b
- * @param {Field} field
+ * @param {IcebergType} type
  * @returns {number}
  */
-function compare(a, b, field) {
-  switch (typeName(field.type)) {
+function compare(a, b, type) {
+  switch (typeName(type)) {
   case 'boolean':
     return (a ? 1 : 0) - (b ? 1 : 0)
   case 'int':
@@ -160,11 +160,11 @@ function compareBytes(a, b) {
  * Returns undefined for types we don't yet support so the bound is omitted.
  *
  * @param {any} value
- * @param {Field} field
+ * @param {IcebergType} type
  * @returns {Uint8Array|undefined}
  */
-function serializeValue(value, field) {
-  switch (typeName(field.type)) {
+function serializeValue(value, type) {
+  switch (typeName(type)) {
   case 'boolean': {
     return new Uint8Array([value ? 1 : 0])
   }
@@ -219,17 +219,17 @@ function serializeValue(value, field) {
 }
 
 /**
- * Return whether Icebird can produce Iceberg lower/upper bounds for a field.
+ * Return whether Icebird can produce Iceberg lower/upper bounds for a type.
  *
- * @param {Field} field
+ * @param {IcebergType} type
  * @returns {boolean}
  */
-function hasComparableBounds(field) {
-  const type = typeName(field.type)
-  if (type.startsWith('geometry') || type.startsWith('geography')) {
+function hasComparableBounds(type) {
+  const name = typeName(type)
+  if (name.startsWith('geometry') || name.startsWith('geography')) {
     return false
   }
-  return type !== 'unknown' && type !== 'variant'
+  return name !== 'unknown' && name !== 'variant'
 }
 
 /**
@@ -238,6 +238,51 @@ function hasComparableBounds(field) {
  */
 function typeName(type) {
   return typeof type === 'string' ? type : type.type
+}
+
+/**
+ * Aggregate a list of partition values into an Iceberg manifest-list
+ * `field_summary` (contains_null, contains_nan, lower_bound, upper_bound).
+ * Values must already be in the transform's result-type form.
+ *
+ * @param {any[]} values
+ * @param {IcebergType} type
+ * @returns {FieldSummary}
+ */
+export function computeFieldSummary(values, type) {
+  const name = typeName(type)
+  const isFloat = name === 'float' || name === 'double'
+  const trackBounds = hasComparableBounds(type)
+  let containsNull = false
+  let containsNan = false
+  let min
+  let max
+  for (const v of values) {
+    if (v === null || v === undefined) {
+      containsNull = true
+      continue
+    }
+    if (isFloat && Number.isNaN(v)) {
+      containsNan = true
+      continue
+    }
+    if (trackBounds) {
+      if (min === undefined || compare(v, min, type) < 0) min = v
+      if (max === undefined || compare(v, max, type) > 0) max = v
+    }
+  }
+  /** @type {FieldSummary} */
+  const summary = { contains_null: containsNull }
+  if (isFloat) summary.contains_nan = containsNan
+  if (min !== undefined) {
+    const lo = serializeValue(min, type)
+    if (lo) summary.lower_bound = lo
+  }
+  if (max !== undefined) {
+    const hi = serializeValue(max, type)
+    if (hi) summary.upper_bound = hi
+  }
+  return summary
 }
 
 /**

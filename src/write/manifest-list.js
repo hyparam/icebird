@@ -29,7 +29,19 @@ function manifestFileSchema(formatVersion) {
     { name: 'deleted_rows_count', type: 'long', 'field-id': 514 },
     {
       name: 'partitions',
-      type: ['null', { type: 'array', items: { type: 'record', name: 'r508', fields: [] } }],
+      type: ['null', {
+        type: 'array',
+        items: {
+          type: 'record',
+          name: 'r508',
+          fields: [
+            { name: 'contains_null', type: 'boolean', 'field-id': 509 },
+            { name: 'contains_nan', type: ['null', 'boolean'], default: null, 'field-id': 518 },
+            { name: 'lower_bound', type: ['null', 'bytes'], default: null, 'field-id': 510 },
+            { name: 'upper_bound', type: ['null', 'bytes'], default: null, 'field-id': 511 },
+          ],
+        },
+      }],
       default: null,
       'field-id': 507,
     },
@@ -72,7 +84,7 @@ export function writeManifestList({ writer, snapshotId, sequenceNumber, manifest
       added_rows_count: m.added_rows_count,
       existing_rows_count: m.existing_rows_count,
       deleted_rows_count: m.deleted_rows_count,
-      partitions: [],
+      partitions: m.partitions ?? null,
     }
     if (formatVersion >= 3) {
       record.first_row_id = m.content === 0 ? m.first_row_id ?? null : null
