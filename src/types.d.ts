@@ -240,6 +240,8 @@ export type TableUpdate =
     }
   | { action: 'set-properties', updates: Record<string, string> }
   | { action: 'remove-properties', removals: string[] }
+  | { action: 'add-schema', schema: Schema, 'last-column-id'?: number }
+  | { action: 'set-current-schema', 'schema-id': number }
 
 /**
  * Output of an `icebergStage*` call: the snapshot just produced, the CAS

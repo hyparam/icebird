@@ -1,7 +1,8 @@
 import { translateS3Url } from '../fetch.js'
+import { validateSchemaForVersion } from '../schema.js'
 
 /**
- * @import {Resolver, SnapshotRef, StagedUpdate, TableMetadata, TableRequirement, TableUpdate} from '../../src/types.js'
+ * @import {Field, Resolver, Schema, SnapshotRef, StagedUpdate, TableMetadata, TableRequirement, TableUpdate} from '../../src/types.js'
  */
 
 /**
@@ -120,6 +121,10 @@ export function checkRequirements(metadata, requirements) {
  * Setting `main` (a branch ref) also bumps `current-snapshot-id` and appends
  * to `snapshot-log`, matching server behaviour described in the spec.
  *
+ * For `add-schema` / `set-current-schema` the spec sentinel `schema-id: -1`
+ * is supported — `add-schema` assigns the next free id, and
+ * `set-current-schema` resolves to the most recently added schema.
+ *
  * @param {TableMetadata} metadata
  * @param {TableUpdate[]} updates
  * @returns {TableMetadata}
@@ -146,6 +151,32 @@ export function applyUpdates(metadata, updates) {
       const properties = { ...next.properties }
       for (const key of up.removals) delete properties[key]
       next = { ...next, properties }
+    } else if (up.action === 'add-schema') {
+      const schemas = next.schemas ?? []
+      let schemaId = up.schema['schema-id']
+      if (schemaId === -1) {
+        schemaId = schemas.reduce((m, s) => Math.max(m, s['schema-id']), -1) + 1
+      } else if (schemas.some(s => s['schema-id'] === schemaId)) {
+        throw new Error(`add-schema: schema-id ${schemaId} already exists`)
+      }
+      /** @type {Schema} */
+      const newSchema = { ...up.schema, 'schema-id': schemaId }
+      validateSchemaForVersion(newSchema, next['format-version'])
+      next = {
+        ...next,
+        schemas: [...schemas, newSchema],
+        'last-column-id': Math.max(next['last-column-id'] ?? 0, maxFieldId(newSchema.fields)),
+      }
+    } else if (up.action === 'set-current-schema') {
+      let id = up['schema-id']
+      const schemas = next.schemas ?? []
+      if (id === -1) {
+        if (schemas.length === 0) throw new Error('set-current-schema: table has no schemas')
+        id = schemas[schemas.length - 1]['schema-id']
+      } else if (!schemas.some(s => s['schema-id'] === id)) {
+        throw new Error(`set-current-schema: schema-id ${id} not found`)
+      }
+      next = { ...next, 'current-schema-id': id }
     } else if (up.action === 'set-snapshot-ref') {
       /** @type {SnapshotRef} */
       const ref = { 'snapshot-id': up['snapshot-id'], type: up.type }
@@ -165,4 +196,20 @@ export function applyUpdates(metadata, updates) {
     }
   }
   return next
+}
+
+/**
+ * Highest field id at the top level of a schema. Mirrors `create.js` and is
+ * intentionally non-recursive — nested-type ids are not yet supported on
+ * schema add.
+ *
+ * @param {Field[]} fields
+ * @returns {number}
+ */
+function maxFieldId(fields = []) {
+  let max = 0
+  for (const f of fields) {
+    if (f.id > max) max = f.id
+  }
+  return max
 }

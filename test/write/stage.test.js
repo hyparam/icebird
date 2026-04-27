@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { ByteWriter } from 'hyparquet-writer'
 import { fetchAvroRecords } from '../../src/fetch.js'
-import { fileCatalogCommit } from '../../src/write/commit.js'
+import { applyUpdates, fileCatalogCommit } from '../../src/write/commit.js'
 import { icebergCreate } from '../../src/create.js'
 import { icebergRead } from '../../src/read.js'
 import { icebergStageAppend } from '../../src/write/stage.js'
@@ -639,6 +639,84 @@ describe('fileCatalogCommit', () => {
       'write.format.default': 'parquet',
       'comment': 'hello',
     })
+  })
+
+  it('applies add-schema and set-current-schema updates', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/schema'
+    const { resolver } = memResolver()
+
+    const created = await icebergCreate({ tableUrl, resolver, schema })
+
+    /** @type {Schema} */
+    const v2 = {
+      type: 'struct',
+      'schema-id': -1,
+      fields: [
+        ...schema.fields,
+        { id: 99, name: 'tag', required: false, type: 'string', 'write-default': 'unknown' },
+      ],
+    }
+    const staged = {
+      snapshot: /** @type {any} */ (null),
+      requirements: [{ type: /** @type {const} */ ('assert-table-uuid'), uuid: created['table-uuid'] }],
+      updates: [
+        { action: /** @type {const} */ ('add-schema'), schema: v2 },
+        { action: /** @type {const} */ ('set-current-schema'), 'schema-id': -1 },
+      ],
+      writtenFiles: [],
+    }
+    const after = await fileCatalogCommit({ tableUrl, metadata: created, staged, resolver })
+
+    expect(after.schemas).toHaveLength(2)
+    expect(after.schemas[1]['schema-id']).toBe(1) // -1 → next id after the seeded schema
+    expect(after.schemas[1].fields.find(f => f.name === 'tag')?.['write-default']).toBe('unknown')
+    expect(after['current-schema-id']).toBe(1)
+    expect(after['last-column-id']).toBe(99)
+  })
+
+  it('rejects add-schema with a duplicate schema-id', () => {
+    /** @type {TableMetadata} */
+    const meta = {
+      'format-version': 2,
+      'table-uuid': 'u',
+      location: 'http://test',
+      'last-sequence-number': 0,
+      'last-updated-ms': 0,
+      'last-column-id': 1,
+      'current-schema-id': 0,
+      schemas: [{ type: 'struct', 'schema-id': 0, fields: [] }],
+      'default-spec-id': 0,
+      'partition-specs': [{ 'spec-id': 0, fields: [] }],
+      'last-partition-id': 0,
+      'sort-orders': [{ 'order-id': 0, fields: [] }],
+      'default-sort-order-id': 0,
+    }
+    expect(() => applyUpdates(meta, [
+      { action: 'add-schema', schema: { type: 'struct', 'schema-id': 0, fields: [] } },
+    ])).toThrow(/schema-id 0 already exists/)
+  })
+
+  it('rejects set-current-schema with an unknown schema-id', () => {
+    /** @type {TableMetadata} */
+    const meta = {
+      'format-version': 2,
+      'table-uuid': 'u',
+      location: 'http://test',
+      'last-sequence-number': 0,
+      'last-updated-ms': 0,
+      'last-column-id': 1,
+      'current-schema-id': 0,
+      schemas: [{ type: 'struct', 'schema-id': 0, fields: [] }],
+      'default-spec-id': 0,
+      'partition-specs': [{ 'spec-id': 0, fields: [] }],
+      'last-partition-id': 0,
+      'sort-orders': [{ 'order-id': 0, fields: [] }],
+      'default-sort-order-id': 0,
+    }
+    expect(() => applyUpdates(meta, [
+      { action: 'set-current-schema', 'schema-id': 7 },
+    ])).toThrow(/schema-id 7 not found/)
   })
 
   it('rejects a table-uuid mismatch', async () => {
