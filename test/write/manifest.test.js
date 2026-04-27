@@ -5,7 +5,7 @@ import { avroMetadata } from '../../src/avro/avro.metadata.js'
 import { avroRead } from '../../src/avro/avro.read.js'
 
 /**
- * @import {DataFile, Schema} from '../../src/types.js'
+ * @import {DataFile, PartitionSpec, Schema} from '../../src/types.js'
  */
 
 describe('writeDataManifest', () => {
@@ -18,6 +18,9 @@ describe('writeDataManifest', () => {
       { id: 2, name: 'name', required: false, type: 'string' },
     ],
   }
+
+  /** @type {PartitionSpec} */
+  const unpartitioned = { 'spec-id': 0, fields: [] }
 
   /** @type {DataFile} */
   const dataFile = {
@@ -36,7 +39,7 @@ describe('writeDataManifest', () => {
 
   it('writes a manifest that round-trips through the avro reader', async () => {
     const writer = new ByteWriter()
-    writeDataManifest({ writer, schema, snapshotId: 12345n, dataFile })
+    writeDataManifest({ writer, schema, partitionSpec: unpartitioned, snapshotId: 12345n, dataFiles: [dataFile] })
     const buffer = writer.getBuffer()
 
     const reader = { view: new DataView(buffer), offset: 0 }
@@ -85,7 +88,7 @@ describe('writeDataManifest', () => {
 
   it('writes v3 first_row_id as null for new data files', async () => {
     const writer = new ByteWriter()
-    writeDataManifest({ writer, schema, snapshotId: 12345n, dataFile, formatVersion: 3 })
+    writeDataManifest({ writer, schema, partitionSpec: unpartitioned, snapshotId: 12345n, dataFiles: [dataFile], formatVersion: 3 })
     const buffer = writer.getBuffer()
 
     const reader = { view: new DataView(buffer), offset: 0 }
@@ -101,8 +104,9 @@ describe('writeDataManifest', () => {
     writeDataManifest({
       writer,
       schema,
+      partitionSpec: unpartitioned,
       snapshotId: 12345n,
-      dataFile: { ...dataFile, first_row_id: 1000n },
+      dataFiles: [{ ...dataFile, first_row_id: 1000n }],
       formatVersion: 3,
     })
     const buffer = writer.getBuffer()

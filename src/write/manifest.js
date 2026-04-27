@@ -1,17 +1,22 @@
 import { avroWrite } from '../avro/avro.write.js'
+import { partitionAvroSchema, partitionSpecJson, partitionToAvroRecord } from './partition.js'
 
 /**
  * @import {Writer} from 'hyparquet-writer'
- * @import {AvroField, AvroRecord, DataFile, Schema} from '../../src/types.js'
+ * @import {AvroField, AvroRecord, DataFile, PartitionSpec, Schema} from '../../src/types.js'
  */
 
 /**
- * Build an Avro schema for an unpartitioned data manifest entry.
+ * Build an Avro schema for a data manifest entry. The `partition` record's
+ * fields are derived from the table's partition spec (empty for unpartitioned
+ * tables).
  *
+ * @param {Schema} schema
+ * @param {PartitionSpec} partitionSpec
  * @param {2|3} formatVersion
  * @returns {AvroRecord}
  */
-function manifestEntrySchema(formatVersion) {
+function manifestEntrySchema(schema, partitionSpec, formatVersion) {
   /** @type {AvroField[]} */
   const dataFileFields = [
     { name: 'content', type: 'int', 'field-id': 134 },
@@ -20,7 +25,7 @@ function manifestEntrySchema(formatVersion) {
     {
       name: 'partition',
       'field-id': 102,
-      type: { type: 'record', name: 'r102', fields: [] },
+      type: partitionAvroSchema(schema, partitionSpec),
     },
     { name: 'record_count', type: 'long', 'field-id': 103 },
     { name: 'file_size_in_bytes', type: 'long', 'field-id': 104 },
@@ -116,54 +121,62 @@ function encodeMap(m) {
 }
 
 /**
- * Write a v2 data manifest containing a single ADDED entry for `dataFile`.
+ * Write a data manifest containing one ADDED entry per `dataFiles` element.
+ * The data files must all share the same partition spec.
  *
  * @param {object} options
  * @param {Writer} options.writer
  * @param {Schema} options.schema - current table schema (embedded in metadata)
+ * @param {PartitionSpec} options.partitionSpec - spec for this manifest's entries
  * @param {bigint} options.snapshotId
- * @param {DataFile} options.dataFile
+ * @param {DataFile[]} options.dataFiles
  * @param {2|3} [options.formatVersion]
  */
-export function writeDataManifest({ writer, schema, snapshotId, dataFile, formatVersion = 2 }) {
-  /** @type {Record<string, any>} */
-  const dataFileRecord = {
-    content: dataFile.content,
-    file_path: dataFile.file_path,
-    file_format: dataFile.file_format.toUpperCase(),
-    partition: {},
-    record_count: dataFile.record_count,
-    file_size_in_bytes: dataFile.file_size_in_bytes,
-    column_sizes: encodeMap(dataFile.column_sizes),
-    value_counts: encodeMap(dataFile.value_counts),
-    null_value_counts: encodeMap(dataFile.null_value_counts),
-    nan_value_counts: encodeMap(dataFile.nan_value_counts),
-    lower_bounds: encodeMap(dataFile.lower_bounds),
-    upper_bounds: encodeMap(dataFile.upper_bounds),
-    sort_order_id: dataFile.sort_order_id ?? 0,
-  }
-  if (formatVersion >= 3) {
-    dataFileRecord.first_row_id = dataFile.first_row_id ?? null
-  }
+export function writeDataManifest({ writer, schema, partitionSpec, snapshotId, dataFiles, formatVersion = 2 }) {
+  const records = dataFiles.map(dataFile => {
+    /** @type {Record<string, any>} */
+    const dataFileRecord = {
+      content: dataFile.content,
+      file_path: dataFile.file_path,
+      file_format: dataFile.file_format.toUpperCase(),
+      partition: partitionToAvroRecord(
+        /** @type {Record<string, any>} */ (dataFile.partition ?? {}),
+        schema,
+        partitionSpec
+      ),
+      record_count: dataFile.record_count,
+      file_size_in_bytes: dataFile.file_size_in_bytes,
+      column_sizes: encodeMap(dataFile.column_sizes),
+      value_counts: encodeMap(dataFile.value_counts),
+      null_value_counts: encodeMap(dataFile.null_value_counts),
+      nan_value_counts: encodeMap(dataFile.nan_value_counts),
+      lower_bounds: encodeMap(dataFile.lower_bounds),
+      upper_bounds: encodeMap(dataFile.upper_bounds),
+      sort_order_id: dataFile.sort_order_id ?? 0,
+    }
+    if (formatVersion >= 3) {
+      dataFileRecord.first_row_id = dataFile.first_row_id ?? null
+    }
 
-  const record = {
-    status: 1,
-    snapshot_id: snapshotId,
-    sequence_number: null,
-    file_sequence_number: null,
-    data_file: dataFileRecord,
-  }
+    return {
+      status: 1,
+      snapshot_id: snapshotId,
+      sequence_number: null,
+      file_sequence_number: null,
+      data_file: dataFileRecord,
+    }
+  })
 
   avroWrite({
     writer,
-    schema: manifestEntrySchema(formatVersion),
-    records: [record],
+    schema: manifestEntrySchema(schema, partitionSpec, formatVersion),
+    records,
     metadata: {
       'format-version': String(formatVersion),
       content: 'data',
       schema: icebergSchemaJson(schema),
-      'partition-spec': '[]',
-      'partition-spec-id': '0',
+      'partition-spec': partitionSpecJson(partitionSpec),
+      'partition-spec-id': String(partitionSpec['spec-id']),
     },
   })
 }

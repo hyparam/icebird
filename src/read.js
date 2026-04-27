@@ -189,7 +189,8 @@ export async function icebergRead({
             // exists for the field and the partition value is present in the
             // partition struct on data_file object in the manifest. This allows
             // for metadata only migrations of Hive tables.
-            out[field.name] = data_file.partition[partitionField['field-id']]
+            // The partition struct is keyed by partition-field name in Avro.
+            out[field.name] = data_file.partition[partitionField.name]
           } else if (nameMapping) {
             // 2. Use schema.name-mapping.default metadata to map field id to columns
             for (const name of nameMapping.names) {

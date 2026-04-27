@@ -142,6 +142,52 @@ describe('icebergStageAppend', () => {
     ])
   })
 
+  it('writes one parquet per identity-partition group and round-trips through read', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/stage-partitioned'
+    const { resolver, files } = memResolver()
+
+    /** @type {Schema} */
+    const partitionedSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        { id: 2, name: 'country', required: true, type: 'string' },
+      ],
+    }
+    const created = await icebergCreate({ tableUrl, resolver, schema: partitionedSchema })
+    const partitioned = {
+      ...created,
+      'partition-specs': [{
+        'spec-id': 0,
+        fields: [{ 'source-id': 2, 'field-id': 1000, name: 'country', transform: /** @type {const} */ ('identity') }],
+      }],
+      'last-partition-id': 1000,
+    }
+
+    const records = [
+      { id: 1n, country: 'us' },
+      { id: 2n, country: 'fr' },
+      { id: 3n, country: 'us' },
+    ]
+    const staged = await icebergStageAppend({ tableUrl, metadata: partitioned, records, resolver })
+
+    // two partition groups => two parquet files + 1 manifest + 1 manifest list
+    const writtenParquet = staged.writtenFiles.filter(p => p.endsWith('.parquet'))
+    expect(writtenParquet).toHaveLength(2)
+    for (const p of staged.writtenFiles) expect(files.has(p)).toBe(true)
+    expect(staged.snapshot.summary['added-data-files']).toBe('2')
+    expect(staged.snapshot.summary['changed-partition-count']).toBe('2')
+    expect(staged.snapshot.summary['added-records']).toBe('3')
+
+    const committed = await fileCatalogCommit({ tableUrl, metadata: partitioned, staged, resolver })
+    const read = await icebergRead({ tableUrl, metadata: committed, resolver })
+
+    expect(read).toHaveLength(3)
+    expect([...read].sort((a, b) => Number(a.id - b.id))).toEqual(records)
+  })
+
   it('carries forward prior manifests across two sequential commits', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
     const tableUrl = 'http://test/stage3'

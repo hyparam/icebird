@@ -290,7 +290,7 @@ export interface DataFile {
   content: 0 | 1 | 2 // 0=data, 1=position_delete, 2=equality_delete
   file_path: string
   file_format: 'avro' | 'orc' | 'parquet' | 'puffin'
-  partition: Record<number, unknown> // indexed by field id
+  partition: Record<string, unknown> // keyed by partition-field name in Avro
   record_count: bigint
   file_size_in_bytes: bigint
   column_sizes?: Record<number, bigint>

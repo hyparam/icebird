@@ -3,6 +3,7 @@ import { uuid4 } from '../utils.js'
 import { writeParquet } from './parquet.js'
 import { writeDataManifest } from './manifest.js'
 import { writeManifestList } from './manifest-list.js'
+import { groupByPartition } from './partition.js'
 import { computeColumnStats } from './stats.js'
 
 /**
@@ -10,15 +11,15 @@ import { computeColumnStats } from './stats.js'
  */
 
 /**
- * Build the data files, manifest, and manifest list for an unpartitioned
- * append, then return the catalog-agnostic `StagedUpdate` payload (snapshot
- * plus the requirements/updates a catalog must apply to commit it).
+ * Build the data files, manifest, and manifest list for an append, then
+ * return the catalog-agnostic `StagedUpdate` payload (snapshot plus the
+ * requirements/updates a catalog must apply to commit it).
  *
  * No metadata.json or version-hint is written — pass the result to a commit
  * function (`fileCatalogCommit`, or a future `restCatalogCommitTable`).
  *
- * Only supports v2/v3 tables with a flat unpartitioned schema and primitive
- * column types.
+ * Only supports v2/v3 tables. Partitioning is supported with identity
+ * transforms only; bucket/truncate/year/month/day/hour throw.
  *
  * @param {object} options
  * @param {string} options.tableUrl - Base URL of the table.
@@ -30,70 +31,81 @@ import { computeColumnStats } from './stats.js'
 export async function icebergStageAppend({ tableUrl, metadata, records, resolver }) {
   if (!tableUrl) throw new Error('tableUrl is required')
   if (!resolver?.writer) throw new Error('resolver.writer is required')
+  const writerFn = resolver.writer
   if (metadata['format-version'] !== 2 && metadata['format-version'] !== 3) {
     throw new Error(`unsupported format-version: ${metadata['format-version']}`)
   }
   const formatVersion = /** @type {2|3} */ (metadata['format-version'])
   const rowLineage = formatVersion >= 3
   const partitionSpec = metadata['partition-specs'].find(s => s['spec-id'] === metadata['default-spec-id'])
-  if (!partitionSpec || partitionSpec.fields.length) {
-    throw new Error('icebergStageAppend only supports unpartitioned tables')
-  }
+  if (!partitionSpec) throw new Error('default partition spec not found in metadata')
   const schema = metadata.schemas.find(s => s['schema-id'] === metadata['current-schema-id'])
   if (!schema) throw new Error('current schema not found in metadata')
 
   const snapshotId = newSnapshotId()
   const sequenceNumber = BigInt(metadata['last-sequence-number'] ?? 0) + 1n
-  const dataUuid = uuid4()
   const manifestUuid = uuid4()
   const timestampMs = Date.now()
   const firstRowId = rowLineage ? BigInt(metadata['next-row-id'] ?? 0) : undefined
 
-  // 1. Write parquet data file
-  const dataPath = `${tableUrl}/data/${dataUuid}.parquet`
-  const dataWriter = resolver.writer(translateS3Url(dataPath))
-  writeParquet({ writer: dataWriter, schema, records })
-  const dataFileSize = BigInt(dataWriter.offset)
+  // 1. Group records by partition tuple, then write one parquet per group in parallel.
+  const groups = partitionSpec.fields.length
+    ? groupByPartition(records, schema, partitionSpec)
+    : [{ partition: {}, records }]
+  const writtenDataFiles = await Promise.all(groups.map(group => {
+    const dataPath = `${tableUrl}/data/${uuid4()}.parquet`
+    const dataWriter = writerFn(translateS3Url(dataPath))
+    writeParquet({ writer: dataWriter, schema, records: group.records })
+    const stats = computeColumnStats(group.records, schema)
+    return {
+      partition: group.partition,
+      records: group.records,
+      dataFile: {
+        content: /** @type {0} */ (0),
+        file_path: dataPath,
+        file_format: /** @type {'parquet'} */ ('parquet'),
+        partition: group.partition,
+        record_count: BigInt(group.records.length),
+        file_size_in_bytes: BigInt(dataWriter.offset),
+        value_counts: stats.value_counts,
+        null_value_counts: stats.null_value_counts,
+        nan_value_counts: stats.nan_value_counts,
+        lower_bounds: stats.lower_bounds,
+        upper_bounds: stats.upper_bounds,
+        sort_order_id: 0,
+      },
+      path: dataPath,
+    }
+  }))
 
-  // 2. Write manifest
-  const stats = computeColumnStats(records, schema)
+  // 2. Write a single manifest covering every new data file
   const manifestPath = `${tableUrl}/metadata/${manifestUuid}-m0.avro`
-  const manifestWriter = resolver.writer(translateS3Url(manifestPath))
+  const manifestWriter = writerFn(translateS3Url(manifestPath))
   writeDataManifest({
     writer: manifestWriter,
     schema,
+    partitionSpec,
     snapshotId,
-    dataFile: {
-      content: 0,
-      file_path: dataPath,
-      file_format: 'parquet',
-      partition: {},
-      record_count: BigInt(records.length),
-      file_size_in_bytes: dataFileSize,
-      value_counts: stats.value_counts,
-      null_value_counts: stats.null_value_counts,
-      nan_value_counts: stats.nan_value_counts,
-      lower_bounds: stats.lower_bounds,
-      upper_bounds: stats.upper_bounds,
-      sort_order_id: 0,
-    },
+    dataFiles: writtenDataFiles.map(f => f.dataFile),
     formatVersion,
   })
   const manifestLength = BigInt(manifestWriter.offset)
+  const totalAddedRows = writtenDataFiles.reduce((sum, f) => sum + BigInt(f.records.length), 0n)
+  const totalAddedSize = writtenDataFiles.reduce((sum, f) => sum + f.dataFile.file_size_in_bytes, 0n)
 
   /** @type {Manifest} */
   const newManifest = {
     manifest_path: manifestPath,
     manifest_length: manifestLength,
-    partition_spec_id: 0,
+    partition_spec_id: partitionSpec['spec-id'],
     content: 0,
     sequence_number: sequenceNumber,
     min_sequence_number: sequenceNumber,
     added_snapshot_id: snapshotId,
-    added_files_count: 1,
+    added_files_count: writtenDataFiles.length,
     existing_files_count: 0,
     deleted_files_count: 0,
-    added_rows_count: BigInt(records.length),
+    added_rows_count: totalAddedRows,
     existing_rows_count: 0n,
     deleted_rows_count: 0n,
   }
@@ -103,7 +115,7 @@ export async function icebergStageAppend({ tableUrl, metadata, records, resolver
   const allManifests = [newManifest, ...priorManifests]
   const addedRows = rowLineage ? assignFirstRowIds(allManifests, firstRowId ?? 0n) : 0n
   const manifestListPath = `${tableUrl}/metadata/snap-${snapshotId}-1-${manifestUuid}.avro`
-  const listWriter = resolver.writer(translateS3Url(manifestListPath))
+  const listWriter = writerFn(translateS3Url(manifestListPath))
   writeManifestList({ writer: listWriter, snapshotId, sequenceNumber, manifests: allManifests, formatVersion })
 
   // 4. Build the new snapshot
@@ -121,13 +133,13 @@ export async function icebergStageAppend({ tableUrl, metadata, records, resolver
     'manifest-list': manifestListPath,
     summary: {
       operation: 'append',
-      'added-data-files': '1',
+      'added-data-files': String(writtenDataFiles.length),
       'added-records': String(records.length),
-      'added-files-size': String(dataFileSize),
-      'changed-partition-count': '1',
+      'added-files-size': String(totalAddedSize),
+      'changed-partition-count': String(writtenDataFiles.length),
       'total-records': String(prevTotals.records + BigInt(records.length)),
-      'total-files-size': String(prevTotals.size + dataFileSize),
-      'total-data-files': String(prevTotals.files + 1n),
+      'total-files-size': String(prevTotals.size + totalAddedSize),
+      'total-data-files': String(prevTotals.files + BigInt(writtenDataFiles.length)),
       'total-delete-files': '0',
       'total-position-deletes': '0',
       'total-equality-deletes': '0',
@@ -168,7 +180,7 @@ export async function icebergStageAppend({ tableUrl, metadata, records, resolver
         'snapshot-id': snapshot['snapshot-id'],
       },
     ],
-    writtenFiles: [dataPath, manifestPath, manifestListPath],
+    writtenFiles: [...writtenDataFiles.map(f => f.path), manifestPath, manifestListPath],
   }
 }
 

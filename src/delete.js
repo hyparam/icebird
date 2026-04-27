@@ -52,8 +52,8 @@ function samePartition(dataEntry, deleteEntry) {
 }
 
 /**
- * @param {Record<number, unknown>} a
- * @param {Record<number, unknown>} b
+ * @param {Record<string, unknown>} a
+ * @param {Record<string, unknown>} b
  * @returns {boolean}
  */
 function partitionsEqual(a, b) {
@@ -62,7 +62,7 @@ function partitionsEqual(a, b) {
   if (aKeys.length !== bKeys.length) return false
   for (const key of aKeys) {
     if (!Object.hasOwn(b, key)) return false
-    if (!valuesEqual(a[Number(key)], b[Number(key)])) return false
+    if (!valuesEqual(a[key], b[key])) return false
   }
   return true
 }
