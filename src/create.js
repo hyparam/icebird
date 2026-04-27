@@ -7,7 +7,7 @@ import { uuid4 } from './utils.js'
  * @param {string} options.tableUrl - Base S3 URL of the table.
  * @param {Resolver} options.resolver - Resolver with a writer method.
  * @param {Schema} [options.schema] - The schema of the table.
- * @param {2 | 3} [options.formatVersion] - Iceberg format version (default 2).
+ * @param {2 | 3} [options.formatVersion] - Iceberg format version. Defaults to `properties['format-version']` if set, else 2.
  * @param {PartitionSpec} [options.partitionSpec] - Partition spec (default unpartitioned).
  * @param {SortOrder} [options.sortOrder] - Sort order (default unsorted).
  * @param {Record<string, string>} [options.properties] - Table properties.
@@ -17,12 +17,16 @@ export async function icebergCreate ({
   tableUrl,
   resolver,
   schema,
-  formatVersion = 2,
+  formatVersion,
   partitionSpec,
   sortOrder,
   properties,
 }) {
   if (!tableUrl) throw new Error('tableUrl is required')
+  if (formatVersion === undefined) {
+    const propVersion = properties?.['format-version']
+    formatVersion = /** @type {2 | 3} */ (propVersion !== undefined ? Number(propVersion) : 2)
+  }
   if (formatVersion !== 2 && formatVersion !== 3) {
     throw new Error(`unsupported format-version: ${formatVersion}`)
   }

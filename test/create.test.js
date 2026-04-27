@@ -135,6 +135,41 @@ describe('createIceberg', () => {
     expect(metadata['next-row-id']).toBe(0)
   })
 
+  it('honors format-version from properties', async () => {
+    const writer = vi.fn(() => new ByteWriter())
+    const resolver = { reader: vi.fn(), writer }
+    const metadata = await icebergCreate({
+      tableUrl,
+      resolver,
+      properties: { 'format-version': '3' },
+    })
+
+    expect(metadata['format-version']).toBe(3)
+    expect(metadata['next-row-id']).toBe(0)
+  })
+
+  it('formatVersion arg overrides properties', async () => {
+    const writer = vi.fn(() => new ByteWriter())
+    const resolver = { reader: vi.fn(), writer }
+    const metadata = await icebergCreate({
+      tableUrl,
+      resolver,
+      formatVersion: 2,
+      properties: { 'format-version': '3' },
+    })
+
+    expect(metadata['format-version']).toBe(2)
+  })
+
+  it('throws on unsupported format-version property', async () => {
+    const resolver = { reader: vi.fn(), writer: vi.fn() }
+    await expect(icebergCreate({
+      tableUrl,
+      resolver,
+      properties: { 'format-version': '1' },
+    })).rejects.toThrow('unsupported format-version: 1')
+  })
+
   it('throws on unsupported format-version', async () => {
     const resolver = { reader: vi.fn(), writer: vi.fn() }
     // @ts-expect-error testing invalid input
