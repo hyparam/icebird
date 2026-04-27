@@ -2,7 +2,7 @@ import { translateS3Url } from '../fetch.js'
 import { validateSchemaForVersion } from '../schema.js'
 
 /**
- * @import {Field, Resolver, Schema, SnapshotRef, SortOrder, StagedUpdate, TableMetadata, TableRequirement, TableUpdate} from '../../src/types.js'
+ * @import {Field, PartitionSpec, Resolver, Schema, SnapshotRef, SortOrder, StagedUpdate, TableMetadata, TableRequirement, TableUpdate} from '../../src/types.js'
  */
 
 /**
@@ -243,6 +243,36 @@ export function applyUpdates(metadata, updates) {
         throw new Error(`set-default-sort-order: sort-order-id ${id} not found`)
       }
       next = { ...next, 'default-sort-order-id': id }
+    } else if (up.action === 'add-spec') {
+      const specs = next['partition-specs'] ?? []
+      let specId = up.spec['spec-id']
+      if (specId === -1) {
+        specId = specs.reduce((m, s) => Math.max(m, s['spec-id']), -1) + 1
+      } else if (specs.some(s => s['spec-id'] === specId)) {
+        throw new Error(`add-spec: spec-id ${specId} already exists`)
+      }
+      /** @type {PartitionSpec} */
+      const newSpec = { ...up.spec, 'spec-id': specId }
+      const priorLastPartitionId = next['last-partition-id'] ?? 0
+      let nextLastPartitionId = priorLastPartitionId
+      for (const f of newSpec.fields) {
+        if (f['field-id'] > nextLastPartitionId) nextLastPartitionId = f['field-id']
+      }
+      next = {
+        ...next,
+        'partition-specs': [...specs, newSpec],
+        'last-partition-id': nextLastPartitionId,
+      }
+    } else if (up.action === 'set-default-spec') {
+      let id = up['spec-id']
+      const specs = next['partition-specs'] ?? []
+      if (id === -1) {
+        if (specs.length === 0) throw new Error('set-default-spec: table has no partition specs')
+        id = specs[specs.length - 1]['spec-id']
+      } else if (!specs.some(s => s['spec-id'] === id)) {
+        throw new Error(`set-default-spec: spec-id ${id} not found`)
+      }
+      next = { ...next, 'default-spec-id': id }
     } else if (up.action === 'set-snapshot-ref') {
       /** @type {SnapshotRef} */
       const ref = { 'snapshot-id': up['snapshot-id'], type: up.type }

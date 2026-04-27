@@ -1060,6 +1060,88 @@ describe('fileCatalogCommit', () => {
     ])).toThrow(/sort-order-id 7 not found/)
   })
 
+  it('applies add-spec and set-default-spec updates', () => {
+    /** @type {TableMetadata} */
+    const meta = {
+      'format-version': 2,
+      'table-uuid': 'u',
+      location: 'http://test',
+      'last-sequence-number': 0,
+      'last-updated-ms': 0,
+      'last-column-id': 1,
+      'current-schema-id': 0,
+      schemas: [{
+        type: 'struct',
+        'schema-id': 0,
+        fields: [{ id: 1, name: 'id', required: true, type: 'long' }],
+      }],
+      'default-spec-id': 0,
+      'partition-specs': [{ 'spec-id': 0, fields: [] }],
+      'last-partition-id': 999,
+      'sort-orders': [{ 'order-id': 0, fields: [] }],
+      'default-sort-order-id': 0,
+    }
+    const next = applyUpdates(meta, [
+      {
+        action: 'add-spec',
+        spec: {
+          'spec-id': -1,
+          fields: [{ 'source-id': 1, 'field-id': 1001, name: 'id_bucket', transform: 'bucket[8]' }],
+        },
+      },
+      { action: 'set-default-spec', 'spec-id': -1 },
+    ])
+    expect(next['partition-specs']).toHaveLength(2)
+    expect(next['partition-specs'][1]['spec-id']).toBe(1)
+    expect(next['partition-specs'][1].fields[0]['source-id']).toBe(1)
+    expect(next['last-partition-id']).toBe(1001)
+    expect(next['default-spec-id']).toBe(1)
+  })
+
+  it('rejects add-spec with a duplicate spec-id', () => {
+    /** @type {TableMetadata} */
+    const meta = {
+      'format-version': 2,
+      'table-uuid': 'u',
+      location: 'http://test',
+      'last-sequence-number': 0,
+      'last-updated-ms': 0,
+      'last-column-id': 1,
+      'current-schema-id': 0,
+      schemas: [{ type: 'struct', 'schema-id': 0, fields: [] }],
+      'default-spec-id': 0,
+      'partition-specs': [{ 'spec-id': 0, fields: [] }],
+      'last-partition-id': 0,
+      'sort-orders': [{ 'order-id': 0, fields: [] }],
+      'default-sort-order-id': 0,
+    }
+    expect(() => applyUpdates(meta, [
+      { action: 'add-spec', spec: { 'spec-id': 0, fields: [] } },
+    ])).toThrow(/spec-id 0 already exists/)
+  })
+
+  it('rejects set-default-spec with an unknown spec-id', () => {
+    /** @type {TableMetadata} */
+    const meta = {
+      'format-version': 2,
+      'table-uuid': 'u',
+      location: 'http://test',
+      'last-sequence-number': 0,
+      'last-updated-ms': 0,
+      'last-column-id': 1,
+      'current-schema-id': 0,
+      schemas: [{ type: 'struct', 'schema-id': 0, fields: [] }],
+      'default-spec-id': 0,
+      'partition-specs': [{ 'spec-id': 0, fields: [] }],
+      'last-partition-id': 0,
+      'sort-orders': [{ 'order-id': 0, fields: [] }],
+      'default-sort-order-id': 0,
+    }
+    expect(() => applyUpdates(meta, [
+      { action: 'set-default-spec', 'spec-id': 7 },
+    ])).toThrow(/spec-id 7 not found/)
+  })
+
   it('rejects set-current-schema with an unknown schema-id', () => {
     /** @type {TableMetadata} */
     const meta = {

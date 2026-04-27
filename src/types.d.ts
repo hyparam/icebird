@@ -250,6 +250,8 @@ export type TableUpdate =
   | { action: 'set-current-schema', 'schema-id': number }
   | { action: 'add-sort-order', 'sort-order': SortOrder }
   | { action: 'set-default-sort-order', 'sort-order-id': number }
+  | { action: 'add-spec', spec: PartitionSpec }
+  | { action: 'set-default-spec', 'spec-id': number }
 
 /**
  * Output of an `icebergStage*` call: the snapshot just produced, the CAS
