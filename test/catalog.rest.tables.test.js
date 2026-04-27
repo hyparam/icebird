@@ -8,6 +8,7 @@ import {
   restCatalogLoadTable,
   restCatalogRegisterTable,
   restCatalogRenameTable,
+  restCatalogUpdateTable,
 } from '../src/catalog.rest.js'
 import { makeFetch } from './catalog.rest.helpers.js'
 
@@ -338,6 +339,83 @@ describe('REST Catalog client — tables', () => {
       source: { namespace: ['db'], name: 'a' },
       destination: { namespace: ['db'], name: 'b' },
     })).rejects.toThrow('409 AlreadyExistsException: destination exists')
+  })
+
+  it('restCatalogUpdateTable POSTs requirements and updates, applies prefix', async () => {
+    const metadata = { 'format-version': 2, 'table-uuid': 'abc', location: 's3://bucket/orders', schemas: [] }
+    mock = makeFetch({
+      'https://cat/v1/config': { prefix: 'ws/main' },
+      'https://cat/v1/ws/main/namespaces/db/tables/orders': {
+        'metadata-location': 's3://bucket/orders/metadata/v4.metadata.json',
+        metadata,
+      },
+    })
+    vi.stubGlobal('fetch', mock.fn)
+
+    const requirements = /** @type {any} */ ([
+      { type: 'assert-table-uuid', uuid: 'abc' },
+      { type: 'assert-ref-snapshot-id', ref: 'main', 'snapshot-id': 42 },
+    ])
+    const updates = /** @type {any} */ ([
+      { action: 'set-snapshot-ref', 'ref-name': 'main', type: 'branch', 'snapshot-id': 99 },
+    ])
+
+    const ctx = await restCatalogConnect({ url: 'https://cat' })
+    const result = await restCatalogUpdateTable(ctx, {
+      namespace: 'db',
+      table: 'orders',
+      requirements,
+      updates,
+    })
+
+    expect(result.metadataLocation).toBe('s3://bucket/orders/metadata/v4.metadata.json')
+    expect(result.metadata).toEqual(metadata)
+    expect(result.config).toEqual({})
+
+    const call = mock.calls.find(c => c.url === 'https://cat/v1/ws/main/namespaces/db/tables/orders')
+    expect(call?.init?.method).toBe('POST')
+    const headers = /** @type {Record<string,string>} */ (call?.init?.headers)
+    expect(headers['content-type']).toBe('application/json')
+    expect(JSON.parse(/** @type {string} */ (call?.init?.body))).toEqual({ requirements, updates })
+  })
+
+  it('restCatalogUpdateTable encodes multi-level namespace with %1F', async () => {
+    mock = makeFetch({
+      'https://cat/v1/config': {},
+      'https://cat/v1/namespaces/db%1Fsub/tables/orders': {
+        'metadata-location': 's3://b/m.json',
+        metadata: { location: 's3://b' },
+      },
+    })
+    vi.stubGlobal('fetch', mock.fn)
+
+    const ctx = await restCatalogConnect({ url: 'https://cat' })
+    await restCatalogUpdateTable(ctx, {
+      namespace: ['db', 'sub'],
+      table: 'orders',
+      requirements: [],
+      updates: [],
+    })
+
+    expect(mock.calls.some(c => c.url === 'https://cat/v1/namespaces/db%1Fsub/tables/orders')).toBe(true)
+  })
+
+  it('restCatalogUpdateTable surfaces CommitFailedException', async () => {
+    mock = makeFetch({
+      'https://cat/v1/config': {},
+      'https://cat/v1/namespaces/db/tables/orders': () => new Response(JSON.stringify({
+        error: { code: 409, type: 'CommitFailedException', message: 'requirement failed' },
+      }), { status: 409 }),
+    })
+    vi.stubGlobal('fetch', mock.fn)
+
+    const ctx = await restCatalogConnect({ url: 'https://cat' })
+    await expect(restCatalogUpdateTable(ctx, {
+      namespace: 'db',
+      table: 'orders',
+      requirements: /** @type {any} */ ([{ type: 'assert-table-uuid', uuid: 'abc' }]),
+      updates: [],
+    })).rejects.toThrow('409 CommitFailedException: requirement failed')
   })
 
   it('restCatalogLoadCredentials returns storage-credentials array', async () => {

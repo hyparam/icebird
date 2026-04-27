@@ -6,7 +6,7 @@
  * two together by passing `metadata` and `metadata.location` from
  * `restCatalogLoadTable` into `icebergRead`.
  *
- * @import {LoadTableResponse, PartitionSpec, RestCatalogContext, Schema, SortOrder, StorageCredential, TableIdentifier, TableMetadata} from '../src/types.js'
+ * @import {LoadTableResponse, PartitionSpec, RestCatalogContext, Schema, SortOrder, StorageCredential, TableIdentifier, TableMetadata, TableRequirement, TableUpdate} from '../src/types.js'
  */
 
 /**
@@ -191,6 +191,37 @@ export async function restCatalogRegisterTable(ctx, { namespace, table, metadata
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
+  })
+  const responseBody = await res.json()
+  return {
+    metadataLocation: responseBody['metadata-location'],
+    metadata: /** @type {TableMetadata} */ (responseBody.metadata),
+    config: responseBody.config ?? {},
+  }
+}
+
+/**
+ * Commit updates to a table. Sends `requirements` and `updates` to the
+ * catalog's `commit` endpoint; the server applies the updates atomically iff
+ * every requirement still holds against the current metadata, otherwise it
+ * responds with `CommitFailedException`. Returns the committed metadata and
+ * its new location.
+ *
+ * @param {RestCatalogContext} ctx
+ * @param {object} options
+ * @param {string | string[]} options.namespace
+ * @param {string} options.table
+ * @param {TableRequirement[]} options.requirements
+ * @param {TableUpdate[]} options.updates
+ * @returns {Promise<LoadTableResponse>}
+ */
+export async function restCatalogUpdateTable(ctx, { namespace, table, requirements, updates }) {
+  const ns = encodeNamespace(namespace)
+  const tbl = encodeURIComponent(table)
+  const res = await restFetch(ctx, `namespaces/${ns}/tables/${tbl}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ requirements, updates }),
   })
   const responseBody = await res.json()
   return {
