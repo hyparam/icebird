@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   restCatalogConnect,
+  restCatalogCreateTable,
   restCatalogDropTable,
   restCatalogListTables,
   restCatalogLoadCredentials,
@@ -130,6 +131,99 @@ describe('REST Catalog client — tables', () => {
     const ctx = await restCatalogConnect({ url: 'https://cat' })
     await expect(restCatalogDropTable(ctx, { namespace: 'db', table: 'missing' }))
       .rejects.toThrow('404 NoSuchTableException: Table not found')
+  })
+
+  it('restCatalogCreateTable POSTs name and schema, applies prefix', async () => {
+    const schema = {
+      type: /** @type {const} */ ('struct'),
+      'schema-id': 0,
+      fields: [{ id: 1, name: 'id', required: true, type: /** @type {const} */ ('long') }],
+    }
+    const metadata = { 'format-version': 2, 'table-uuid': 'abc', location: 's3://bucket/orders', schemas: [schema] }
+    mock = makeFetch({
+      'https://cat/v1/config': { prefix: 'ws/main' },
+      'https://cat/v1/ws/main/namespaces/db/tables': {
+        'metadata-location': 's3://bucket/orders/metadata/v1.metadata.json',
+        metadata,
+        config: { 'client.region': 'us-east-1' },
+      },
+    })
+    vi.stubGlobal('fetch', mock.fn)
+
+    const ctx = await restCatalogConnect({ url: 'https://cat' })
+    const result = await restCatalogCreateTable(ctx, {
+      namespace: 'db',
+      table: 'orders',
+      schema,
+    })
+
+    expect(result.metadataLocation).toBe('s3://bucket/orders/metadata/v1.metadata.json')
+    expect(result.metadata).toEqual(metadata)
+    expect(result.config).toEqual({ 'client.region': 'us-east-1' })
+
+    const call = mock.calls.find(c => c.url === 'https://cat/v1/ws/main/namespaces/db/tables')
+    expect(call?.init?.method).toBe('POST')
+    const headers = /** @type {Record<string,string>} */ (call?.init?.headers)
+    expect(headers['content-type']).toBe('application/json')
+    expect(JSON.parse(/** @type {string} */ (call?.init?.body))).toEqual({
+      name: 'orders',
+      schema,
+    })
+  })
+
+  it('restCatalogCreateTable forwards optional fields and encodes multi-level namespace', async () => {
+    const schema = { type: 'struct', 'schema-id': 0, fields: [] }
+    const partitionSpec = { 'spec-id': 0, fields: [{ 'source-id': 1, 'field-id': 1000, name: 'id', transform: 'identity' }] }
+    const writeOrder = { 'order-id': 1, fields: [{ transform: 'identity', 'source-id': 1, direction: 'asc', 'null-order': 'nulls-first' }] }
+    mock = makeFetch({
+      'https://cat/v1/config': {},
+      'https://cat/v1/namespaces/db%1Fsub/tables': {
+        'metadata-location': 's3://b/m.json',
+        metadata: { location: 's3://b' },
+      },
+    })
+    vi.stubGlobal('fetch', mock.fn)
+
+    const ctx = await restCatalogConnect({ url: 'https://cat' })
+    await restCatalogCreateTable(ctx, {
+      namespace: ['db', 'sub'],
+      table: 'orders',
+      schema: /** @type {any} */ (schema),
+      location: 's3://b/orders',
+      partitionSpec: /** @type {any} */ (partitionSpec),
+      writeOrder: /** @type {any} */ (writeOrder),
+      stageCreate: true,
+      properties: { 'write.format.default': 'parquet' },
+    })
+
+    const call = mock.calls.find(c => c.url === 'https://cat/v1/namespaces/db%1Fsub/tables')
+    expect(call).toBeDefined()
+    expect(JSON.parse(/** @type {string} */ (call?.init?.body))).toEqual({
+      name: 'orders',
+      schema,
+      location: 's3://b/orders',
+      'partition-spec': partitionSpec,
+      'write-order': writeOrder,
+      'stage-create': true,
+      properties: { 'write.format.default': 'parquet' },
+    })
+  })
+
+  it('restCatalogCreateTable surfaces ErrorModel on conflict', async () => {
+    mock = makeFetch({
+      'https://cat/v1/config': {},
+      'https://cat/v1/namespaces/db/tables': () => new Response(JSON.stringify({
+        error: { code: 409, type: 'AlreadyExistsException', message: 'table exists' },
+      }), { status: 409 }),
+    })
+    vi.stubGlobal('fetch', mock.fn)
+
+    const ctx = await restCatalogConnect({ url: 'https://cat' })
+    await expect(restCatalogCreateTable(ctx, {
+      namespace: 'db',
+      table: 'orders',
+      schema: /** @type {any} */ ({ type: 'struct', 'schema-id': 0, fields: [] }),
+    })).rejects.toThrow('409 AlreadyExistsException: table exists')
   })
 
   it('restCatalogRegisterTable POSTs name and metadata-location', async () => {

@@ -6,7 +6,7 @@
  * two together by passing `metadata` and `metadata.location` from
  * `restCatalogLoadTable` into `icebergRead`.
  *
- * @import {LoadTableResponse, RestCatalogContext, StorageCredential, TableIdentifier, TableMetadata} from '../src/types.js'
+ * @import {LoadTableResponse, PartitionSpec, RestCatalogContext, Schema, SortOrder, StorageCredential, TableIdentifier, TableMetadata} from '../src/types.js'
  */
 
 /**
@@ -117,6 +117,55 @@ export async function restCatalogLoadCredentials(ctx, { namespace, table }) {
   const res = await restFetch(ctx, `namespaces/${ns}/tables/${tbl}/credentials`)
   const body = await res.json()
   return body['storage-credentials'] ?? []
+}
+
+/**
+ * Create a new table in the catalog. The server allocates the metadata file
+ * and returns the resulting `LoadTableResponse`. When `stageCreate` is true
+ * the server stages the create without committing it, so the caller can
+ * follow up with an `updateTable` commit.
+ *
+ * @param {RestCatalogContext} ctx
+ * @param {object} options
+ * @param {string | string[]} options.namespace
+ * @param {string} options.table
+ * @param {Schema} options.schema
+ * @param {string} [options.location]
+ * @param {PartitionSpec} [options.partitionSpec]
+ * @param {SortOrder} [options.writeOrder]
+ * @param {boolean} [options.stageCreate]
+ * @param {Record<string, string>} [options.properties]
+ * @returns {Promise<LoadTableResponse>}
+ */
+export async function restCatalogCreateTable(ctx, {
+  namespace,
+  table,
+  schema,
+  location,
+  partitionSpec,
+  writeOrder,
+  stageCreate,
+  properties,
+}) {
+  const ns = encodeNamespace(namespace)
+  /** @type {Record<string, unknown>} */
+  const body = { name: table, schema }
+  if (location !== undefined) body.location = location
+  if (partitionSpec !== undefined) body['partition-spec'] = partitionSpec
+  if (writeOrder !== undefined) body['write-order'] = writeOrder
+  if (stageCreate !== undefined) body['stage-create'] = stageCreate
+  if (properties !== undefined) body.properties = properties
+  const res = await restFetch(ctx, `namespaces/${ns}/tables`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const responseBody = await res.json()
+  return {
+    metadataLocation: responseBody['metadata-location'],
+    metadata: /** @type {TableMetadata} */ (responseBody.metadata),
+    config: responseBody.config ?? {},
+  }
 }
 
 /**
