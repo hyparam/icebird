@@ -238,6 +238,8 @@ export type TableUpdate =
       'max-snapshot-age-ms'?: number
       'max-ref-age-ms'?: number
     }
+  | { action: 'set-properties', updates: Record<string, string> }
+  | { action: 'remove-properties', removals: string[] }
 
 /**
  * Output of an `icebergStage*` call: the snapshot just produced, the CAS

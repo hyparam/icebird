@@ -140,6 +140,12 @@ export function applyUpdates(metadata, updates) {
         const nextRowId = snap['first-row-id'] + snap['added-rows']
         next['next-row-id'] = Math.max(Number(next['next-row-id'] ?? 0), nextRowId)
       }
+    } else if (up.action === 'set-properties') {
+      next = { ...next, properties: { ...next.properties, ...up.updates } }
+    } else if (up.action === 'remove-properties') {
+      const properties = { ...next.properties }
+      for (const key of up.removals) delete properties[key]
+      next = { ...next, properties }
     } else if (up.action === 'set-snapshot-ref') {
       /** @type {SnapshotRef} */
       const ref = { 'snapshot-id': up['snapshot-id'], type: up.type }

@@ -575,6 +575,46 @@ describe('fileCatalogCommit', () => {
     expect(nextLog[1]['metadata-file']).toMatch(/v5\.metadata\.json$/)
   })
 
+  it('applies set-properties and remove-properties updates', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/props'
+    const { resolver } = memResolver()
+
+    const created = await icebergCreate({
+      tableUrl, resolver, schema,
+      properties: { 'write.format.default': 'parquet', 'owner': 'alice' },
+    })
+
+    const setStaged = {
+      snapshot: /** @type {any} */ (null),
+      requirements: [{ type: /** @type {const} */ ('assert-table-uuid'), uuid: created['table-uuid'] }],
+      updates: [
+        { action: /** @type {const} */ ('set-properties'), updates: { 'owner': 'bob', 'comment': 'hello' } },
+      ],
+      writtenFiles: [],
+    }
+    const afterSet = await fileCatalogCommit({ tableUrl, metadata: created, staged: setStaged, resolver })
+    expect(afterSet.properties).toEqual({
+      'write.format.default': 'parquet',
+      'owner': 'bob',
+      'comment': 'hello',
+    })
+
+    const removeStaged = {
+      snapshot: /** @type {any} */ (null),
+      requirements: [{ type: /** @type {const} */ ('assert-table-uuid'), uuid: created['table-uuid'] }],
+      updates: [
+        { action: /** @type {const} */ ('remove-properties'), removals: ['owner', 'missing'] },
+      ],
+      writtenFiles: [],
+    }
+    const afterRemove = await fileCatalogCommit({ tableUrl, metadata: afterSet, staged: removeStaged, resolver })
+    expect(afterRemove.properties).toEqual({
+      'write.format.default': 'parquet',
+      'comment': 'hello',
+    })
+  })
+
   it('rejects a table-uuid mismatch', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
     const tableUrl = 'http://test/uuid'
