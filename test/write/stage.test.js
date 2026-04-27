@@ -188,6 +188,50 @@ describe('icebergStageAppend', () => {
     expect([...read].sort((a, b) => Number(a.id - b.id))).toEqual(records)
   })
 
+  it('collapses records into one group for a void-transform partition spec', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/stage-void'
+    const { resolver } = memResolver()
+
+    /** @type {Schema} */
+    const voidSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        { id: 2, name: 'country', required: true, type: 'string' },
+      ],
+    }
+    const created = await icebergCreate({ tableUrl, resolver, schema: voidSchema })
+    const voided = {
+      ...created,
+      'partition-specs': [{
+        'spec-id': 0,
+        fields: [{ 'source-id': 2, 'field-id': 1000, name: 'country_void', transform: /** @type {const} */ ('void') }],
+      }],
+      'last-partition-id': 1000,
+    }
+
+    const records = [
+      { id: 1n, country: 'us' },
+      { id: 2n, country: 'fr' },
+      { id: 3n, country: 'us' },
+    ]
+    const staged = await icebergStageAppend({ tableUrl, metadata: voided, records, resolver })
+
+    // void collapses every record into a single group => one parquet file
+    const writtenParquet = staged.writtenFiles.filter(p => p.endsWith('.parquet'))
+    expect(writtenParquet).toHaveLength(1)
+    expect(staged.snapshot.summary['added-data-files']).toBe('1')
+    expect(staged.snapshot.summary['changed-partition-count']).toBe('1')
+    expect(staged.snapshot.summary['added-records']).toBe('3')
+
+    const committed = await fileCatalogCommit({ tableUrl, metadata: voided, staged, resolver })
+    const read = await icebergRead({ tableUrl, metadata: committed, resolver })
+
+    expect([...read].sort((a, b) => Number(a.id - b.id))).toEqual(records)
+  })
+
   it('carries forward prior manifests across two sequential commits', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
     const tableUrl = 'http://test/stage3'

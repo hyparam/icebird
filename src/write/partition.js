@@ -3,9 +3,8 @@
  */
 
 /**
- * Group records by their identity-partition tuple. Throws if the partition
- * spec contains any non-identity transform (year/month/day/hour/bucket/
- * truncate/void) — those are TODO.
+ * Group records by their partition tuple. Identity and void transforms are
+ * supported; bucket/truncate/year/month/day/hour throw.
  *
  * Returns one group per distinct tuple, preserving the order each tuple
  * first appears so output is stable for tests.
@@ -17,8 +16,8 @@
  */
 export function groupByPartition(records, schema, partitionSpec) {
   const sourceFields = partitionSpec.fields.map(pf => {
-    if (pf.transform !== 'identity') {
-      throw new Error(`unsupported partition transform: ${pf.transform} (only 'identity' is implemented)`)
+    if (pf.transform !== 'identity' && pf.transform !== 'void') {
+      throw new Error(`unsupported partition transform: ${pf.transform} (only 'identity' and 'void' are implemented)`)
     }
     const sourceId = pf['source-id']
     if (sourceId === undefined) {
@@ -28,7 +27,7 @@ export function groupByPartition(records, schema, partitionSpec) {
     if (!sourceField) {
       throw new Error(`partition source field id ${sourceId} not found in schema`)
     }
-    return { partitionName: pf.name, sourceName: sourceField.name }
+    return { partitionName: pf.name, sourceName: sourceField.name, transform: pf.transform }
   })
 
   /** @type {Map<string, { partition: Record<string, any>, records: Record<string, any>[] }>} */
@@ -37,9 +36,13 @@ export function groupByPartition(records, schema, partitionSpec) {
     /** @type {Record<string, any>} */
     const partition = {}
     const keyParts = []
-    for (const { partitionName, sourceName } of sourceFields) {
-      const v = record[sourceName]
-      partition[partitionName] = v === undefined ? null : v
+    for (const { partitionName, sourceName, transform } of sourceFields) {
+      if (transform === 'void') {
+        partition[partitionName] = null
+      } else {
+        const v = record[sourceName]
+        partition[partitionName] = v === undefined ? null : v
+      }
       keyParts.push(partitionKeyPart(partition[partitionName]))
     }
     const key = JSON.stringify(keyParts)
@@ -58,7 +61,8 @@ export function groupByPartition(records, schema, partitionSpec) {
  * (`r102`) from the table's partition spec. Each partition field is a
  * nullable Avro field tagged with the partition spec's `field-id`.
  *
- * Identity transforms only.
+ * Identity and void transforms only. For void the field type matches the
+ * source type (the value is always null at write time).
  *
  * @param {Schema} schema
  * @param {PartitionSpec} partitionSpec
@@ -67,7 +71,7 @@ export function groupByPartition(records, schema, partitionSpec) {
 export function partitionAvroSchema(schema, partitionSpec) {
   /** @type {AvroField[]} */
   const fields = partitionSpec.fields.map(pf => {
-    if (pf.transform !== 'identity') {
+    if (pf.transform !== 'identity' && pf.transform !== 'void') {
       throw new Error(`unsupported partition transform: ${pf.transform}`)
     }
     const sourceField = schema.fields.find(f => f.id === pf['source-id'])
