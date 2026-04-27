@@ -220,4 +220,23 @@ describe('computeColumnStats', () => {
     expect(stats.lower_bounds).toEqual({})
     expect(stats.upper_bounds).toEqual({})
   })
+
+  it('substitutes write-default for missing values in stats', () => {
+    /** @type {Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'tag', required: false, type: 'string', 'write-default': 'unknown' },
+      ],
+    }
+    const records = [{ tag: 'red' }, {}, { tag: null }]
+
+    const stats = computeColumnStats(records, schema)
+
+    expect(stats.value_counts[1]).toBe(3n)
+    expect(stats.null_value_counts[1]).toBe(1n)
+    expect(new TextDecoder().decode(stats.lower_bounds[1])).toBe('red')
+    expect(new TextDecoder().decode(stats.upper_bounds[1])).toBe('unknown')
+  })
 })

@@ -54,9 +54,14 @@ export function writeParquet({ writer, schema, records, codec }) {
  */
 function extractColumn(records, field) {
   const out = new Array(records.length)
+  const writeDefault = field['write-default']
   for (let i = 0; i < records.length; i++) {
     const v = records[i][field.name]
-    out[i] = v === undefined ? null : v
+    if (v !== undefined) {
+      out[i] = v
+    } else {
+      out[i] = writeDefault !== undefined ? writeDefault : null
+    }
   }
   return out
 }

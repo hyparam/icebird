@@ -50,8 +50,10 @@ export function computeColumnStats(records, schema) {
     let max
     const isFloat = type === 'float' || type === 'double'
     const trackBounds = hasComparableBounds(field.type)
+    const writeDefault = field['write-default']
     for (const record of records) {
-      const v = record[field.name]
+      let v = record[field.name]
+      if (v === undefined && writeDefault !== undefined) v = writeDefault
       if (v === null || v === undefined) {
         nulls++
         continue

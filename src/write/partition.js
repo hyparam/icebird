@@ -30,6 +30,7 @@ export function groupByPartition(records, schema, partitionSpec) {
       partitionName: pf.name,
       sourceName: sourceField.name,
       sourceType: sourceField.type,
+      sourceWriteDefault: sourceField['write-default'],
       transform: pf.transform,
     }
   })
@@ -40,8 +41,9 @@ export function groupByPartition(records, schema, partitionSpec) {
     /** @type {Record<string, any>} */
     const partition = {}
     const keyParts = []
-    for (const { partitionName, sourceName, sourceType, transform } of sourceFields) {
-      const v = record[sourceName]
+    for (const { partitionName, sourceName, sourceType, sourceWriteDefault, transform } of sourceFields) {
+      let v = record[sourceName]
+      if (v === undefined && sourceWriteDefault !== undefined) v = sourceWriteDefault
       partition[partitionName] = applyTransform(transform, v === undefined ? null : v, sourceType)
       keyParts.push(partitionKeyPart(partition[partitionName]))
     }

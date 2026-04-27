@@ -123,6 +123,34 @@ describe('writeParquet', () => {
     })
   })
 
+  it('uses write-default for missing values', async () => {
+    const writer = new ByteWriter()
+    /** @type {Schema} */
+    const defaultSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        { id: 2, name: 'tag', required: false, type: 'string', 'write-default': 'unknown' },
+      ],
+    }
+    writeParquet({
+      writer,
+      schema: defaultSchema,
+      records: [
+        { id: 1n, tag: 'red' },
+        { id: 2n },
+        { id: 3n, tag: null },
+      ],
+    })
+    const rows = await parquetReadObjects({ file: writer.getBuffer(), compressors })
+    expect(rows).toEqual([
+      { id: 1n, tag: 'red' },
+      { id: 2n, tag: 'unknown' },
+      { id: 3n, tag: null },
+    ])
+  })
+
   it('rejects required unknown columns', () => {
     const writer = new ByteWriter()
     /** @type {Schema} */
