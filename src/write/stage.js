@@ -49,6 +49,7 @@ export async function icebergStageAppend({ tableUrl, metadata, records, resolver
   const manifestUuid = uuid4()
   const timestampMs = Date.now()
   const firstRowId = rowLineage ? BigInt(metadata['next-row-id'] ?? 0) : undefined
+  checkWriteFormat(metadata.properties?.['write.format.default'])
   const codec = resolveParquetCodec(metadata.properties?.['write.parquet.compression-codec'])
 
   // 1. Group records by partition tuple, then write one parquet per group in parallel.
@@ -275,6 +276,19 @@ function buildPartitionSummaries(partitions, schema, partitionSpec) {
     const values = partitions.map(p => p[pf.name])
     return computeFieldSummary(values, resultType)
   })
+}
+
+/**
+ * Reject `write.format.default` values other than parquet. Iceberg also
+ * defines `avro` and `orc`, but Icebird only writes parquet today.
+ *
+ * @param {string|undefined} value
+ */
+function checkWriteFormat(value) {
+  if (value === undefined) return
+  if (value.toLowerCase() !== 'parquet') {
+    throw new Error(`unsupported write.format.default: ${value}`)
+  }
 }
 
 /**

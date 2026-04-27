@@ -453,6 +453,44 @@ describe('icebergStageAppend', () => {
     expect(text).toContain('bob')
   })
 
+  it('accepts write.format.default=parquet', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/format-parquet'
+    const { resolver } = memResolver()
+
+    const created = await icebergCreate({ tableUrl, resolver, schema })
+    /** @type {TableMetadata} */
+    const withFormat = {
+      ...created,
+      properties: { ...created.properties, 'write.format.default': 'parquet' },
+    }
+    const records = [{ id: 1n, name: 'alice' }]
+
+    const staged = await icebergStageAppend({ tableUrl, metadata: withFormat, records, resolver })
+    const committed = await fileCatalogCommit({ tableUrl, metadata: withFormat, staged, resolver })
+
+    const read = await icebergRead({ tableUrl, metadata: committed, resolver })
+    expect(read).toEqual(records)
+  })
+
+  it('rejects an unsupported write.format.default', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/format-bad'
+    const { resolver } = memResolver()
+
+    const created = await icebergCreate({ tableUrl, resolver, schema })
+    /** @type {TableMetadata} */
+    const avroFormat = {
+      ...created,
+      properties: { ...created.properties, 'write.format.default': 'avro' },
+    }
+
+    await expect(icebergStageAppend({
+      tableUrl, metadata: avroFormat, resolver,
+      records: [{ id: 1n, name: 'alice' }],
+    })).rejects.toThrow(/unsupported write\.format\.default: avro/)
+  })
+
   it('rejects an unsupported write.parquet.compression-codec', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
     const tableUrl = 'http://test/codec-bad'
