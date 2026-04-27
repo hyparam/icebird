@@ -819,6 +819,63 @@ describe('fileCatalogCommit', () => {
     ])).toThrow(/last-assigned-field-id expected 4, got 5/)
   })
 
+  it('checks assert-default-spec-id, assert-default-sort-order-id, assert-last-assigned-partition-id', () => {
+    /** @type {TableMetadata} */
+    const meta = {
+      'format-version': 2,
+      'table-uuid': 'u',
+      location: 'http://test',
+      'last-sequence-number': 0,
+      'last-updated-ms': 0,
+      'last-column-id': 5,
+      'current-schema-id': 0,
+      schemas: [{ type: 'struct', 'schema-id': 0, fields: [] }],
+      'default-spec-id': 3,
+      'partition-specs': [{ 'spec-id': 3, fields: [] }],
+      'last-partition-id': 1007,
+      'sort-orders': [{ 'order-id': 4, fields: [] }],
+      'default-sort-order-id': 4,
+    }
+    // matching values pass
+    expect(() => checkRequirements(meta, [
+      { type: 'assert-default-spec-id', 'default-spec-id': 3 },
+      { type: 'assert-default-sort-order-id', 'default-sort-order-id': 4 },
+      { type: 'assert-last-assigned-partition-id', 'last-assigned-partition-id': 1007 },
+    ])).not.toThrow()
+    // mismatches throw
+    expect(() => checkRequirements(meta, [
+      { type: 'assert-default-spec-id', 'default-spec-id': 0 },
+    ])).toThrow(/default-spec-id expected 0, got 3/)
+    expect(() => checkRequirements(meta, [
+      { type: 'assert-default-sort-order-id', 'default-sort-order-id': 0 },
+    ])).toThrow(/default-sort-order-id expected 0, got 4/)
+    expect(() => checkRequirements(meta, [
+      { type: 'assert-last-assigned-partition-id', 'last-assigned-partition-id': 1000 },
+    ])).toThrow(/last-assigned-partition-id expected 1000, got 1007/)
+  })
+
+  it('assert-create always fails against existing metadata', () => {
+    /** @type {TableMetadata} */
+    const meta = {
+      'format-version': 2,
+      'table-uuid': 'u',
+      location: 'http://test',
+      'last-sequence-number': 0,
+      'last-updated-ms': 0,
+      'last-column-id': 0,
+      'current-schema-id': 0,
+      schemas: [{ type: 'struct', 'schema-id': 0, fields: [] }],
+      'default-spec-id': 0,
+      'partition-specs': [{ 'spec-id': 0, fields: [] }],
+      'last-partition-id': 0,
+      'sort-orders': [{ 'order-id': 0, fields: [] }],
+      'default-sort-order-id': 0,
+    }
+    expect(() => checkRequirements(meta, [
+      { type: 'assert-create' },
+    ])).toThrow(/assert-create against an existing table/)
+  })
+
   it('rejects set-current-schema with an unknown schema-id', () => {
     /** @type {TableMetadata} */
     const meta = {

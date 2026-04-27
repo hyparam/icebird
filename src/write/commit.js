@@ -89,7 +89,11 @@ function deriveCurrentVersion(priorMetadataLog) {
  */
 export function checkRequirements(metadata, requirements) {
   for (const req of requirements) {
-    if (req.type === 'assert-table-uuid') {
+    if (req.type === 'assert-create') {
+      // assert-create asserts the table does not yet exist; this commit path
+      // always operates on existing metadata, so it can never be satisfied here
+      throw new Error('requirement failed: assert-create against an existing table')
+    } else if (req.type === 'assert-table-uuid') {
       if (metadata['table-uuid'] !== req.uuid) {
         throw new Error(`requirement failed: table-uuid expected ${req.uuid}, got ${metadata['table-uuid']}`)
       }
@@ -118,6 +122,21 @@ export function checkRequirements(metadata, requirements) {
       const current = metadata['last-column-id']
       if (current !== req['last-assigned-field-id']) {
         throw new Error(`requirement failed: last-assigned-field-id expected ${req['last-assigned-field-id']}, got ${current}`)
+      }
+    } else if (req.type === 'assert-last-assigned-partition-id') {
+      const current = metadata['last-partition-id']
+      if (current !== req['last-assigned-partition-id']) {
+        throw new Error(`requirement failed: last-assigned-partition-id expected ${req['last-assigned-partition-id']}, got ${current}`)
+      }
+    } else if (req.type === 'assert-default-spec-id') {
+      const current = metadata['default-spec-id']
+      if (current !== req['default-spec-id']) {
+        throw new Error(`requirement failed: default-spec-id expected ${req['default-spec-id']}, got ${current}`)
+      }
+    } else if (req.type === 'assert-default-sort-order-id') {
+      const current = metadata['default-sort-order-id']
+      if (current !== req['default-sort-order-id']) {
+        throw new Error(`requirement failed: default-sort-order-id expected ${req['default-sort-order-id']}, got ${current}`)
       }
     } else {
       throw new Error(`unknown requirement: ${JSON.stringify(req)}`)

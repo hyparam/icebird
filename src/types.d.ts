@@ -216,15 +216,18 @@ interface EncryptionKey {
 }
 
 /**
- * Subset of Iceberg REST `TableRequirement`s that the staging API emits.
- * The full spec has more (assert-create, assert-last-assigned-*, etc).
+ * Iceberg REST `TableRequirement`s recognized by `checkRequirements`.
  */
 export type TableRequirement =
+  | { type: 'assert-create' }
   | { type: 'assert-table-uuid', uuid: string }
   | { type: 'assert-ref-snapshot-id', ref: string, 'snapshot-id': number | null }
   | { type: 'assert-next-row-id', 'next-row-id': number }
   | { type: 'assert-current-schema-id', 'current-schema-id': number }
   | { type: 'assert-last-assigned-field-id', 'last-assigned-field-id': number }
+  | { type: 'assert-last-assigned-partition-id', 'last-assigned-partition-id': number }
+  | { type: 'assert-default-spec-id', 'default-spec-id': number }
+  | { type: 'assert-default-sort-order-id', 'default-sort-order-id': number }
 
 /**
  * Subset of Iceberg REST `TableUpdate`s that the staging API emits.
