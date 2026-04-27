@@ -247,6 +247,8 @@ export type TableUpdate =
   | { action: 'remove-properties', removals: string[] }
   | { action: 'add-schema', schema: Schema, 'last-column-id'?: number }
   | { action: 'set-current-schema', 'schema-id': number }
+  | { action: 'add-sort-order', 'sort-order': SortOrder }
+  | { action: 'set-default-sort-order', 'sort-order-id': number }
 
 /**
  * Output of an `icebergStage*` call: the snapshot just produced, the CAS

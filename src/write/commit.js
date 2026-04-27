@@ -2,7 +2,7 @@ import { translateS3Url } from '../fetch.js'
 import { validateSchemaForVersion } from '../schema.js'
 
 /**
- * @import {Field, Resolver, Schema, SnapshotRef, StagedUpdate, TableMetadata, TableRequirement, TableUpdate} from '../../src/types.js'
+ * @import {Field, Resolver, Schema, SnapshotRef, SortOrder, StagedUpdate, TableMetadata, TableRequirement, TableUpdate} from '../../src/types.js'
  */
 
 /**
@@ -212,6 +212,27 @@ export function applyUpdates(metadata, updates) {
         throw new Error(`set-current-schema: schema-id ${id} not found`)
       }
       next = { ...next, 'current-schema-id': id }
+    } else if (up.action === 'add-sort-order') {
+      const orders = next['sort-orders'] ?? []
+      let orderId = up['sort-order']['order-id']
+      if (orderId === -1) {
+        orderId = orders.reduce((m, o) => Math.max(m, o['order-id']), -1) + 1
+      } else if (orders.some(o => o['order-id'] === orderId)) {
+        throw new Error(`add-sort-order: order-id ${orderId} already exists`)
+      }
+      /** @type {SortOrder} */
+      const newOrder = { ...up['sort-order'], 'order-id': orderId }
+      next = { ...next, 'sort-orders': [...orders, newOrder] }
+    } else if (up.action === 'set-default-sort-order') {
+      let id = up['sort-order-id']
+      const orders = next['sort-orders'] ?? []
+      if (id === -1) {
+        if (orders.length === 0) throw new Error('set-default-sort-order: table has no sort orders')
+        id = orders[orders.length - 1]['order-id']
+      } else if (!orders.some(o => o['order-id'] === id)) {
+        throw new Error(`set-default-sort-order: sort-order-id ${id} not found`)
+      }
+      next = { ...next, 'default-sort-order-id': id }
     } else if (up.action === 'set-snapshot-ref') {
       /** @type {SnapshotRef} */
       const ref = { 'snapshot-id': up['snapshot-id'], type: up.type }

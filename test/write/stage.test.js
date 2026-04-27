@@ -876,6 +876,87 @@ describe('fileCatalogCommit', () => {
     ])).toThrow(/assert-create against an existing table/)
   })
 
+  it('applies add-sort-order and set-default-sort-order updates', () => {
+    /** @type {TableMetadata} */
+    const meta = {
+      'format-version': 2,
+      'table-uuid': 'u',
+      location: 'http://test',
+      'last-sequence-number': 0,
+      'last-updated-ms': 0,
+      'last-column-id': 1,
+      'current-schema-id': 0,
+      schemas: [{
+        type: 'struct',
+        'schema-id': 0,
+        fields: [{ id: 1, name: 'id', required: true, type: 'long' }],
+      }],
+      'default-spec-id': 0,
+      'partition-specs': [{ 'spec-id': 0, fields: [] }],
+      'last-partition-id': 0,
+      'sort-orders': [{ 'order-id': 0, fields: [] }],
+      'default-sort-order-id': 0,
+    }
+    const next = applyUpdates(meta, [
+      {
+        action: 'add-sort-order',
+        'sort-order': {
+          'order-id': -1,
+          fields: [{ transform: 'identity', 'source-id': 1, direction: 'asc', 'null-order': 'nulls-first' }],
+        },
+      },
+      { action: 'set-default-sort-order', 'sort-order-id': -1 },
+    ])
+    expect(next['sort-orders']).toHaveLength(2)
+    expect(next['sort-orders'][1]['order-id']).toBe(1) // -1 → next id after the seeded order
+    expect(next['sort-orders'][1].fields[0]['source-id']).toBe(1)
+    expect(next['default-sort-order-id']).toBe(1)
+  })
+
+  it('rejects add-sort-order with a duplicate order-id', () => {
+    /** @type {TableMetadata} */
+    const meta = {
+      'format-version': 2,
+      'table-uuid': 'u',
+      location: 'http://test',
+      'last-sequence-number': 0,
+      'last-updated-ms': 0,
+      'last-column-id': 1,
+      'current-schema-id': 0,
+      schemas: [{ type: 'struct', 'schema-id': 0, fields: [] }],
+      'default-spec-id': 0,
+      'partition-specs': [{ 'spec-id': 0, fields: [] }],
+      'last-partition-id': 0,
+      'sort-orders': [{ 'order-id': 0, fields: [] }],
+      'default-sort-order-id': 0,
+    }
+    expect(() => applyUpdates(meta, [
+      { action: 'add-sort-order', 'sort-order': { 'order-id': 0, fields: [] } },
+    ])).toThrow(/order-id 0 already exists/)
+  })
+
+  it('rejects set-default-sort-order with an unknown sort-order-id', () => {
+    /** @type {TableMetadata} */
+    const meta = {
+      'format-version': 2,
+      'table-uuid': 'u',
+      location: 'http://test',
+      'last-sequence-number': 0,
+      'last-updated-ms': 0,
+      'last-column-id': 1,
+      'current-schema-id': 0,
+      schemas: [{ type: 'struct', 'schema-id': 0, fields: [] }],
+      'default-spec-id': 0,
+      'partition-specs': [{ 'spec-id': 0, fields: [] }],
+      'last-partition-id': 0,
+      'sort-orders': [{ 'order-id': 0, fields: [] }],
+      'default-sort-order-id': 0,
+    }
+    expect(() => applyUpdates(meta, [
+      { action: 'set-default-sort-order', 'sort-order-id': 7 },
+    ])).toThrow(/sort-order-id 7 not found/)
+  })
+
   it('rejects set-current-schema with an unknown schema-id', () => {
     /** @type {TableMetadata} */
     const meta = {
