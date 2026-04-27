@@ -223,6 +223,8 @@ export type TableRequirement =
   | { type: 'assert-table-uuid', uuid: string }
   | { type: 'assert-ref-snapshot-id', ref: string, 'snapshot-id': number | null }
   | { type: 'assert-next-row-id', 'next-row-id': number }
+  | { type: 'assert-current-schema-id', 'current-schema-id': number }
+  | { type: 'assert-last-assigned-field-id', 'last-assigned-field-id': number }
 
 /**
  * Subset of Iceberg REST `TableUpdate`s that the staging API emits.

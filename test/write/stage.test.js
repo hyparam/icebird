@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { ByteWriter } from 'hyparquet-writer'
 import { fetchAvroRecords } from '../../src/fetch.js'
-import { applyUpdates, fileCatalogCommit } from '../../src/write/commit.js'
+import { applyUpdates, checkRequirements, fileCatalogCommit } from '../../src/write/commit.js'
 import { icebergCreate } from '../../src/create.js'
 import { icebergRead } from '../../src/read.js'
 import { icebergStageAppend } from '../../src/write/stage.js'
@@ -695,6 +695,37 @@ describe('fileCatalogCommit', () => {
     expect(() => applyUpdates(meta, [
       { action: 'add-schema', schema: { type: 'struct', 'schema-id': 0, fields: [] } },
     ])).toThrow(/schema-id 0 already exists/)
+  })
+
+  it('checks assert-current-schema-id and assert-last-assigned-field-id', () => {
+    /** @type {TableMetadata} */
+    const meta = {
+      'format-version': 2,
+      'table-uuid': 'u',
+      location: 'http://test',
+      'last-sequence-number': 0,
+      'last-updated-ms': 0,
+      'last-column-id': 5,
+      'current-schema-id': 2,
+      schemas: [{ type: 'struct', 'schema-id': 2, fields: [] }],
+      'default-spec-id': 0,
+      'partition-specs': [{ 'spec-id': 0, fields: [] }],
+      'last-partition-id': 0,
+      'sort-orders': [{ 'order-id': 0, fields: [] }],
+      'default-sort-order-id': 0,
+    }
+    // matching values pass
+    expect(() => checkRequirements(meta, [
+      { type: 'assert-current-schema-id', 'current-schema-id': 2 },
+      { type: 'assert-last-assigned-field-id', 'last-assigned-field-id': 5 },
+    ])).not.toThrow()
+    // mismatches throw
+    expect(() => checkRequirements(meta, [
+      { type: 'assert-current-schema-id', 'current-schema-id': 1 },
+    ])).toThrow(/current-schema-id expected 1, got 2/)
+    expect(() => checkRequirements(meta, [
+      { type: 'assert-last-assigned-field-id', 'last-assigned-field-id': 4 },
+    ])).toThrow(/last-assigned-field-id expected 4, got 5/)
   })
 
   it('rejects set-current-schema with an unknown schema-id', () => {

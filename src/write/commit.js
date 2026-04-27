@@ -109,6 +109,16 @@ export function checkRequirements(metadata, requirements) {
       if (current !== req['next-row-id']) {
         throw new Error(`requirement failed: next-row-id expected ${req['next-row-id']}, got ${current}`)
       }
+    } else if (req.type === 'assert-current-schema-id') {
+      const current = metadata['current-schema-id']
+      if (current !== req['current-schema-id']) {
+        throw new Error(`requirement failed: current-schema-id expected ${req['current-schema-id']}, got ${current}`)
+      }
+    } else if (req.type === 'assert-last-assigned-field-id') {
+      const current = metadata['last-column-id']
+      if (current !== req['last-assigned-field-id']) {
+        throw new Error(`requirement failed: last-assigned-field-id expected ${req['last-assigned-field-id']}, got ${current}`)
+      }
     } else {
       throw new Error(`unknown requirement: ${JSON.stringify(req)}`)
     }
