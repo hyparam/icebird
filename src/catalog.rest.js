@@ -101,6 +101,38 @@ export async function restCatalogLoadTable(ctx, { namespace, table }) {
 }
 
 /**
+ * Register an existing metadata file as a table in the catalog. The catalog
+ * does not write any files; it only records a pointer to the supplied
+ * `metadataLocation`. Some servers honor `overwrite` to replace an existing
+ * table entry; others reject it as `AlreadyExistsException`.
+ *
+ * @param {RestCatalogContext} ctx
+ * @param {object} options
+ * @param {string | string[]} options.namespace
+ * @param {string} options.table
+ * @param {string} options.metadataLocation
+ * @param {boolean} [options.overwrite]
+ * @returns {Promise<LoadTableResponse>}
+ */
+export async function restCatalogRegisterTable(ctx, { namespace, table, metadataLocation, overwrite }) {
+  const ns = encodeNamespace(namespace)
+  /** @type {Record<string, unknown>} */
+  const body = { name: table, 'metadata-location': metadataLocation }
+  if (overwrite !== undefined) body.overwrite = overwrite
+  const res = await restFetch(ctx, `namespaces/${ns}/register`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const responseBody = await res.json()
+  return {
+    metadataLocation: responseBody['metadata-location'],
+    metadata: /** @type {TableMetadata} */ (responseBody.metadata),
+    config: responseBody.config ?? {},
+  }
+}
+
+/**
  * Drop a table from the catalog. The optional `purgeRequested` flag asks the
  * server to also delete the table's data and metadata files; servers may
  * ignore it for managed tables. Resolves on a 2xx response, otherwise throws.

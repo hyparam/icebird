@@ -7,6 +7,7 @@ import {
   restCatalogListNamespaces,
   restCatalogListTables,
   restCatalogLoadTable,
+  restCatalogRegisterTable,
   restCatalogRenameTable,
 } from '../src/catalog.rest.js'
 
@@ -285,6 +286,83 @@ describe('REST Catalog client', () => {
     const dropCall = mock.calls.find(c => c.url === 'https://cat/v1/namespaces/db%1Fsub')
     expect(dropCall).toBeDefined()
     expect(dropCall?.init?.method).toBe('DELETE')
+  })
+
+  it('restCatalogRegisterTable POSTs name and metadata-location', async () => {
+    const metadata = { 'format-version': 2, 'table-uuid': 'abc', location: 's3://bucket/orders', schemas: [] }
+    mock = makeFetch({
+      'https://cat/v1/config': { prefix: 'ws/main' },
+      'https://cat/v1/ws/main/namespaces/db/register': {
+        'metadata-location': 's3://bucket/orders/metadata/v1.metadata.json',
+        metadata,
+        config: { 'client.region': 'us-east-1' },
+      },
+    })
+    vi.stubGlobal('fetch', mock.fn)
+
+    const ctx = await restCatalogConnect({ url: 'https://cat' })
+    const result = await restCatalogRegisterTable(ctx, {
+      namespace: 'db',
+      table: 'orders',
+      metadataLocation: 's3://bucket/orders/metadata/v1.metadata.json',
+    })
+
+    expect(result.metadataLocation).toBe('s3://bucket/orders/metadata/v1.metadata.json')
+    expect(result.metadata).toEqual(metadata)
+    expect(result.config).toEqual({ 'client.region': 'us-east-1' })
+
+    const call = mock.calls.find(c => c.url === 'https://cat/v1/ws/main/namespaces/db/register')
+    expect(call?.init?.method).toBe('POST')
+    const headers = /** @type {Record<string,string>} */ (call?.init?.headers)
+    expect(headers['content-type']).toBe('application/json')
+    expect(JSON.parse(/** @type {string} */ (call?.init?.body))).toEqual({
+      name: 'orders',
+      'metadata-location': 's3://bucket/orders/metadata/v1.metadata.json',
+    })
+  })
+
+  it('restCatalogRegisterTable forwards overwrite and encodes multi-level namespace', async () => {
+    mock = makeFetch({
+      'https://cat/v1/config': {},
+      'https://cat/v1/namespaces/db%1Fsub/register': {
+        'metadata-location': 's3://b/m.json',
+        metadata: { location: 's3://b' },
+      },
+    })
+    vi.stubGlobal('fetch', mock.fn)
+
+    const ctx = await restCatalogConnect({ url: 'https://cat' })
+    await restCatalogRegisterTable(ctx, {
+      namespace: ['db', 'sub'],
+      table: 'orders',
+      metadataLocation: 's3://b/m.json',
+      overwrite: true,
+    })
+
+    const call = mock.calls.find(c => c.url === 'https://cat/v1/namespaces/db%1Fsub/register')
+    expect(call).toBeDefined()
+    expect(JSON.parse(/** @type {string} */ (call?.init?.body))).toEqual({
+      name: 'orders',
+      'metadata-location': 's3://b/m.json',
+      overwrite: true,
+    })
+  })
+
+  it('restCatalogRegisterTable surfaces ErrorModel on conflict', async () => {
+    mock = makeFetch({
+      'https://cat/v1/config': {},
+      'https://cat/v1/namespaces/db/register': () => new Response(JSON.stringify({
+        error: { code: 409, type: 'AlreadyExistsException', message: 'table exists' },
+      }), { status: 409 }),
+    })
+    vi.stubGlobal('fetch', mock.fn)
+
+    const ctx = await restCatalogConnect({ url: 'https://cat' })
+    await expect(restCatalogRegisterTable(ctx, {
+      namespace: 'db',
+      table: 'orders',
+      metadataLocation: 's3://b/m.json',
+    })).rejects.toThrow('409 AlreadyExistsException: table exists')
   })
 
   it('restCatalogRenameTable POSTs source and destination', async () => {

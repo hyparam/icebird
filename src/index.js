@@ -1,7 +1,7 @@
 export { applyUpdates, checkRequirements, fileCatalogCommit } from './write/commit.js'
 export { icebergStageAppend } from './write/stage.js'
 export { icebergCreate } from './create.js'
-export { restCatalogConnect, restCatalogCreateNamespace, restCatalogDropNamespace, restCatalogDropTable, restCatalogListNamespaces, restCatalogListTables, restCatalogLoadTable, restCatalogRenameTable } from './catalog.rest.js'
+export { restCatalogConnect, restCatalogCreateNamespace, restCatalogDropNamespace, restCatalogDropTable, restCatalogListNamespaces, restCatalogListTables, restCatalogLoadTable, restCatalogRegisterTable, restCatalogRenameTable } from './catalog.rest.js'
 export { s3Lister, urlResolver } from './fetch.js'
 export { icebergRead } from './read.js'
 export { icebergLatestVersion, icebergListVersions, icebergMetadata } from './metadata.js'
