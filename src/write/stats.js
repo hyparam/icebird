@@ -2,6 +2,13 @@
  * @import {FieldSummary, IcebergType, Schema} from '../../src/types.js'
  */
 
+// Iceberg's default `write.metadata.metrics.default` is `truncate(16)`.
+// Bounds for string and binary columns are truncated to 16 units (UTF-8
+// code points for string, bytes for binary). Lower bounds keep the prefix;
+// upper bounds increment the prefix so the truncated value still bounds
+// the column from above.
+const TRUNCATE_LIMIT = 16
+
 /**
  * Compute per-column statistics for a batch of records.
  *
@@ -62,12 +69,15 @@ export function computeColumnStats(records, schema) {
     null_value_counts[field.id] = nulls
     if (isFloat) nan_value_counts[field.id] = nans
     if (min !== undefined) {
-      const lo = serializeValue(min, field.type)
+      const lo = serializeValue(truncateLower(min, field.type), field.type)
       if (lo) lower_bounds[field.id] = lo
     }
     if (max !== undefined) {
-      const hi = serializeValue(max, field.type)
-      if (hi) upper_bounds[field.id] = hi
+      const truncated = truncateUpper(max, field.type)
+      if (truncated !== undefined) {
+        const hi = serializeValue(truncated, field.type)
+        if (hi) upper_bounds[field.id] = hi
+      }
     }
   }
 
@@ -275,14 +285,83 @@ export function computeFieldSummary(values, type) {
   const summary = { contains_null: containsNull }
   if (isFloat) summary.contains_nan = containsNan
   if (min !== undefined) {
-    const lo = serializeValue(min, type)
+    const lo = serializeValue(truncateLower(min, type), type)
     if (lo) summary.lower_bound = lo
   }
   if (max !== undefined) {
-    const hi = serializeValue(max, type)
-    if (hi) summary.upper_bound = hi
+    const truncated = truncateUpper(max, type)
+    if (truncated !== undefined) {
+      const hi = serializeValue(truncated, type)
+      if (hi) summary.upper_bound = hi
+    }
   }
   return summary
+}
+
+/**
+ * Truncate a value for use as a lower bound. Strings are truncated at
+ * unicode code-point boundaries; binary values are truncated at byte
+ * boundaries. Other types are returned unchanged.
+ *
+ * @param {any} value
+ * @param {IcebergType} type
+ * @returns {any}
+ */
+function truncateLower(value, type) {
+  const name = typeName(type)
+  if (name === 'string' && typeof value === 'string') {
+    const cps = Array.from(value)
+    if (cps.length <= TRUNCATE_LIMIT) return value
+    return cps.slice(0, TRUNCATE_LIMIT).join('')
+  }
+  if (name === 'binary' && value instanceof Uint8Array) {
+    if (value.length <= TRUNCATE_LIMIT) return value
+    return value.slice(0, TRUNCATE_LIMIT)
+  }
+  return value
+}
+
+/**
+ * Truncate a value for use as an upper bound. The truncated prefix is
+ * incremented (last code point for strings, last byte for binary) so the
+ * result is still ≥ the original value. Returns `undefined` if no valid
+ * upper truncation exists (e.g. all 0xFF bytes, or string ending in U+10FFFF).
+ *
+ * @param {any} value
+ * @param {IcebergType} type
+ * @returns {any}
+ */
+function truncateUpper(value, type) {
+  const name = typeName(type)
+  if (name === 'string' && typeof value === 'string') {
+    const cps = Array.from(value)
+    if (cps.length <= TRUNCATE_LIMIT) return value
+    const prefix = cps.slice(0, TRUNCATE_LIMIT)
+    while (prefix.length > 0) {
+      const cp = /** @type {number} */ (prefix[prefix.length - 1].codePointAt(0))
+      // Skip the UTF-16 surrogate range when incrementing.
+      const next = cp + 1 === 0xD800 ? 0xE000 : cp + 1
+      if (next <= 0x10FFFF) {
+        prefix[prefix.length - 1] = String.fromCodePoint(next)
+        return prefix.join('')
+      }
+      prefix.pop()
+    }
+    return undefined
+  }
+  if (name === 'binary' && value instanceof Uint8Array) {
+    if (value.length <= TRUNCATE_LIMIT) return value
+    const prefix = value.slice(0, TRUNCATE_LIMIT)
+    for (let i = prefix.length - 1; i >= 0; i--) {
+      if (prefix[i] < 0xFF) {
+        const out = prefix.slice(0, i + 1)
+        out[i]++
+        return out
+      }
+    }
+    return undefined
+  }
+  return value
 }
 
 /**

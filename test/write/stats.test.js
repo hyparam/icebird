@@ -108,6 +108,93 @@ describe('computeColumnStats', () => {
     expect(stats.null_value_counts[2]).toBeUndefined()
   })
 
+  it('truncates string lower/upper bounds to 16 code points', () => {
+    /** @type {Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'short', required: false, type: 'string' },
+        { id: 2, name: 'long', required: false, type: 'string' },
+      ],
+    }
+    const records = [
+      { short: 'apple', long: 'aaaaaaaaaaaaaaaaXXXX' }, // 20 chars
+      { short: 'banana', long: 'bbbbbbbbbbbbbbbbYYYY' }, // 20 chars
+    ]
+
+    const stats = computeColumnStats(records, schema)
+
+    // Short strings are unchanged.
+    expect(new TextDecoder().decode(stats.lower_bounds[1])).toBe('apple')
+    expect(new TextDecoder().decode(stats.upper_bounds[1])).toBe('banana')
+
+    // Long lower bound is truncated to first 16 code points.
+    expect(new TextDecoder().decode(stats.lower_bounds[2])).toBe('aaaaaaaaaaaaaaaa')
+    // Long upper bound is truncated to 16 with last code point incremented.
+    expect(new TextDecoder().decode(stats.upper_bounds[2])).toBe('bbbbbbbbbbbbbbbc')
+  })
+
+  it('truncates binary lower/upper bounds to 16 bytes and increments', () => {
+    /** @type {Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'blob', required: false, type: 'binary' },
+      ],
+    }
+    const lo = new Uint8Array(20)
+    lo.fill(0x10)
+    const hi = new Uint8Array(20)
+    hi.fill(0x20)
+    const records = [{ blob: lo }, { blob: hi }]
+
+    const stats = computeColumnStats(records, schema)
+
+    expect(stats.lower_bounds[1]).toEqual(new Uint8Array(16).fill(0x10))
+    const expectedUpper = new Uint8Array(16).fill(0x20)
+    expectedUpper[15] = 0x21
+    expect(stats.upper_bounds[1]).toEqual(expectedUpper)
+  })
+
+  it('omits binary upper bound when truncation would overflow', () => {
+    /** @type {Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'blob', required: false, type: 'binary' },
+      ],
+    }
+    const overflow = new Uint8Array(20)
+    overflow.fill(0xFF)
+    const records = [{ blob: overflow }]
+
+    const stats = computeColumnStats(records, schema)
+    expect(stats.lower_bounds[1]).toEqual(new Uint8Array(16).fill(0xFF))
+    expect(stats.upper_bounds[1]).toBeUndefined()
+  })
+
+  it('truncates strings at code-point boundaries (no split surrogate pairs)', () => {
+    /** @type {Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 's', required: false, type: 'string' },
+      ],
+    }
+    // Each emoji is 2 UTF-16 units but 1 code point.
+    const long = '🍎'.repeat(20)
+    const records = [{ s: long }]
+
+    const stats = computeColumnStats(records, schema)
+    const lower = new TextDecoder().decode(stats.lower_bounds[1])
+    expect(Array.from(lower).length).toBe(16)
+    expect(lower).toBe('🍎'.repeat(16))
+  })
+
   it('omits bounds for v3 variant and geospatial columns', () => {
     /** @type {Schema} */
     const schema = {
