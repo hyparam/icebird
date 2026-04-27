@@ -26,6 +26,11 @@ export interface LoadTableResponse {
   config: Record<string, string>
 }
 
+export interface StorageCredential {
+  prefix: string
+  config: Record<string, string>
+}
+
 export interface TableMetadata {
   'format-version': number
   'table-uuid': string

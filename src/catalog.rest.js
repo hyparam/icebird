@@ -6,7 +6,7 @@
  * two together by passing `metadata` and `metadata.location` from
  * `restCatalogLoadTable` into `icebergRead`.
  *
- * @import {LoadTableResponse, RestCatalogContext, TableIdentifier, TableMetadata} from '../src/types.js'
+ * @import {LoadTableResponse, RestCatalogContext, StorageCredential, TableIdentifier, TableMetadata} from '../src/types.js'
  */
 
 /**
@@ -98,6 +98,25 @@ export async function restCatalogLoadTable(ctx, { namespace, table }) {
     metadata: /** @type {TableMetadata} */ (body.metadata),
     config: body.config ?? {},
   }
+}
+
+/**
+ * Load vended storage credentials for a table. The catalog returns
+ * per-prefix credential configs (e.g. temporary S3/GCS keys) that callers
+ * pass to their resolver/lister to access the table's data files.
+ *
+ * @param {RestCatalogContext} ctx
+ * @param {object} options
+ * @param {string | string[]} options.namespace
+ * @param {string} options.table
+ * @returns {Promise<StorageCredential[]>}
+ */
+export async function restCatalogLoadCredentials(ctx, { namespace, table }) {
+  const ns = encodeNamespace(namespace)
+  const tbl = encodeURIComponent(table)
+  const res = await restFetch(ctx, `namespaces/${ns}/tables/${tbl}/credentials`)
+  const body = await res.json()
+  return body['storage-credentials'] ?? []
 }
 
 /**
