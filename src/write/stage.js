@@ -10,7 +10,7 @@ import { transformResultType } from './transform.js'
 
 /**
  * @import {CompressionCodec} from 'hyparquet'
- * @import {FieldSummary, Manifest, PartitionSpec, Resolver, Schema, Snapshot, StagedUpdate, TableMetadata, TableRequirement} from '../../src/types.js'
+ * @import {FieldSummary, Manifest, PartitionSpec, Resolver, Schema, Snapshot, StagedUpdate, TableMetadata, TableRequirement, TableUpdate} from '../../src/types.js'
  */
 
 /**
@@ -194,6 +194,71 @@ export async function icebergStageAppend({ tableUrl, metadata, records, resolver
       },
     ],
     writtenFiles: [...writtenDataFiles.map(f => f.path), manifestPath, manifestListPath],
+  }
+}
+
+/**
+ * Stage a `set-snapshot-ref` update to point a branch or tag at an existing
+ * snapshot. The same primitive powers rollback (set `main` to a prior
+ * snapshot), tagging, fast-forwarding feature branches, and adjusting ref
+ * retention.
+ *
+ * Pure — produces a `StagedUpdate` to pass into a commit function
+ * (`fileCatalogCommit`, `restCatalogUpdateTable`). The returned `snapshot` is
+ * the target snapshot the ref will point at after commit.
+ *
+ * @param {object} options
+ * @param {TableMetadata} options.metadata - Current table metadata.
+ * @param {string} options.ref - Ref name (e.g. 'main', a tag name, a branch name).
+ * @param {number} options.snapshotId - Target snapshot id; must already exist in `metadata.snapshots`.
+ * @param {'branch'|'tag'} [options.type] - Defaults to 'branch'.
+ * @param {number} [options.minSnapshotsToKeep] - Branch retention; rejected for tags.
+ * @param {number} [options.maxSnapshotAgeMs] - Branch retention; rejected for tags.
+ * @param {number} [options.maxRefAgeMs]
+ * @returns {StagedUpdate}
+ */
+export function icebergStageSetRef({ metadata, ref, snapshotId, type = 'branch', minSnapshotsToKeep, maxSnapshotAgeMs, maxRefAgeMs }) {
+  if (!ref) throw new Error('ref is required')
+  if (type !== 'branch' && type !== 'tag') throw new Error(`unknown ref type: ${type}`)
+  if (type === 'tag' && (minSnapshotsToKeep !== undefined || maxSnapshotAgeMs !== undefined)) {
+    throw new Error('tags do not support min-snapshots-to-keep or max-snapshot-age-ms')
+  }
+  const snapshot = metadata.snapshots?.find(s => s['snapshot-id'] === snapshotId)
+  if (!snapshot) throw new Error(`snapshot ${snapshotId} not found in metadata.snapshots`)
+
+  // Existing ref value for the CAS check. Legacy tables may have set
+  // current-snapshot-id without a populated refs.main, so fall back to it.
+  const existingRef = metadata.refs?.[ref]
+  let currentSnapshotId = existingRef?.['snapshot-id'] ?? null
+  if (currentSnapshotId === null && ref === 'main') {
+    currentSnapshotId = metadata['current-snapshot-id'] ?? null
+  }
+  if (existingRef && existingRef.type !== type) {
+    throw new Error(`ref ${ref} is a ${existingRef.type}, cannot set as ${type}`)
+  }
+
+  /** @type {TableRequirement[]} */
+  const requirements = [
+    { type: 'assert-table-uuid', uuid: metadata['table-uuid'] },
+    { type: 'assert-ref-snapshot-id', ref, 'snapshot-id': currentSnapshotId },
+  ]
+
+  /** @type {TableUpdate} */
+  const update = {
+    action: 'set-snapshot-ref',
+    'ref-name': ref,
+    type,
+    'snapshot-id': snapshotId,
+  }
+  if (minSnapshotsToKeep !== undefined) update['min-snapshots-to-keep'] = minSnapshotsToKeep
+  if (maxSnapshotAgeMs !== undefined) update['max-snapshot-age-ms'] = maxSnapshotAgeMs
+  if (maxRefAgeMs !== undefined) update['max-ref-age-ms'] = maxRefAgeMs
+
+  return {
+    snapshot,
+    requirements,
+    updates: [update],
+    writtenFiles: [],
   }
 }
 

@@ -4,7 +4,7 @@ import { fetchAvroRecords } from '../../src/fetch.js'
 import { applyUpdates, checkRequirements, fileCatalogCommit } from '../../src/write/commit.js'
 import { icebergCreate } from '../../src/create.js'
 import { icebergRead } from '../../src/read.js'
-import { icebergStageAppend } from '../../src/write/stage.js'
+import { icebergStageAppend, icebergStageSetRef } from '../../src/write/stage.js'
 
 /**
  * @import {Resolver, Schema, TableMetadata} from '../../src/types.js'
@@ -1179,5 +1179,106 @@ describe('fileCatalogCommit', () => {
     await expect(fileCatalogCommit({
       tableUrl, metadata: wrongUuid, staged, resolver,
     })).rejects.toThrow(/table-uuid expected/)
+  })
+})
+
+describe('icebergStageSetRef', () => {
+  /**
+   * Build a metadata object with two committed snapshots so set-ref tests can
+   * roll forward, roll back, or move tags between them.
+   * @returns {Promise<{ resolver: Resolver, tableUrl: string, metadata: TableMetadata, snap1: number, snap2: number }>}
+   */
+  async function twoSnapshotTable() {
+    const tableUrl = 'http://test/stage-setref'
+    const { resolver } = memResolver()
+    const created = await icebergCreate({ tableUrl, resolver, schema })
+    const s1 = await icebergStageAppend({
+      tableUrl, metadata: created, resolver,
+      records: [{ id: 1n, name: 'alice' }],
+    })
+    const m1 = await fileCatalogCommit({ tableUrl, metadata: created, staged: s1, resolver })
+    const s2 = await icebergStageAppend({
+      tableUrl, metadata: m1, resolver,
+      records: [{ id: 2n, name: 'bob' }],
+    })
+    const m2 = await fileCatalogCommit({ tableUrl, metadata: m1, staged: s2, resolver })
+    return {
+      resolver, tableUrl, metadata: m2,
+      snap1: s1.snapshot['snapshot-id'],
+      snap2: s2.snapshot['snapshot-id'],
+    }
+  }
+
+  it('produces a rollback StagedUpdate that fileCatalogCommit applies', async () => {
+    const { resolver, tableUrl, metadata, snap1, snap2 } = await twoSnapshotTable()
+    expect(metadata['current-snapshot-id']).toBe(snap2)
+
+    const staged = icebergStageSetRef({ metadata, ref: 'main', snapshotId: snap1 })
+
+    expect(staged.writtenFiles).toEqual([])
+    expect(staged.snapshot['snapshot-id']).toBe(snap1)
+    expect(staged.requirements).toEqual([
+      { type: 'assert-table-uuid', uuid: metadata['table-uuid'] },
+      { type: 'assert-ref-snapshot-id', ref: 'main', 'snapshot-id': snap2 },
+    ])
+    expect(staged.updates).toEqual([{
+      action: 'set-snapshot-ref',
+      'ref-name': 'main',
+      type: 'branch',
+      'snapshot-id': snap1,
+    }])
+
+    const rolled = await fileCatalogCommit({ tableUrl, metadata, staged, resolver })
+    expect(rolled['current-snapshot-id']).toBe(snap1)
+    expect(rolled.refs?.main?.['snapshot-id']).toBe(snap1)
+
+    const read = await icebergRead({ tableUrl, metadata: rolled, resolver })
+    expect(read).toEqual([{ id: 1n, name: 'alice' }])
+  })
+
+  it('creates a new tag pointing at an existing snapshot', async () => {
+    const { resolver, tableUrl, metadata, snap1 } = await twoSnapshotTable()
+
+    const staged = icebergStageSetRef({
+      metadata, ref: 'v1.0', snapshotId: snap1, type: 'tag', maxRefAgeMs: 86_400_000,
+    })
+
+    // tag does not yet exist, so the CAS expects null
+    expect(staged.requirements).toContainEqual(
+      { type: 'assert-ref-snapshot-id', ref: 'v1.0', 'snapshot-id': null }
+    )
+    expect(staged.updates[0]).toMatchObject({
+      action: 'set-snapshot-ref',
+      'ref-name': 'v1.0',
+      type: 'tag',
+      'snapshot-id': snap1,
+      'max-ref-age-ms': 86_400_000,
+    })
+
+    const tagged = await fileCatalogCommit({ tableUrl, metadata, staged, resolver })
+    expect(tagged.refs?.['v1.0']).toEqual({
+      'snapshot-id': snap1, type: 'tag', 'max-ref-age-ms': 86_400_000,
+    })
+    // main is untouched
+    expect(tagged['current-snapshot-id']).toBe(metadata['current-snapshot-id'])
+  })
+
+  it('rejects unknown snapshot ids', async () => {
+    const { metadata } = await twoSnapshotTable()
+    expect(() => icebergStageSetRef({ metadata, ref: 'main', snapshotId: 999 }))
+      .toThrow(/snapshot 999 not found/)
+  })
+
+  it('rejects branch retention props on tags', async () => {
+    const { metadata, snap1 } = await twoSnapshotTable()
+    expect(() => icebergStageSetRef({
+      metadata, ref: 'v1.0', snapshotId: snap1, type: 'tag', minSnapshotsToKeep: 1,
+    })).toThrow(/tags do not support/)
+  })
+
+  it('rejects setting an existing branch as a tag', async () => {
+    const { metadata, snap1 } = await twoSnapshotTable()
+    expect(() => icebergStageSetRef({ metadata, ref: 'main', snapshotId: snap1, type: 'tag' }))
+      .toThrow(/main is a branch, cannot set as tag/)
   })
 })
