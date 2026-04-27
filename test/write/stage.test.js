@@ -7,7 +7,7 @@ import { icebergRead } from '../../src/read.js'
 import { icebergStageAppend } from '../../src/write/stage.js'
 
 /**
- * @import {Resolver, Schema} from '../../src/types.js'
+ * @import {Resolver, Schema, TableMetadata} from '../../src/types.js'
  */
 
 /**
@@ -450,6 +450,44 @@ describe('fileCatalogCommit', () => {
     await expect(fileCatalogCommit({
       tableUrl, metadata: after, staged: stagedA, resolver,
     })).rejects.toThrow(/ref main expected snapshot null/)
+  })
+
+  it('caps metadata-log via write.metadata.previous-versions-max', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/log-cap'
+    const { resolver } = memResolver()
+
+    const created = await icebergCreate({ tableUrl, resolver, schema })
+    /** @type {TableMetadata} */
+    const capped = {
+      ...created,
+      properties: { ...created.properties, 'write.metadata.previous-versions-max': '2' },
+    }
+
+    let metadata = capped
+    for (let i = 0; i < 4; i++) {
+      const staged = await icebergStageAppend({
+        tableUrl, metadata, resolver,
+        records: [{ id: BigInt(i), name: `r${i}` }],
+      })
+      metadata = await fileCatalogCommit({ tableUrl, metadata, staged, resolver })
+    }
+
+    // 4 commits → log entries point at v1..v4; capped at 2 keeps the last two
+    const log = metadata['metadata-log'] ?? []
+    expect(log).toHaveLength(2)
+    expect(log[0]['metadata-file']).toMatch(/v3\.metadata\.json$/)
+    expect(log[1]['metadata-file']).toMatch(/v4\.metadata\.json$/)
+
+    // version derivation must survive truncation: a fifth commit writes v6
+    const staged = await icebergStageAppend({
+      tableUrl, metadata, resolver,
+      records: [{ id: 99n, name: 'tail' }],
+    })
+    const next = await fileCatalogCommit({ tableUrl, metadata, staged, resolver })
+    const nextLog = next['metadata-log'] ?? []
+    expect(nextLog).toHaveLength(2)
+    expect(nextLog[1]['metadata-file']).toMatch(/v5\.metadata\.json$/)
   })
 
   it('rejects a table-uuid mismatch', async () => {

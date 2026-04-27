@@ -28,18 +28,24 @@ export async function fileCatalogCommit({ tableUrl, metadata, staged, resolver }
   const updated = applyUpdates(metadata, staged.updates)
 
   const priorMetadataLog = metadata['metadata-log'] ?? []
-  const currentVersion = priorMetadataLog.length + 1
+  const currentVersion = deriveCurrentVersion(priorMetadataLog)
   const newVersion = currentVersion + 1
   const currentMetadataPath = `${tableUrl}/metadata/v${currentVersion}.metadata.json`
   const newMetadataPath = `${tableUrl}/metadata/v${newVersion}.metadata.json`
 
+  const appendedLog = [
+    ...priorMetadataLog,
+    { 'timestamp-ms': metadata['last-updated-ms'], 'metadata-file': currentMetadataPath },
+  ]
+  const max = Number(updated.properties?.['write.metadata.previous-versions-max'] ?? 100)
+  const trimmedLog = max > 0 && appendedLog.length > max
+    ? appendedLog.slice(-max)
+    : appendedLog
+
   /** @type {TableMetadata} */
   const newMetadata = {
     ...updated,
-    'metadata-log': [
-      ...priorMetadataLog,
-      { 'timestamp-ms': metadata['last-updated-ms'], 'metadata-file': currentMetadataPath },
-    ],
+    'metadata-log': trimmedLog,
   }
 
   const metaWriter = resolver.writer(translateS3Url(newMetadataPath))
@@ -52,6 +58,25 @@ export async function fileCatalogCommit({ tableUrl, metadata, staged, resolver }
   hintWriter.finish()
 
   return newMetadata
+}
+
+/**
+ * Derive the version number of the metadata being committed. The numeric
+ * `vN.metadata.json` convention pairs the version with the `metadata-log`
+ * length only when the log has never been truncated; once truncation kicks
+ * in (`write.metadata.previous-versions-max`), parse the latest log entry's
+ * filename instead. Falls back to length+1 for non-`vN` filenames written
+ * by other tools.
+ *
+ * @param {{ 'timestamp-ms': number, 'metadata-file': string }[]} priorMetadataLog
+ * @returns {number}
+ */
+function deriveCurrentVersion(priorMetadataLog) {
+  if (priorMetadataLog.length === 0) return 1
+  const last = priorMetadataLog[priorMetadataLog.length - 1]['metadata-file']
+  const match = last.match(/v(\d+)\.metadata\.json$/)
+  if (match) return Number(match[1]) + 1
+  return priorMetadataLog.length + 1
 }
 
 /**
