@@ -423,6 +423,53 @@ describe('icebergStageAppend', () => {
       { id: 1n, name: 'alice' },
     ])
   })
+
+  it('honors write.parquet.compression-codec=none', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/codec-none'
+    const { resolver, files } = memResolver()
+
+    const created = await icebergCreate({ tableUrl, resolver, schema })
+    /** @type {TableMetadata} */
+    const uncompressed = {
+      ...created,
+      properties: { ...created.properties, 'write.parquet.compression-codec': 'none' },
+    }
+    const records = [{ id: 1n, name: 'alice' }, { id: 2n, name: 'bob' }]
+
+    const staged = await icebergStageAppend({ tableUrl, metadata: uncompressed, records, resolver })
+    const committed = await fileCatalogCommit({ tableUrl, metadata: uncompressed, staged, resolver })
+
+    const read = await icebergRead({ tableUrl, metadata: committed, resolver })
+    expect(read).toEqual(records)
+
+    // PAR1 magic bytes plus utf8-encoded "alice"/"bob" appear verbatim in an uncompressed file.
+    const dataPath = staged.writtenFiles.find(p => p.endsWith('.parquet'))
+    if (!dataPath) throw new Error('no parquet file written')
+    const bytes = files.get(dataPath)
+    if (!bytes) throw new Error(`no bytes for ${dataPath}`)
+    const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes)
+    expect(text).toContain('alice')
+    expect(text).toContain('bob')
+  })
+
+  it('rejects an unsupported write.parquet.compression-codec', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/codec-bad'
+    const { resolver } = memResolver()
+
+    const created = await icebergCreate({ tableUrl, resolver, schema })
+    /** @type {TableMetadata} */
+    const gzipped = {
+      ...created,
+      properties: { ...created.properties, 'write.parquet.compression-codec': 'gzip' },
+    }
+
+    await expect(icebergStageAppend({
+      tableUrl, metadata: gzipped, resolver,
+      records: [{ id: 1n, name: 'alice' }],
+    })).rejects.toThrow(/unsupported write\.parquet\.compression-codec: gzip/)
+  })
 })
 
 describe('fileCatalogCommit', () => {

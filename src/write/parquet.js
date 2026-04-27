@@ -2,6 +2,7 @@ import { parquetWrite } from 'hyparquet-writer'
 import { sanitize } from '../utils.js'
 
 /**
+ * @import {CompressionCodec} from 'hyparquet'
  * @import {Writer} from 'hyparquet-writer/src/types.js'
  * @import {ColumnSource} from 'hyparquet-writer/src/types.js'
  * @import {DecodedArray} from 'hyparquet'
@@ -18,8 +19,9 @@ import { sanitize } from '../utils.js'
  * @param {Writer} options.writer
  * @param {Schema} options.schema
  * @param {Record<string, any>[]} options.records
+ * @param {CompressionCodec} [options.codec]
  */
-export function writeParquet({ writer, schema, records }) {
+export function writeParquet({ writer, schema, records, codec }) {
   /** @type {ColumnSource[]} */
   const columnData = []
   /** @type {SchemaElement[]} */
@@ -41,6 +43,7 @@ export function writeParquet({ writer, schema, records }) {
     columnData,
     schema: [{ name: 'root', num_children: parquetFields.length }, ...parquetFields],
     kvMetadata: [{ key: 'iceberg.schema', value: JSON.stringify(schema) }],
+    codec,
   })
 }
 

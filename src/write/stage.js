@@ -8,6 +8,7 @@ import { computeColumnStats, computeFieldSummary } from './stats.js'
 import { transformResultType } from './transform.js'
 
 /**
+ * @import {CompressionCodec} from 'hyparquet'
  * @import {FieldSummary, Manifest, PartitionSpec, Resolver, Schema, Snapshot, StagedUpdate, TableMetadata, TableRequirement} from '../../src/types.js'
  */
 
@@ -48,6 +49,7 @@ export async function icebergStageAppend({ tableUrl, metadata, records, resolver
   const manifestUuid = uuid4()
   const timestampMs = Date.now()
   const firstRowId = rowLineage ? BigInt(metadata['next-row-id'] ?? 0) : undefined
+  const codec = resolveParquetCodec(metadata.properties?.['write.parquet.compression-codec'])
 
   // 1. Group records by partition tuple, then write one parquet per group in parallel.
   const groups = partitionSpec.fields.length
@@ -56,7 +58,7 @@ export async function icebergStageAppend({ tableUrl, metadata, records, resolver
   const writtenDataFiles = await Promise.all(groups.map(group => {
     const dataPath = `${tableUrl}/data/${uuid4()}.parquet`
     const dataWriter = writerFn(translateS3Url(dataPath))
-    writeParquet({ writer: dataWriter, schema, records: group.records })
+    writeParquet({ writer: dataWriter, schema, records: group.records, codec })
     const stats = computeColumnStats(group.records, schema)
     return {
       partition: group.partition,
@@ -273,6 +275,26 @@ function buildPartitionSummaries(partitions, schema, partitionSpec) {
     const values = partitions.map(p => p[pf.name])
     return computeFieldSummary(values, resultType)
   })
+}
+
+/**
+ * Map an Iceberg `write.parquet.compression-codec` property to the
+ * hyparquet-writer codec. Only `snappy` (the default) and
+ * `none`/`uncompressed` are supported today, since hyparquet-writer
+ * ships no other compressors.
+ *
+ * @param {string|undefined} value
+ * @returns {CompressionCodec|undefined}
+ */
+function resolveParquetCodec(value) {
+  if (value === undefined) return undefined
+  switch (value.toLowerCase()) {
+  case 'snappy': return 'SNAPPY'
+  case 'none':
+  case 'uncompressed': return 'UNCOMPRESSED'
+  default:
+    throw new Error(`unsupported write.parquet.compression-codec: ${value}`)
+  }
 }
 
 /**
