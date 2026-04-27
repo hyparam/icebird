@@ -601,6 +601,109 @@ describe('fileCatalogCommit', () => {
     expect(nextLog[1]['metadata-file']).toMatch(/v5\.metadata\.json$/)
   })
 
+  it('honors write.metadata.delete-after-commit.enabled to delete dropped log files', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/log-delete'
+    const { resolver, files } = memResolver()
+    /** @type {string[]} */
+    const deleted = []
+    /** @type {Resolver} */
+    const resolverWithDeleter = {
+      ...resolver,
+      deleter: async path => { deleted.push(path); files.delete(path) },
+    }
+
+    const created = await icebergCreate({ tableUrl, resolver: resolverWithDeleter, schema })
+    /** @type {TableMetadata} */
+    let metadata = {
+      ...created,
+      properties: {
+        ...created.properties,
+        'write.metadata.previous-versions-max': '2',
+        'write.metadata.delete-after-commit.enabled': 'true',
+      },
+    }
+
+    for (let i = 0; i < 4; i++) {
+      const staged = await icebergStageAppend({
+        tableUrl, metadata, resolver: resolverWithDeleter,
+        records: [{ id: BigInt(i), name: `r${i}` }],
+      })
+      metadata = await fileCatalogCommit({ tableUrl, metadata, staged, resolver: resolverWithDeleter })
+    }
+
+    // log capped at 2 — v1 and v2 should have been deleted, v3 and v4 retained
+    expect(deleted.sort()).toEqual([
+      `${tableUrl}/metadata/v1.metadata.json`,
+      `${tableUrl}/metadata/v2.metadata.json`,
+    ])
+    expect(files.has(`${tableUrl}/metadata/v3.metadata.json`)).toBe(true)
+    expect(files.has(`${tableUrl}/metadata/v4.metadata.json`)).toBe(true)
+  })
+
+  it('skips delete-after-commit cleanup when the property is unset', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/log-keep'
+    const { resolver, files } = memResolver()
+    /** @type {string[]} */
+    const deleted = []
+    /** @type {Resolver} */
+    const resolverWithDeleter = {
+      ...resolver,
+      deleter: async path => { deleted.push(path) },
+    }
+
+    const created = await icebergCreate({ tableUrl, resolver: resolverWithDeleter, schema })
+    /** @type {TableMetadata} */
+    let metadata = {
+      ...created,
+      properties: { ...created.properties, 'write.metadata.previous-versions-max': '2' },
+    }
+
+    for (let i = 0; i < 3; i++) {
+      const staged = await icebergStageAppend({
+        tableUrl, metadata, resolver: resolverWithDeleter,
+        records: [{ id: BigInt(i), name: `r${i}` }],
+      })
+      metadata = await fileCatalogCommit({ tableUrl, metadata, staged, resolver: resolverWithDeleter })
+    }
+
+    expect(deleted).toEqual([])
+    expect(files.has(`${tableUrl}/metadata/v1.metadata.json`)).toBe(true)
+  })
+
+  it('swallows deleter errors during delete-after-commit', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/log-delete-fail'
+    const { resolver } = memResolver()
+    /** @type {Resolver} */
+    const resolverWithDeleter = {
+      ...resolver,
+      deleter: async () => { throw new Error('boom') },
+    }
+
+    const created = await icebergCreate({ tableUrl, resolver: resolverWithDeleter, schema })
+    /** @type {TableMetadata} */
+    let metadata = {
+      ...created,
+      properties: {
+        ...created.properties,
+        'write.metadata.previous-versions-max': '1',
+        'write.metadata.delete-after-commit.enabled': 'true',
+      },
+    }
+
+    // commit must still resolve even though deleter rejects
+    for (let i = 0; i < 2; i++) {
+      const staged = await icebergStageAppend({
+        tableUrl, metadata, resolver: resolverWithDeleter,
+        records: [{ id: BigInt(i), name: `r${i}` }],
+      })
+      metadata = await fileCatalogCommit({ tableUrl, metadata, staged, resolver: resolverWithDeleter })
+    }
+    expect(metadata['metadata-log']).toHaveLength(1)
+  })
+
   it('applies set-properties and remove-properties updates', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
     const tableUrl = 'http://test/props'

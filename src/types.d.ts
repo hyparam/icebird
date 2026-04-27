@@ -4,6 +4,7 @@ import type { Writer } from 'hyparquet-writer/src/types.js'
 export interface Resolver {
   reader: (path: string, byteLength?: number) => AsyncBuffer | Promise<AsyncBuffer>
   writer?: (path: string) => Writer
+  deleter?: (path: string) => Promise<void>
 }
 export type Lister = (path: string) => Promise<string[]>
 

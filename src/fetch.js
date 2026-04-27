@@ -42,6 +42,14 @@ export function urlResolver({ requestInit } = {}) {
     reader(url, byteLength) {
       return asyncBufferFromUrl({ url: translateS3Url(url), byteLength, requestInit })
     },
+    async deleter(url) {
+      const res = await fetch(translateS3Url(url), { ...requestInit, method: 'DELETE' })
+      // S3 DELETE returns 204 on success and 204 even when the key is absent;
+      // tolerate 404 for non-S3 backends that surface "not found" instead.
+      if (!res.ok && res.status !== 404) {
+        throw new Error(`DELETE ${url}: ${res.status} ${res.statusText}`)
+      }
+    },
   }
 }
 

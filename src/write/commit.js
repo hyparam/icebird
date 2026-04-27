@@ -39,9 +39,10 @@ export async function fileCatalogCommit({ tableUrl, metadata, staged, resolver }
     { 'timestamp-ms': metadata['last-updated-ms'], 'metadata-file': currentMetadataPath },
   ]
   const max = Number(updated.properties?.['write.metadata.previous-versions-max'] ?? 100)
-  const trimmedLog = max > 0 && appendedLog.length > max
-    ? appendedLog.slice(-max)
-    : appendedLog
+  const droppedLog = max > 0 && appendedLog.length > max
+    ? appendedLog.slice(0, appendedLog.length - max)
+    : []
+  const trimmedLog = droppedLog.length > 0 ? appendedLog.slice(-max) : appendedLog
 
   /** @type {TableMetadata} */
   const newMetadata = {
@@ -57,6 +58,15 @@ export async function fileCatalogCommit({ tableUrl, metadata, staged, resolver }
   const hintWriter = resolver.writer(translateS3Url(`${tableUrl}/version-hint.text`))
   hintWriter.appendBytes(new TextEncoder().encode(String(newVersion)))
   hintWriter.finish()
+
+  // Best-effort cleanup of metadata files dropped from the log when the
+  // table opts in via `write.metadata.delete-after-commit.enabled`. Failures
+  // (404, permission, etc.) must not surface — the commit itself succeeded.
+  const deleteEnabled = updated.properties?.['write.metadata.delete-after-commit.enabled'] === 'true'
+  if (deleteEnabled && droppedLog.length > 0 && resolver.deleter) {
+    const { deleter } = resolver
+    await Promise.allSettled(droppedLog.map(entry => deleter(entry['metadata-file'])))
+  }
 
   return newMetadata
 }
