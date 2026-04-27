@@ -65,170 +65,210 @@ export async function icebergRead({
     fileIndex++
   }
 
-  // Read data files one-by-one, applying delete filters
-  const results = []
-  let rowsNeeded = totalRowsToRead
-  // TODO: Fetch data files in parallel
-  for (let i = fileIndex; i < dataEntries.length && rowsNeeded !== 0; i++) {
-    const dataEntry = dataEntries[i]
-    const { data_file, sequence_number } = dataEntry
-    // assert(status !== 2)
-
-    // Check sequence numbers
-    if (sequence_number === undefined) throw new Error('sequence number not found, check v2 inheritance logic')
-
-    // Determine the row range to read from this file
+  // Pre-compute the per-file row ranges based on record_count, so reads can run
+  // in parallel. Deletes may reduce the post-filter count below totalRowsToRead.
+  const fileReads = []
+  let rowsRemaining = totalRowsToRead
+  for (let i = fileIndex; i < dataEntries.length && rowsRemaining > 0; i++) {
+    const recordCount = Number(dataEntries[i].data_file.record_count)
     const fileRowStart = i === fileIndex ? skipRows : 0
-    const availableRows = Number(data_file.record_count) - fileRowStart
-    const rowsToRead = rowsNeeded === Infinity ? availableRows : Math.min(rowsNeeded, availableRows)
-
-    // Skip if there are no rows to read from this file
-    if (rowsToRead <= 0) continue
-    const fileRowEnd = fileRowStart + rowsToRead
-
-    // Read the data file
-    const resolved = await resolver.reader(data_file.file_path, Number(data_file.file_size_in_bytes))
-    const asyncBuffer = cachedAsyncBuffer(resolved)
-
-    // Read iceberg schema from parquet metadata
-    const parquetMetadata = await parquetMetadataAsync(asyncBuffer)
-    const kv = parquetMetadata.key_value_metadata?.find(k => k.key === 'iceberg.schema')
-    // AWS Athena tables have no parquet iceberg schema :-(
-    // TODO: pick the right schema from the metadata
-    let parquetIcebergSchema = schema
-    if (kv?.value) {
-      parquetIcebergSchema = JSON.parse(kv.value)
-    }
-
-    // Determine which columns to read based on field ids
-    const parquetColumnNames = []
-    for (const field of schema.fields) {
-      const parquetField = parquetIcebergSchema.fields.find(f => f.id === field.id)
-      // May be undefined if the field was added later
-      if (parquetField && field.type !== 'unknown') {
-        parquetColumnNames.push(sanitize(parquetField.name))
-      } else {
-        parquetColumnNames.push(undefined)
-      }
-    }
-    const lineageColumns = rowLineage ? rowLineageColumnNames(parquetIcebergSchema) : {}
-    const columns = parquetColumnNames.filter(n => n !== undefined)
-    for (const column of [lineageColumns.rowId, lineageColumns.lastUpdatedSequenceNumber]) {
-      if (column && !columns.includes(column)) columns.push(column)
-    }
-    const dataColumnNamesById = columnNamesById(parquetIcebergSchema)
-
-    const rows = await parquetReadObjects({
-      file: asyncBuffer,
-      metadata: parquetMetadata,
-      columns,
-      rowStart: fileRowStart,
-      rowEnd: fileRowEnd,
-      compressors,
-    })
-    let rowEntries = rows.map((row, idx) => ({
-      row,
-      pos: BigInt(fileRowStart + idx),
-    }))
-
-    // If delete files apply to this data file, filter the rows
-    const { positionDeletesMap, equalityDeleteGroups } = await deleteMaps
-
-    const positionDeleteGroups = positionDeletesMap.get(data_file.file_path)
-    if (positionDeleteGroups) {
-      const positionDeletes = new Set()
-      for (const group of positionDeleteGroups) {
-        if (!deleteFileAppliesToDataEntry(dataEntry, group.deleteEntry, metadata, 'position')) continue
-        for (const pos of group.positions) positionDeletes.add(pos)
-      }
-      rowEntries = rowEntries.filter(entry => !positionDeletes.has(entry.pos))
-    }
-    for (const group of equalityDeleteGroups) {
-      // An equality delete file must be applied to a data file when all of the following are true:
-      // - The data file's data sequence number is strictly less than the delete's data sequence number
-      // - The data file's partition (both spec id and partition values) is equal to the delete file's
-      //   partition or the delete file's partition spec is unpartitioned
-      // In general, deletes are applied only to data files that are older and in the same partition, except for two special cases:
-      // - Equality delete files stored with an unpartitioned spec are applied as global deletes.
-      //   Otherwise, delete files do not apply to files in other partitions.
-      // - Position deletes (vectors and files) must be applied to data files from the same commit,
-      //   when the data and delete file data sequence numbers are equal.
-      //   This allows deleting rows that were added in the same commit.
-      if (!deleteFileAppliesToDataEntry(dataEntry, group.deleteEntry, metadata, 'equality')) continue
-      rowEntries = rowEntries.filter(({ row }) => {
-        return !group.rows.some(predicate => equalityMatch(row, predicate, dataColumnNamesById))
-      })
-    }
-
-    // Map parquet column names to iceberg names by field id
-    for (const { row, pos } of rowEntries) {
-      /** @type {Record<string, any>} */
-      const out = {}
-      for (let i = 0; i < schema.fields.length; i++) {
-        const field = schema.fields[i]
-        const parquetColumnName = parquetColumnNames[i]
-        if (parquetColumnName) {
-          out[field.name] = row[parquetColumnName]
-        } else {
-          // current partition spec:
-          const partitionSpec = metadata['partition-specs'].find(s => s['spec-id'] === metadata['default-spec-id'])
-          const partitionField = partitionSpec?.fields.find(pf => pf['source-id'] === field.id)
-
-          /** @type {NameMapping | undefined} */
-          let nameMapping
-          if (metadata.properties?.['schema.name-mapping.default']) {
-            /** @type {NameMapping[]} */
-            const mapping = JSON.parse(metadata.properties['schema.name-mapping.default'])
-            nameMapping = nameMappingById(mapping, field.id)
-          }
-
-          // Values for field ids which are not present in a data file must
-          // be resolved according the following rules:
-          if (partitionField?.transform === 'identity') {
-            // 1. Return the value from partition metadata if an Identity Transform
-            // exists for the field and the partition value is present in the
-            // partition struct on data_file object in the manifest. This allows
-            // for metadata only migrations of Hive tables.
-            // The partition struct is keyed by partition-field name in Avro.
-            out[field.name] = data_file.partition[partitionField.name]
-          } else if (nameMapping) {
-            // 2. Use schema.name-mapping.default metadata to map field id to columns
-            for (const name of nameMapping.names) {
-              const idx = parquetColumnNames.indexOf(name)
-              if (idx !== -1) {
-                out[field.name] = row[name]
-                break
-              }
-            }
-          } else if (field['initial-default'] !== undefined) {
-            // 3. Return the default value if it has a defined initial-default.
-            out[field.name] = field['initial-default']
-          } else {
-            // 4. Return null in all other cases.
-            out[field.name] = null
-          }
-        }
-      }
-      if (rowLineage) {
-        applyRowLineage(out, {
-          row,
-          pos,
-          firstRowId: data_file.first_row_id,
-          sequenceNumber: sequence_number,
-          rowIdColumn: lineageColumns.rowId,
-          lastUpdatedSequenceNumberColumn: lineageColumns.lastUpdatedSequenceNumber,
-        })
-      }
-      results.push(out)
-    }
-
-    if (rowsNeeded !== Infinity) {
-      rowsNeeded -= rowEntries.length
-      if (rowsNeeded <= 0) break
-    }
+    const availableRows = recordCount - fileRowStart
+    if (availableRows <= 0) continue
+    const rowsToRead = rowsRemaining === Infinity ? availableRows : Math.min(rowsRemaining, availableRows)
+    fileReads.push({ entry: dataEntries[i], fileRowStart, fileRowEnd: fileRowStart + rowsToRead })
+    if (rowsRemaining !== Infinity) rowsRemaining -= rowsToRead
   }
 
-  return results
+  // Resolve delete maps once, shared across all parallel reads
+  const { positionDeletesMap, equalityDeleteGroups } = await deleteMaps
+
+  // Fetch data files in parallel
+  const fileResults = await Promise.all(fileReads.map(({ entry, fileRowStart, fileRowEnd }) =>
+    readDataFile({
+      dataEntry: entry,
+      fileRowStart,
+      fileRowEnd,
+      schema,
+      metadata,
+      resolver,
+      rowLineage,
+      positionDeletesMap,
+      equalityDeleteGroups,
+    })
+  ))
+
+  return fileResults.flat()
+}
+
+/**
+ * Read a single data file, apply deletes, and map parquet columns to iceberg
+ * field names by id.
+ *
+ * @import {ManifestEntry} from '../src/types.js'
+ * @param {object} options
+ * @param {ManifestEntry} options.dataEntry
+ * @param {number} options.fileRowStart
+ * @param {number} options.fileRowEnd
+ * @param {Schema} options.schema
+ * @param {TableMetadata} options.metadata
+ * @param {Resolver} options.resolver
+ * @param {boolean} options.rowLineage
+ * @param {Map<string, Array<{deleteEntry: ManifestEntry, positions: Set<bigint>}>>} options.positionDeletesMap
+ * @param {Array<{deleteEntry: ManifestEntry, rows: Record<string, any>[]}>} options.equalityDeleteGroups
+ * @returns {Promise<Array<Record<string, any>>>}
+ */
+async function readDataFile({
+  dataEntry,
+  fileRowStart,
+  fileRowEnd,
+  schema,
+  metadata,
+  resolver,
+  rowLineage,
+  positionDeletesMap,
+  equalityDeleteGroups,
+}) {
+  const { data_file, sequence_number } = dataEntry
+  // assert(status !== 2)
+
+  // Check sequence numbers
+  if (sequence_number === undefined) throw new Error('sequence number not found, check v2 inheritance logic')
+
+  // Read the data file
+  const resolved = await resolver.reader(data_file.file_path, Number(data_file.file_size_in_bytes))
+  const asyncBuffer = cachedAsyncBuffer(resolved)
+
+  // Read iceberg schema from parquet metadata
+  const parquetMetadata = await parquetMetadataAsync(asyncBuffer)
+  const kv = parquetMetadata.key_value_metadata?.find(k => k.key === 'iceberg.schema')
+  // AWS Athena tables have no parquet iceberg schema :-(
+  // TODO: pick the right schema from the metadata
+  let parquetIcebergSchema = schema
+  if (kv?.value) {
+    parquetIcebergSchema = JSON.parse(kv.value)
+  }
+
+  // Determine which columns to read based on field ids
+  const parquetColumnNames = []
+  for (const field of schema.fields) {
+    const parquetField = parquetIcebergSchema.fields.find(f => f.id === field.id)
+    // May be undefined if the field was added later
+    if (parquetField && field.type !== 'unknown') {
+      parquetColumnNames.push(sanitize(parquetField.name))
+    } else {
+      parquetColumnNames.push(undefined)
+    }
+  }
+  const lineageColumns = rowLineage ? rowLineageColumnNames(parquetIcebergSchema) : {}
+  const columns = parquetColumnNames.filter(n => n !== undefined)
+  for (const column of [lineageColumns.rowId, lineageColumns.lastUpdatedSequenceNumber]) {
+    if (column && !columns.includes(column)) columns.push(column)
+  }
+  const dataColumnNamesById = columnNamesById(parquetIcebergSchema)
+
+  const rows = await parquetReadObjects({
+    file: asyncBuffer,
+    metadata: parquetMetadata,
+    columns,
+    rowStart: fileRowStart,
+    rowEnd: fileRowEnd,
+    compressors,
+  })
+  let rowEntries = rows.map((row, idx) => ({
+    row,
+    pos: BigInt(fileRowStart + idx),
+  }))
+
+  // If delete files apply to this data file, filter the rows
+  const positionDeleteGroups = positionDeletesMap.get(data_file.file_path)
+  if (positionDeleteGroups) {
+    const positionDeletes = new Set()
+    for (const group of positionDeleteGroups) {
+      if (!deleteFileAppliesToDataEntry(dataEntry, group.deleteEntry, metadata, 'position')) continue
+      for (const pos of group.positions) positionDeletes.add(pos)
+    }
+    rowEntries = rowEntries.filter(entry => !positionDeletes.has(entry.pos))
+  }
+  for (const group of equalityDeleteGroups) {
+    // An equality delete file must be applied to a data file when all of the following are true:
+    // - The data file's data sequence number is strictly less than the delete's data sequence number
+    // - The data file's partition (both spec id and partition values) is equal to the delete file's
+    //   partition or the delete file's partition spec is unpartitioned
+    // In general, deletes are applied only to data files that are older and in the same partition, except for two special cases:
+    // - Equality delete files stored with an unpartitioned spec are applied as global deletes.
+    //   Otherwise, delete files do not apply to files in other partitions.
+    // - Position deletes (vectors and files) must be applied to data files from the same commit,
+    //   when the data and delete file data sequence numbers are equal.
+    //   This allows deleting rows that were added in the same commit.
+    if (!deleteFileAppliesToDataEntry(dataEntry, group.deleteEntry, metadata, 'equality')) continue
+    rowEntries = rowEntries.filter(({ row }) => {
+      return !group.rows.some(predicate => equalityMatch(row, predicate, dataColumnNamesById))
+    })
+  }
+
+  // Map parquet column names to iceberg names by field id
+  const out = []
+  for (const { row, pos } of rowEntries) {
+    /** @type {Record<string, any>} */
+    const mapped = {}
+    for (let i = 0; i < schema.fields.length; i++) {
+      const field = schema.fields[i]
+      const parquetColumnName = parquetColumnNames[i]
+      if (parquetColumnName) {
+        mapped[field.name] = row[parquetColumnName]
+      } else {
+        // current partition spec:
+        const partitionSpec = metadata['partition-specs'].find(s => s['spec-id'] === metadata['default-spec-id'])
+        const partitionField = partitionSpec?.fields.find(pf => pf['source-id'] === field.id)
+
+        /** @type {NameMapping | undefined} */
+        let nameMapping
+        if (metadata.properties?.['schema.name-mapping.default']) {
+          /** @type {NameMapping[]} */
+          const mapping = JSON.parse(metadata.properties['schema.name-mapping.default'])
+          nameMapping = nameMappingById(mapping, field.id)
+        }
+
+        // Values for field ids which are not present in a data file must
+        // be resolved according the following rules:
+        if (partitionField?.transform === 'identity') {
+          // 1. Return the value from partition metadata if an Identity Transform
+          // exists for the field and the partition value is present in the
+          // partition struct on data_file object in the manifest. This allows
+          // for metadata only migrations of Hive tables.
+          // The partition struct is keyed by partition-field name in Avro.
+          mapped[field.name] = data_file.partition[partitionField.name]
+        } else if (nameMapping) {
+          // 2. Use schema.name-mapping.default metadata to map field id to columns
+          for (const name of nameMapping.names) {
+            const idx = parquetColumnNames.indexOf(name)
+            if (idx !== -1) {
+              mapped[field.name] = row[name]
+              break
+            }
+          }
+        } else if (field['initial-default'] !== undefined) {
+          // 3. Return the default value if it has a defined initial-default.
+          mapped[field.name] = field['initial-default']
+        } else {
+          // 4. Return null in all other cases.
+          mapped[field.name] = null
+        }
+      }
+    }
+    if (rowLineage) {
+      applyRowLineage(mapped, {
+        row,
+        pos,
+        firstRowId: data_file.first_row_id,
+        sequenceNumber: sequence_number,
+        rowIdColumn: lineageColumns.rowId,
+        lastUpdatedSequenceNumberColumn: lineageColumns.lastUpdatedSequenceNumber,
+      })
+    }
+    out.push(mapped)
+  }
+  return out
 }
 
 /**

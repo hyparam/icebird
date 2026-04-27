@@ -73,4 +73,20 @@ describe.concurrent('icebergRead from table with renamed column', () => {
       },
     ])
   })
+
+  it('reads a row range spanning multiple data files', async () => {
+    const all = await icebergRead({ tableUrl, resolver, metadataFileName: 'v3.metadata.json' })
+
+    // Skip the first file's row, take the next two — crosses a file boundary
+    const middle = await icebergRead({ tableUrl, resolver, metadataFileName: 'v3.metadata.json', rowStart: 1, rowEnd: 3 })
+    expect(middle).toEqual(all.slice(1, 3))
+
+    // Trailing range starting mid-table
+    const tail = await icebergRead({ tableUrl, resolver, metadataFileName: 'v3.metadata.json', rowStart: 2 })
+    expect(tail).toEqual(all.slice(2))
+
+    // Leading range stopping before the last file
+    const head = await icebergRead({ tableUrl, resolver, metadataFileName: 'v3.metadata.json', rowEnd: 2 })
+    expect(head).toEqual(all.slice(0, 2))
+  })
 })
