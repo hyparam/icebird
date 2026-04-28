@@ -54,9 +54,9 @@ describe('createIceberg', () => {
 
     // Check that the writer was called correctly
     expect(writer).toHaveBeenCalledWith(`${translatedTableUrl}/metadata/v1.metadata.json`)
-    expect(writer).toHaveBeenCalledWith(`${translatedTableUrl}/version-hint.text`)
+    expect(writer).toHaveBeenCalledWith(`${translatedTableUrl}/metadata/version-hint.text`)
     expect(writers[`${translatedTableUrl}/metadata/v1.metadata.json`].offset).toBe(573)
-    expect(writers[`${translatedTableUrl}/version-hint.text`].offset).toBe(1)
+    expect(writers[`${translatedTableUrl}/metadata/version-hint.text`].offset).toBe(1)
 
   })
 

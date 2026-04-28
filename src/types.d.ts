@@ -8,13 +8,22 @@ export interface Resolver {
 }
 export type Lister = (path: string) => Promise<string[]>
 
+/** Catalogs */
 export interface RestCatalogContext {
+  type: 'rest'
   url: string
   prefix: string
   defaults: Record<string, string>
   overrides: Record<string, string>
   requestInit?: RequestInit
 }
+
+export interface FileCatalog {
+  type: 'file'
+  resolver: Resolver
+}
+
+export type Catalog = RestCatalogContext | FileCatalog
 
 export interface TableIdentifier {
   namespace: string[]

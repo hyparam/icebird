@@ -688,7 +688,10 @@ async function buildSnapshotUpdate({
   const firstRowId = rowLineage ? BigInt(metadata['next-row-id'] ?? 0) : 0n
 
   const priorManifests = await loadPriorManifests(metadata, resolver)
-  const allManifests = [...newManifests, ...priorManifests]
+  // Append the new manifests after priors so reads preserve append order.
+  // Iceberg's scan semantics don't pin an order, but our Promise.all scanner
+  // returns rows in dataEntries order, which is manifest-list order.
+  const allManifests = [...priorManifests, ...newManifests]
   const addedRows = rowLineage ? assignFirstRowIds(allManifests, firstRowId) : 0n
   const manifestListPath = `${tableUrl}/metadata/snap-${snapshotId}-1-${manifestUuid}.avro`
   const listWriter = writerFn(translateS3Url(manifestListPath))

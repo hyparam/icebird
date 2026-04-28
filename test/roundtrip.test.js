@@ -121,7 +121,7 @@ describe('icebergCreate + icebergStageAppend + icebergRead round-trip', () => {
 
     const committed = await fileCatalogCommit({ tableUrl, metadata: partitioned, staged, resolver })
     const read = await icebergRead({ tableUrl, metadata: committed, resolver })
-    expect([...read].sort((a, b) => Number(a.id - b.id))).toEqual(records)
+    expect(read).toEqual(records)
   })
 
   it('partitions a decimal column by truncate[W] and round-trips', async () => {
@@ -164,7 +164,7 @@ describe('icebergCreate + icebergStageAppend + icebergRead round-trip', () => {
 
     const committed = await fileCatalogCommit({ tableUrl, metadata: partitioned, staged, resolver })
     const read = await icebergRead({ tableUrl, metadata: committed, resolver })
-    expect([...read].sort((a, b) => Number(a.id - b.id))).toEqual(records)
+    expect(read).toEqual(records)
   })
 
   it('round-trips decimal columns at multiple precisions', async () => {
@@ -277,11 +277,10 @@ describe('icebergCreate + icebergStageAppend + icebergRead round-trip', () => {
     const afterB = await fileCatalogCommit({ tableUrl, metadata: evolved, staged: stagedB, resolver })
 
     const read = await icebergRead({ tableUrl, metadata: afterB, resolver })
-    // newer snapshot's manifest is listed first, so the new file's row comes first
     expect(read).toEqual([
-      { id: 3n, name: 'carol', tag: 'vip' },
       { id: 1n, name: 'alice', tag: null },
       { id: 2n, name: 'bob', tag: null },
+      { id: 3n, name: 'carol', tag: 'vip' },
     ])
   })
 
@@ -363,7 +362,7 @@ describe('icebergCreate + icebergStageAppend + icebergRead round-trip', () => {
 
     // tip: both rows
     expect(await icebergRead({ tableUrl, metadata: m2, resolver }))
-      .toEqual([{ id: 2n, name: 'bob' }, { id: 1n, name: 'alice' }])
+      .toEqual([{ id: 1n, name: 'alice' }, { id: 2n, name: 'bob' }])
 
     // time-travel: read at the first snapshot by overriding current-snapshot-id
     /** @type {TableMetadata} */
@@ -413,7 +412,7 @@ describe('icebergCreate + icebergStageAppend + icebergRead round-trip', () => {
     /** @type {TableMetadata} */
     const atV2 = { ...rolled, 'current-snapshot-id': s2.snapshot['snapshot-id'] }
     expect(await icebergRead({ tableUrl, metadata: atV2, resolver }))
-      .toEqual([{ id: 2n, name: 'bob' }, { id: 1n, name: 'alice' }])
+      .toEqual([{ id: 1n, name: 'alice' }, { id: 2n, name: 'bob' }])
   })
 
   it('reads row ranges across a partitioned multi-file table', async () => {
@@ -497,13 +496,12 @@ describe('icebergCreate + icebergStageAppend + icebergRead round-trip', () => {
     expect(mB['next-row-id']).toBe(5)
 
     const read = await icebergRead({ tableUrl, metadata: mB, resolver })
-    // newest manifest is read first
     expect(read.map(r => ({ id: r.id, _row_id: r._row_id }))).toEqual([
+      { id: 1n, _row_id: 0n },
+      { id: 2n, _row_id: 1n },
       { id: 3n, _row_id: 2n },
       { id: 4n, _row_id: 3n },
       { id: 5n, _row_id: 4n },
-      { id: 1n, _row_id: 0n },
-      { id: 2n, _row_id: 1n },
     ])
   })
 })

@@ -6,7 +6,7 @@
  * two together by passing `metadata` and `metadata.location` from
  * `restCatalogLoadTable` into `icebergRead`.
  *
- * @import {LoadTableResponse, PartitionSpec, RestCatalogContext, Schema, SortOrder, StorageCredential, TableIdentifier, TableMetadata, TableRequirement, TableUpdate} from '../src/types.js'
+ * @import {LoadTableResponse, PartitionSpec, RestCatalogContext, Schema, SortOrder, StorageCredential, TableIdentifier, TableMetadata, TableRequirement, TableUpdate} from '../../src/types.js'
  */
 
 /**
@@ -29,6 +29,7 @@ export async function restCatalogConnect({ url, warehouse, requestInit }) {
   if (!res.ok) await throwRestError(res)
   const body = await res.json()
   return Object.freeze({
+    type: 'rest',
     url: base,
     prefix: typeof body.prefix === 'string' ? body.prefix : '',
     defaults: body.defaults ?? {},

@@ -72,7 +72,7 @@ export async function icebergCreate ({
   metadataWriter.finish()
 
   // write version-hint.text
-  const versionHintUrl = translateS3Url(`${tableUrl}/version-hint.text`)
+  const versionHintUrl = translateS3Url(`${tableUrl}/metadata/version-hint.text`)
   const versionHintWriter = resolver.writer(versionHintUrl)
   const versionHintBytes = new TextEncoder().encode(String(metadataVersion))
   versionHintWriter.appendBytes(versionHintBytes)

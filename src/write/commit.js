@@ -55,7 +55,7 @@ export async function fileCatalogCommit({ tableUrl, metadata, staged, resolver }
   metaWriter.finish()
 
   // version-hint last so a partial write doesn't surface a torn commit
-  const hintWriter = resolver.writer(translateS3Url(`${tableUrl}/version-hint.text`))
+  const hintWriter = resolver.writer(translateS3Url(`${tableUrl}/metadata/version-hint.text`))
   hintWriter.appendBytes(new TextEncoder().encode(String(newVersion)))
   hintWriter.finish()
 

@@ -3,7 +3,7 @@ import {
   restCatalogConnect,
   restCatalogListNamespaces,
   restCatalogLoadTable,
-} from '../src/catalog.rest.js'
+} from '../src/catalog/rest.js'
 import { makeFetch } from './catalog.rest.helpers.js'
 
 describe('REST Catalog client — connect & infrastructure', () => {

@@ -53,7 +53,7 @@ describe('icebergStageAppend', () => {
     expect(staged.writtenFiles).toHaveLength(3)
     for (const path of staged.writtenFiles) expect(files.has(path)).toBe(true)
     const newFiles = [...files.keys()].filter(k => !beforeFiles.has(k))
-    expect(newFiles.sort()).toEqual([...staged.writtenFiles].sort())
+    expect(newFiles).toEqual(staged.writtenFiles)
     expect([...files.keys()].some(k => k.endsWith('v2.metadata.json'))).toBe(false)
   })
 
@@ -153,8 +153,12 @@ describe('icebergStageAppend', () => {
     const committed = await fileCatalogCommit({ tableUrl, metadata: partitioned, staged, resolver })
     const read = await icebergRead({ tableUrl, metadata: committed, resolver })
 
-    expect(read).toHaveLength(3)
-    expect([...read].sort((a, b) => Number(a.id - b.id))).toEqual(records)
+    // identity-partition groups iterate in first-seen order: us, then fr
+    expect(read).toEqual([
+      { id: 1n, country: 'us' },
+      { id: 3n, country: 'us' },
+      { id: 2n, country: 'fr' },
+    ])
   })
 
   it('emits manifest-list partition FieldSummary for an identity spec', async () => {
@@ -234,7 +238,7 @@ describe('icebergStageAppend', () => {
 
     const committed = await fileCatalogCommit({ tableUrl, metadata: bucketed, staged, resolver })
     const read = await icebergRead({ tableUrl, metadata: committed, resolver })
-    expect([...read].sort((a, b) => Number(a.id - b.id))).toEqual(records)
+    expect(read).toEqual(records)
   })
 
   it('groups by day(timestamp) and round-trips through read', async () => {
@@ -278,7 +282,7 @@ describe('icebergStageAppend', () => {
 
     const committed = await fileCatalogCommit({ tableUrl, metadata: dayed, staged, resolver })
     const read = await icebergRead({ tableUrl, metadata: committed, resolver })
-    expect([...read].sort((a, b) => Number(a.id - b.id))).toEqual(records)
+    expect(read).toEqual(records)
   })
 
   it('groups by truncate[W] on a string column and round-trips through read', async () => {
@@ -313,7 +317,7 @@ describe('icebergStageAppend', () => {
 
     const committed = await fileCatalogCommit({ tableUrl, metadata: truncated, staged, resolver })
     const read = await icebergRead({ tableUrl, metadata: committed, resolver })
-    expect([...read].sort((a, b) => Number(a.id - b.id))).toEqual(records)
+    expect(read).toEqual(records)
   })
 
   it('collapses records into one group for a void-transform partition spec', async () => {
@@ -356,8 +360,7 @@ describe('icebergStageAppend', () => {
 
     const committed = await fileCatalogCommit({ tableUrl, metadata: voided, staged, resolver })
     const read = await icebergRead({ tableUrl, metadata: committed, resolver })
-
-    expect([...read].sort((a, b) => Number(a.id - b.id))).toEqual(records)
+    expect(read).toEqual(records)
   })
 
   it('carries forward prior manifests across two sequential commits', async () => {
@@ -386,9 +389,9 @@ describe('icebergStageAppend', () => {
 
     const read = await icebergRead({ tableUrl, metadata: v3, resolver })
     expect(read).toEqual([
+      { id: 1n, name: 'alice' },
       { id: 2n, name: 'bob' },
       { id: 3n, name: 'carol' },
-      { id: 1n, name: 'alice' },
     ])
   })
 
@@ -601,7 +604,7 @@ describe('fileCatalogCommit', () => {
     }
 
     // log capped at 2 — v1 and v2 should have been deleted, v3 and v4 retained
-    expect(deleted.sort()).toEqual([
+    expect(deleted).toEqual([
       `${tableUrl}/metadata/v1.metadata.json`,
       `${tableUrl}/metadata/v2.metadata.json`,
     ])
@@ -1310,9 +1313,9 @@ describe('icebergStageExpireSnapshots', () => {
     // current snapshot returns the full table.
     const read = await icebergRead({ tableUrl, metadata: after, resolver })
     expect(read).toEqual([
-      { id: 3n, name: 'carol' },
-      { id: 2n, name: 'bob' },
       { id: 1n, name: 'alice' },
+      { id: 2n, name: 'bob' },
+      { id: 3n, name: 'carol' },
     ])
   })
 
