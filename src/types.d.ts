@@ -362,6 +362,7 @@ interface AvroArray {
   items: AvroType
   default?: any[]
   logicalType?: 'map' // Iceberg map-as-array annotation for non-string keys
+  'element-id'?: number // Iceberg field id of the array element (e.g. equality_ids[*])
 }
 
 type AvroUnion = AvroType[]
