@@ -176,7 +176,19 @@ function compareBytes(a, b) {
  * @returns {Uint8Array|undefined}
  */
 function serializeValue(value, type) {
-  switch (typeName(type)) {
+  const name = typeName(type)
+  if (name.startsWith('decimal(')) {
+    const m = /^decimal\((\d+),\s*(\d+)\)$/.exec(name)
+    if (!m) return undefined
+    const scale = parseInt(m[2], 10)
+    if (typeof value !== 'number' && typeof value !== 'bigint') return undefined
+    const factor = 10n ** BigInt(scale)
+    const unscaled = typeof value === 'bigint'
+      ? value * factor
+      : BigInt(Math.round(value * Number(factor)))
+    return twosComplementMinBigEndian(unscaled)
+  }
+  switch (name) {
   case 'boolean': {
     return new Uint8Array([value ? 1 : 0])
   }
@@ -364,6 +376,27 @@ function truncateUpper(value, type) {
     return undefined
   }
   return value
+}
+
+/**
+ * Encode a signed bigint as the minimum number of bytes in two's-complement
+ * big-endian form. Matches the Iceberg single-value serialization for
+ * decimals.
+ *
+ * @param {bigint} value
+ * @returns {Uint8Array}
+ */
+function twosComplementMinBigEndian(value) {
+  const bytes = []
+  let v = value
+  while (true) {
+    const byte = Number(v & 0xffn)
+    bytes.unshift(byte)
+    v >>= 8n
+    const sign = byte & 0x80
+    if (!sign && v === 0n || sign && v === -1n) break
+  }
+  return new Uint8Array(bytes)
 }
 
 /**

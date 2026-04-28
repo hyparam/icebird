@@ -53,6 +53,37 @@ describe('icebergCreate + icebergStageAppend + icebergRead round-trip', () => {
     expect(read).toEqual(records)
   })
 
+  it('round-trips decimal columns at multiple precisions', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/decimal'
+    const { resolver } = memResolver()
+
+    /** @type {Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        { id: 2, name: 'price', required: false, type: 'decimal(10, 2)' },
+        { id: 3, name: 'tiny', required: false, type: 'decimal(4, 1)' },
+      ],
+    }
+
+    const created = await icebergCreate({ tableUrl, resolver, schema })
+    const records = [
+      { id: 1n, price: 9.99, tiny: 0.5 },
+      { id: 2n, price: -5, tiny: -99.9 },
+      { id: 3n, price: 99999999.99, tiny: null },
+      { id: 4n, price: 0, tiny: 12.3 },
+    ]
+
+    const staged = await icebergStageAppend({ tableUrl, metadata: created, records, resolver })
+    const committed = await fileCatalogCommit({ tableUrl, metadata: created, staged, resolver })
+
+    const read = await icebergRead({ tableUrl, metadata: committed, resolver })
+    expect(read).toEqual(records)
+  })
+
   it('round-trips null values in optional fields', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
     const tableUrl = 'http://test/nulls'

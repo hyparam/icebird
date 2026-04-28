@@ -49,10 +49,42 @@ describe('writeParquet', () => {
     const bad = {
       type: 'struct',
       'schema-id': 0,
-      fields: [{ id: 1, name: 'x', required: false, type: 'decimal(9,2)' }],
+      fields: [{ id: 1, name: 'x', required: false, type: /** @type {any} */ ('fixed[8]') }],
     }
     expect(() => writeParquet({ writer, schema: bad, records: [] }))
-      .toThrow('unsupported iceberg type: decimal(9,2)')
+      .toThrow('unsupported iceberg type: fixed[8]')
+  })
+
+  it('writes a fixed-len-byte-array DECIMAL with computed type_length', async () => {
+    const writer = new ByteWriter()
+    /** @type {Schema} */
+    const decSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'price', required: false, type: 'decimal(10, 2)' },
+        { id: 2, name: 'big', required: false, type: 'decimal(38,0)' },
+      ],
+    }
+    writeParquet({
+      writer,
+      schema: decSchema,
+      records: [{ price: 9.99, big: 100 }, { price: -5, big: 0 }],
+    })
+    const file = writer.getBuffer()
+    const meta = parquetMetadata(file)
+    const price = meta.schema.find(s => s.name === 'price')
+    expect(price).toMatchObject({
+      type: 'FIXED_LEN_BYTE_ARRAY',
+      type_length: 5, // ceil(P*log2(10)/8) for P=10
+      converted_type: 'DECIMAL',
+      precision: 10,
+      scale: 2,
+    })
+    expect(meta.schema.find(s => s.name === 'big')?.type_length).toBe(16)
+
+    const rows = await parquetReadObjects({ file, compressors })
+    expect(rows).toEqual([{ price: 9.99, big: 100 }, { price: -5, big: 0 }])
   })
 
   it('writes v3 primitive parquet types', async () => {

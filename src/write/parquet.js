@@ -80,6 +80,20 @@ function icebergTypeToParquetField(name, field) {
   if (type.startsWith('geography')) {
     return { name, type: 'BYTE_ARRAY', logical_type: { type: 'GEOGRAPHY' }, repetition_type }
   }
+  const decimal = parseDecimalType(type)
+  if (decimal) {
+    const { precision, scale } = decimal
+    return {
+      name,
+      type: 'FIXED_LEN_BYTE_ARRAY',
+      type_length: decimalRequiredBytes(precision),
+      converted_type: 'DECIMAL',
+      logical_type: { type: 'DECIMAL', precision, scale },
+      precision,
+      scale,
+      repetition_type,
+    }
+  }
   switch (type) {
   case 'unknown':
     if (field.required) throw new Error('unsupported required iceberg type: unknown')
@@ -112,6 +126,38 @@ function icebergTypeToParquetField(name, field) {
  */
 function typeName(type) {
   return typeof type === 'string' ? type : type.type
+}
+
+/**
+ * Parse iceberg `decimal(P,S)` / `decimal(P, S)` strings into precision and
+ * scale. Returns undefined for non-decimal types so callers can fall through.
+ *
+ * @param {string} type
+ * @returns {{ precision: number, scale: number } | undefined}
+ */
+function parseDecimalType(type) {
+  const m = /^decimal\((\d+),\s*(\d+)\)$/.exec(type)
+  if (!m) return undefined
+  return { precision: parseInt(m[1], 10), scale: parseInt(m[2], 10) }
+}
+
+/**
+ * Minimum number of bytes needed to store an unscaled decimal of `precision`
+ * digits as a two's-complement signed integer. Matches Iceberg's
+ * TypeUtil.decimalRequiredBytes; uses BigInt to stay exact for P up to 38.
+ *
+ * @param {number} precision
+ * @returns {number}
+ */
+function decimalRequiredBytes(precision) {
+  const limit = 10n ** BigInt(precision)
+  let n = 1
+  let bound = 128n
+  while (limit > bound) {
+    n++
+    bound <<= 8n
+  }
+  return n
 }
 
 /**
