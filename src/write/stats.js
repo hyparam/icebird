@@ -1,3 +1,5 @@
+import { computeGeoBounds, isGeoType } from './geospatial.js'
+
 /**
  * @import {FieldSummary, IcebergType, Schema} from '../../src/types.js'
  */
@@ -43,6 +45,15 @@ export function computeColumnStats(records, schema) {
   for (const field of schema.fields) {
     const type = typeName(field.type)
     if (type === 'unknown') continue
+
+    if (isGeoType(type)) {
+      const { value_count, null_count, lower, upper } = computeGeoBounds(records, field)
+      value_counts[field.id] = value_count
+      null_value_counts[field.id] = null_count
+      if (lower) lower_bounds[field.id] = lower
+      if (upper) upper_bounds[field.id] = upper
+      continue
+    }
 
     let nulls = 0n
     let nans = 0n
@@ -248,15 +259,14 @@ function serializeValue(value, type) {
 
 /**
  * Return whether Icebird can produce Iceberg lower/upper bounds for a type.
+ * Geometry/geography are handled separately via `computeGeoBounds`.
  *
  * @param {IcebergType} type
  * @returns {boolean}
  */
 function hasComparableBounds(type) {
   const name = typeName(type)
-  if (name.startsWith('geometry') || name.startsWith('geography')) {
-    return false
-  }
+  if (isGeoType(name)) return false
   return name !== 'unknown' && name !== 'variant'
 }
 

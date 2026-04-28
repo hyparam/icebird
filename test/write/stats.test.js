@@ -195,30 +195,45 @@ describe('computeColumnStats', () => {
     expect(lower).toBe('🍎'.repeat(16))
   })
 
-  it('omits bounds for v3 variant and geospatial columns', () => {
+  it('omits bounds for v3 variant columns', () => {
     /** @type {Schema} */
     const schema = {
       type: 'struct',
       'schema-id': 0,
       fields: [
         { id: 1, name: 'payload', required: false, type: 'variant' },
-        { id: 2, name: 'geom', required: false, type: 'geometry(srid:4326)' },
-        { id: 3, name: 'geog', required: false, type: 'geography(srid:4326,spherical)' },
       ],
     }
-    const pointA = new Uint8Array([1, 1, 0, 0, 0])
-    const pointB = new Uint8Array([1, 2, 0, 0, 0])
+    const records = [{ payload: { a: 1 } }, { payload: null }]
+
+    const stats = computeColumnStats(records, schema)
+
+    expect(stats.value_counts).toEqual({ 1: 2n })
+    expect(stats.null_value_counts).toEqual({ 1: 1n })
+    expect(stats.lower_bounds).toEqual({})
+    expect(stats.upper_bounds).toEqual({})
+  })
+
+  it('routes geometry/geography columns through computeGeoBounds', () => {
+    /** @type {Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'geom', required: false, type: 'geometry(srid:4326)' },
+      ],
+    }
     const records = [
-      { payload: { a: 1 }, geom: pointA, geog: pointB },
-      { payload: null, geom: pointB, geog: null },
+      { geom: { type: 'Point', coordinates: [30, 10] } },
+      { geom: null },
     ]
 
     const stats = computeColumnStats(records, schema)
 
-    expect(stats.value_counts).toEqual({ 1: 2n, 2: 2n, 3: 2n })
-    expect(stats.null_value_counts).toEqual({ 1: 1n, 2: 0n, 3: 1n })
-    expect(stats.lower_bounds).toEqual({})
-    expect(stats.upper_bounds).toEqual({})
+    expect(stats.value_counts).toEqual({ 1: 2n })
+    expect(stats.null_value_counts).toEqual({ 1: 1n })
+    expect(stats.lower_bounds[1].length).toBe(16)
+    expect(stats.upper_bounds[1].length).toBe(16)
   })
 
   it('substitutes write-default for missing values in stats', () => {
