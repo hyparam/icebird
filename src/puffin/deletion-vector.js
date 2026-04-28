@@ -1,4 +1,4 @@
-import { readRoaringBitmap32 } from './roaring.js'
+import { readRoaringBitmap32, writeRoaringBitmap32 } from './roaring.js'
 
 const DV_MAGIC = 0xd1d33964
 
@@ -118,6 +118,60 @@ function roaringBitmap32Length(bytes) {
 function isRunContainer(runContainers, index) {
   if (!runContainers) return false
   return Boolean(runContainers[Math.floor(index / 8)] & 1 << index % 8)
+}
+
+/**
+ * Encode a set of deleted row positions as a Puffin `deletion-vector-v1` blob.
+ * Positions are bucketed by their high 32 bits and each bucket is serialized
+ * as a portable Roaring bitmap, matching the layout `readDeletionVector` parses.
+ *
+ * @param {Iterable<bigint>} positions
+ * @returns {Uint8Array}
+ */
+export function writeDeletionVector(positions) {
+  /** @type {Map<number, number[]>} */
+  const byKey = new Map()
+  for (const pos of positions) {
+    if (typeof pos !== 'bigint') throw new Error(`deletion vector position must be bigint: ${pos}`)
+    if (pos < 0n) throw new Error(`deletion vector position must be non-negative: ${pos}`)
+    const key = Number(pos >> 32n)
+    const value = Number(pos & 0xffffffffn)
+    let bucket = byKey.get(key)
+    if (!bucket) {
+      bucket = []
+      byKey.set(key, bucket)
+    }
+    bucket.push(value)
+  }
+
+  const bitmaps = [...byKey.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([key, values]) => {
+      values.sort((a, b) => a - b)
+      /** @type {number[]} */
+      const dedup = []
+      for (const v of values) {
+        if (!dedup.length || dedup[dedup.length - 1] !== v) dedup.push(v)
+      }
+      return { key, bitmap: writeRoaringBitmap32(dedup) }
+    })
+
+  const bodyLength = 8 + bitmaps.reduce((sum, b) => sum + 4 + b.bitmap.byteLength, 0)
+  const payloadLength = 4 + bodyLength
+  const out = new Uint8Array(4 + payloadLength + 4)
+  const view = new DataView(out.buffer)
+  view.setUint32(0, payloadLength, false)
+  view.setUint32(4, DV_MAGIC, false)
+  view.setBigUint64(8, BigInt(bitmaps.length), true)
+  let offset = 16
+  for (const { key, bitmap } of bitmaps) {
+    view.setUint32(offset, key, true)
+    offset += 4
+    out.set(bitmap, offset)
+    offset += bitmap.byteLength
+  }
+  view.setUint32(out.byteLength - 4, crc32(out.subarray(4, out.byteLength - 4)), false)
+  return out
 }
 
 let crcTable

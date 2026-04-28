@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { fetchDeleteMaps } from '../src/fetch.js'
-import { readDeletionVector } from '../src/puffin/deletion-vector.js'
-import { puffinReadDeletionVector, readPuffinMetadata } from '../src/puffin/puffin.js'
-import { readRoaringBitmap32 } from '../src/puffin/roaring.js'
+import { readDeletionVector, writeDeletionVector } from '../src/puffin/deletion-vector.js'
+import { puffinReadDeletionVector, readPuffinMetadata, writePuffinFile } from '../src/puffin/puffin.js'
+import { readRoaringBitmap32, writeRoaringBitmap32 } from '../src/puffin/roaring.js'
 
 describe('puffin deletion vectors', () => {
   it('decodes roaring array, bitmap, and run containers', () => {
@@ -15,14 +15,14 @@ describe('puffin deletion vectors', () => {
   })
 
   it('decodes deletion-vector-v1 blobs', () => {
-    const blob = deletionVector([1n, 5n, 4294967301n])
+    const blob = writeDeletionVector([1n, 5n, 4294967301n])
 
     expect(readDeletionVector(blob)).toEqual(new Set([1n, 5n, 4294967301n]))
   })
 
   it('reads deletion-vector-v1 blobs from puffin files by offset and length', async () => {
     const referencedDataFile = 's3://bucket/table/data/a.parquet'
-    const blob = deletionVector([1n, 3n, 9n])
+    const blob = writeDeletionVector([1n, 3n, 9n])
     const file = puffinFile(blob, referencedDataFile)
     const metadata = readPuffinMetadata(file)
     const [blobMetadata] = metadata.blobs
@@ -38,7 +38,7 @@ describe('puffin deletion vectors', () => {
 
   it('loads puffin deletion vectors into position delete maps', async () => {
     const referencedDataFile = 's3://bucket/table/data/a.parquet'
-    const blob = deletionVector([2n, 4n])
+    const blob = writeDeletionVector([2n, 4n])
     const file = puffinFile(blob, referencedDataFile)
     const metadata = readPuffinMetadata(file)
     const [blobMetadata] = metadata.blobs
@@ -70,6 +70,112 @@ describe('puffin deletion vectors', () => {
   })
 })
 
+describe('puffin writers', () => {
+  it('round-trips array-container roaring bitmaps', () => {
+    const values = [0, 1, 5, 1000, 65535]
+    expect(readRoaringBitmap32(writeRoaringBitmap32(values))).toEqual(values)
+  })
+
+  it('round-trips bitmap-container roaring bitmaps', () => {
+    const values = Array.from({ length: 4097 }, (_, i) => i * 2)
+    expect(readRoaringBitmap32(writeRoaringBitmap32(values))).toEqual(values)
+  })
+
+  it('round-trips multi-container roaring bitmaps spanning high-16-bit buckets', () => {
+    const values = [1, 65535, 65536, 70000, 4294967295]
+    expect(readRoaringBitmap32(writeRoaringBitmap32(values))).toEqual(values)
+  })
+
+  it('round-trips an empty roaring bitmap', () => {
+    expect(readRoaringBitmap32(writeRoaringBitmap32([]))).toEqual([])
+  })
+
+  it('rejects unsorted or out-of-range roaring values', () => {
+    expect(() => writeRoaringBitmap32([5, 3])).toThrow(/sorted/)
+    expect(() => writeRoaringBitmap32([-1])).toThrow(/out of range/)
+    expect(() => writeRoaringBitmap32([0x100000000])).toThrow(/out of range/)
+  })
+
+  it('round-trips deletion vectors that span 64-bit buckets', () => {
+    const positions = [0n, 1n, 65535n, 4294967296n, 4294967301n, 8589934593n]
+    const blob = writeDeletionVector(positions)
+    expect(readDeletionVector(blob)).toEqual(new Set(positions))
+  })
+
+  it('deduplicates and sorts unsorted deletion-vector input', () => {
+    const blob = writeDeletionVector([5n, 1n, 5n, 3n])
+    expect(readDeletionVector(blob)).toEqual(new Set([1n, 3n, 5n]))
+  })
+
+  it('rejects non-bigint or negative deletion-vector positions', () => {
+    expect(() => writeDeletionVector([/** @type {any} */ (5)])).toThrow(/bigint/)
+    expect(() => writeDeletionVector([-1n])).toThrow(/non-negative/)
+  })
+
+  it('round-trips a puffin file with a single deletion-vector blob', async () => {
+    const referencedDataFile = 's3://bucket/table/data/a.parquet'
+    const blob = writeDeletionVector([2n, 7n, 4294967300n])
+    const file = writePuffinFile({
+      blobs: [{
+        type: 'deletion-vector-v1',
+        fields: [],
+        snapshotId: 42,
+        sequenceNumber: 1,
+        data: blob,
+        properties: { 'referenced-data-file': referencedDataFile, cardinality: '3' },
+      }],
+    })
+    const metadata = readPuffinMetadata(file)
+    expect(metadata.blobs).toHaveLength(1)
+    const [meta] = metadata.blobs
+    expect(meta.type).toBe('deletion-vector-v1')
+    expect(meta['snapshot-id']).toBe(42)
+    expect(meta['sequence-number']).toBe(1)
+    expect(meta.offset).toBe(4)
+    expect(meta.length).toBe(blob.byteLength)
+    expect(meta.properties?.['referenced-data-file']).toBe(referencedDataFile)
+
+    const deletes = await puffinReadDeletionVector(asyncBuffer(file), {
+      offset: meta.offset,
+      length: meta.length,
+      referencedDataFile,
+    })
+    expect(deletes).toEqual(new Set([2n, 7n, 4294967300n]))
+  })
+
+  it('round-trips a puffin file with multiple blobs at distinct offsets', async () => {
+    const blobA = writeDeletionVector([1n])
+    const blobB = writeDeletionVector([2n, 3n])
+    const file = writePuffinFile({
+      blobs: [
+        { type: 'deletion-vector-v1', data: blobA, properties: { 'referenced-data-file': 'a.parquet' } },
+        { type: 'deletion-vector-v1', data: blobB, properties: { 'referenced-data-file': 'b.parquet' } },
+      ],
+      properties: { 'created-by': 'icebird' },
+    })
+    const metadata = readPuffinMetadata(file)
+    expect(metadata.blobs).toHaveLength(2)
+    expect(metadata.properties?.['created-by']).toBe('icebird')
+    expect(metadata.blobs[0].offset).toBe(4)
+    expect(metadata.blobs[1].offset).toBe(4 + blobA.byteLength)
+    expect(metadata.blobs[1].length).toBe(blobB.byteLength)
+
+    const second = await puffinReadDeletionVector(asyncBuffer(file), {
+      offset: metadata.blobs[1].offset,
+      length: metadata.blobs[1].length,
+      referencedDataFile: 'b.parquet',
+    })
+    expect(second).toEqual(new Set([2n, 3n]))
+  })
+
+  it('rejects empty blob list and non-Uint8Array data', () => {
+    expect(() => writePuffinFile({ blobs: [] })).toThrow(/at least one blob/)
+    expect(() => writePuffinFile({
+      blobs: [{ type: 'deletion-vector-v1', data: /** @type {any} */ ('not-bytes') }],
+    })).toThrow(/Uint8Array/)
+  })
+})
+
 /**
  * @param {Uint8Array} bytes
  * @returns {import('hyparquet').AsyncBuffer}
@@ -90,78 +196,13 @@ function asyncBuffer(bytes) {
  * @returns {Uint8Array}
  */
 function puffinFile(blob, referencedDataFile) {
-  const blobOffset = 4
-  const footer = {
+  return writePuffinFile({
     blobs: [{
       type: 'deletion-vector-v1',
-      fields: [],
-      'snapshot-id': -1,
-      'sequence-number': -1,
-      offset: blobOffset,
-      length: blob.byteLength,
-      properties: {
-        'referenced-data-file': referencedDataFile,
-        cardinality: '3',
-      },
+      data: blob,
+      properties: { 'referenced-data-file': referencedDataFile, cardinality: '3' },
     }],
-  }
-  const footerPayload = new TextEncoder().encode(JSON.stringify(footer))
-  const out = new Uint8Array(4 + blob.byteLength + 4 + footerPayload.byteLength + 4 + 4 + 4)
-  const view = new DataView(out.buffer)
-  let offset = 0
-  view.setUint32(offset, 0x50464131, false)
-  offset += 4
-  out.set(blob, offset)
-  offset += blob.byteLength
-  view.setUint32(offset, 0x50464131, false)
-  offset += 4
-  out.set(footerPayload, offset)
-  offset += footerPayload.byteLength
-  view.setInt32(offset, footerPayload.byteLength, true)
-  offset += 4
-  view.setUint32(offset, 0, true)
-  offset += 4
-  view.setUint32(offset, 0x50464131, false)
-  return out
-}
-
-/**
- * @param {bigint[]} positions
- * @returns {Uint8Array}
- */
-function deletionVector(positions) {
-  const byKey = new Map()
-  for (const pos of positions) {
-    const key = Number(pos >> 32n)
-    const value = Number(pos & 0xffffffffn)
-    const values = byKey.get(key) ?? []
-    values.push(value)
-    byKey.set(key, values)
-  }
-
-  const bitmaps = [...byKey.entries()]
-    .sort(([a], [b]) => a - b)
-    .map(([key, values]) => ({ key, bitmap: roaringArray(values) }))
-  const vectorLength = 8 + bitmaps.reduce((sum, { bitmap }) => sum + 4 + bitmap.byteLength, 0)
-  const vector = new Uint8Array(vectorLength)
-  const vectorView = new DataView(vector.buffer)
-  vectorView.setBigUint64(0, BigInt(bitmaps.length), true)
-  let vectorOffset = 8
-  for (const { key, bitmap } of bitmaps) {
-    vectorView.setUint32(vectorOffset, key, true)
-    vectorOffset += 4
-    vector.set(bitmap, vectorOffset)
-    vectorOffset += bitmap.byteLength
-  }
-
-  const payloadLength = 4 + vector.byteLength
-  const out = new Uint8Array(4 + payloadLength + 4)
-  const view = new DataView(out.buffer)
-  view.setUint32(0, payloadLength, false)
-  view.setUint32(4, 0xd1d33964, false)
-  out.set(vector, 8)
-  view.setUint32(out.byteLength - 4, crc32(out.subarray(4, out.byteLength - 4)), false)
-  return out
+  })
 }
 
 /**
@@ -225,35 +266,4 @@ function roaringRun(runs) {
     offset += 4
   }
   return out
-}
-
-let crcTable
-
-/**
- * @param {Uint8Array} bytes
- * @returns {number}
- */
-function crc32(bytes) {
-  crcTable ??= makeCrcTable()
-  let crc = 0xffffffff
-  for (const byte of bytes) {
-    crc = crcTable[(crc ^ byte) & 0xff] ^ crc >>> 8
-  }
-  crc = ~crc
-  return crc >>> 0
-}
-
-/**
- * @returns {Uint32Array}
- */
-function makeCrcTable() {
-  const table = new Uint32Array(256)
-  for (let i = 0; i < table.length; i++) {
-    let c = i
-    for (let j = 0; j < 8; j++) {
-      c = c & 1 ? 0xedb88320 ^ c >>> 1 : c >>> 1
-    }
-    table[i] = c >>> 0
-  }
-  return table
 }

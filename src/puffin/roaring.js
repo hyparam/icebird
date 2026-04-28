@@ -91,6 +91,78 @@ function isRunContainer(runContainers, index) {
 }
 
 /**
+ * Encode a sorted list of unsigned 32-bit values as a Roaring bitmap in the
+ * portable serialization format used by Iceberg `deletion-vector-v1` blobs.
+ *
+ * Always emits cookie 12346 (no run containers); each high-16-bit bucket is
+ * stored as an array container when its cardinality is at most 4096, and as
+ * a bitmap container otherwise.
+ *
+ * @param {number[]} values - Sorted, deduplicated 32-bit unsigned integers.
+ * @returns {Uint8Array}
+ */
+export function writeRoaringBitmap32(values) {
+  /** @type {Map<number, number[]>} */
+  const containers = new Map()
+  for (const value of values) {
+    if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) {
+      throw new Error(`roaring value out of range: ${value}`)
+    }
+    const key = Math.floor(value / 65536)
+    const lo = value % 65536
+    let bucket = containers.get(key)
+    if (!bucket) {
+      bucket = []
+      containers.set(key, bucket)
+    }
+    const last = bucket.length ? bucket[bucket.length - 1] : -1
+    if (lo < last) throw new Error(`roaring values must be sorted: ${value}`)
+    if (lo > last) bucket.push(lo)
+  }
+
+  const keys = [...containers.keys()].sort((a, b) => a - b)
+  const bodies = keys.map(key => {
+    const items = /** @type {number[]} */ (containers.get(key))
+    if (items.length <= 4096) {
+      const buf = new Uint8Array(items.length * 2)
+      const view = new DataView(buf.buffer)
+      for (let i = 0; i < items.length; i++) view.setUint16(i * 2, items[i], true)
+      return { key, cardinality: items.length, bytes: buf }
+    }
+    const buf = new Uint8Array(8192)
+    for (const v of items) buf[v >>> 3] |= 1 << (v & 7)
+    return { key, cardinality: items.length, bytes: buf }
+  })
+
+  const size = bodies.length
+  const headerSize = 8 + 4 * size + 4 * size
+  const totalSize = headerSize + bodies.reduce((sum, b) => sum + b.bytes.byteLength, 0)
+  const out = new Uint8Array(totalSize)
+  const view = new DataView(out.buffer)
+  let offset = 0
+  view.setUint32(offset, 12346, true)
+  offset += 4
+  view.setUint32(offset, size, true)
+  offset += 4
+  for (const body of bodies) {
+    view.setUint16(offset, body.key, true)
+    view.setUint16(offset + 2, body.cardinality - 1, true)
+    offset += 4
+  }
+  let bodyOffset = headerSize
+  for (const body of bodies) {
+    view.setUint32(offset, bodyOffset, true)
+    offset += 4
+    bodyOffset += body.bytes.byteLength
+  }
+  for (const body of bodies) {
+    out.set(body.bytes, offset)
+    offset += body.bytes.byteLength
+  }
+  return out
+}
+
+/**
  * @param {bigint} value
  * @returns {number}
  */

@@ -71,3 +71,75 @@ function toSafeNumber(value) {
   if (!Number.isSafeInteger(out)) throw new Error(`puffin offset exceeds safe integer range: ${value}`)
   return out
 }
+
+/**
+ * @typedef {object} PuffinBlobInput
+ * @property {string} type
+ * @property {number[]} [fields]
+ * @property {number|bigint} [snapshotId]
+ * @property {number|bigint} [sequenceNumber]
+ * @property {Uint8Array} data
+ * @property {Record<string, string>} [properties]
+ */
+
+/**
+ * Assemble a Puffin file from one or more uncompressed blobs. The footer
+ * payload is JSON (uncompressed, flags=0), matching what `readPuffinMetadata`
+ * parses. Blob `offset`/`length` values are computed from the assembled
+ * layout, so callers do not need to pre-compute them.
+ *
+ * @param {object} options
+ * @param {PuffinBlobInput[]} options.blobs
+ * @param {Record<string, string>} [options.properties]
+ * @returns {Uint8Array}
+ */
+export function writePuffinFile({ blobs, properties }) {
+  if (!Array.isArray(blobs) || !blobs.length) {
+    throw new Error('writePuffinFile requires at least one blob')
+  }
+  let cursor = 4
+  const blobMeta = blobs.map(blob => {
+    if (!blob.type) throw new Error('puffin blob type is required')
+    if (!(blob.data instanceof Uint8Array)) {
+      throw new Error('puffin blob data must be a Uint8Array')
+    }
+    /** @type {Record<string, unknown>} */
+    const meta = {
+      type: blob.type,
+      fields: blob.fields ?? [],
+      'snapshot-id': toSafeNumber(blob.snapshotId ?? -1),
+      'sequence-number': toSafeNumber(blob.sequenceNumber ?? -1),
+      offset: cursor,
+      length: blob.data.byteLength,
+    }
+    if (blob.properties) meta.properties = blob.properties
+    cursor += blob.data.byteLength
+    return meta
+  })
+  /** @type {Record<string, unknown>} */
+  const footer = { blobs: blobMeta }
+  if (properties) footer.properties = properties
+  const footerPayload = new TextEncoder().encode(JSON.stringify(footer))
+
+  const blobsBytes = blobs.reduce((sum, b) => sum + b.data.byteLength, 0)
+  const totalSize = 4 + blobsBytes + 4 + footerPayload.byteLength + 4 + 4 + 4
+  const out = new Uint8Array(totalSize)
+  const view = new DataView(out.buffer)
+  let offset = 0
+  view.setUint32(offset, PUFFIN_MAGIC, false)
+  offset += 4
+  for (const blob of blobs) {
+    out.set(blob.data, offset)
+    offset += blob.data.byteLength
+  }
+  view.setUint32(offset, PUFFIN_MAGIC, false)
+  offset += 4
+  out.set(footerPayload, offset)
+  offset += footerPayload.byteLength
+  view.setInt32(offset, footerPayload.byteLength, true)
+  offset += 4
+  view.setUint32(offset, 0, true)
+  offset += 4
+  view.setUint32(offset, PUFFIN_MAGIC, false)
+  return out
+}
