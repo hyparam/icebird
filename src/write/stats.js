@@ -119,6 +119,7 @@ function compare(a, b, type) {
   case 'uuid':
     return compareBytes(a, b)
   default:
+    if (typeName(type).startsWith('fixed[')) return compareBytes(a, b)
     return a < b ? -1 : a > b ? 1 : 0
   }
 }
@@ -187,6 +188,9 @@ function serializeValue(value, type) {
       ? value * factor
       : BigInt(Math.round(value * Number(factor)))
     return twosComplementMinBigEndian(unscaled)
+  }
+  if (name.startsWith('fixed[')) {
+    return value instanceof Uint8Array ? value : undefined
   }
   switch (name) {
   case 'boolean': {
@@ -328,7 +332,7 @@ function truncateLower(value, type) {
     if (cps.length <= TRUNCATE_LIMIT) return value
     return cps.slice(0, TRUNCATE_LIMIT).join('')
   }
-  if (name === 'binary' && value instanceof Uint8Array) {
+  if ((name === 'binary' || name.startsWith('fixed[')) && value instanceof Uint8Array) {
     if (value.length <= TRUNCATE_LIMIT) return value
     return value.slice(0, TRUNCATE_LIMIT)
   }
@@ -363,7 +367,7 @@ function truncateUpper(value, type) {
     }
     return undefined
   }
-  if (name === 'binary' && value instanceof Uint8Array) {
+  if ((name === 'binary' || name.startsWith('fixed[')) && value instanceof Uint8Array) {
     if (value.length <= TRUNCATE_LIMIT) return value
     const prefix = value.slice(0, TRUNCATE_LIMIT)
     for (let i = prefix.length - 1; i >= 0; i--) {

@@ -49,10 +49,10 @@ describe('writeParquet', () => {
     const bad = {
       type: 'struct',
       'schema-id': 0,
-      fields: [{ id: 1, name: 'x', required: false, type: /** @type {any} */ ('fixed[8]') }],
+      fields: [{ id: 1, name: 'x', required: false, type: 'time' }],
     }
     expect(() => writeParquet({ writer, schema: bad, records: [] }))
-      .toThrow('unsupported iceberg type: fixed[8]')
+      .toThrow('unsupported iceberg type: time')
   })
 
   it('writes a fixed-len-byte-array DECIMAL with computed type_length', async () => {

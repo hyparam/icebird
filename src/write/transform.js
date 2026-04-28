@@ -160,7 +160,8 @@ function bucketTransform(value, sourceType, n) {
 
 /**
  * Per Iceberg spec: integer-like sources are hashed as 8-byte little-endian
- * longs; strings as UTF-8 bytes; binary/fixed/uuid as raw bytes.
+ * longs; strings as UTF-8 bytes; binary/fixed/uuid as raw bytes; decimals
+ * as the unscaled value's minimum-length two's-complement big-endian bytes.
  *
  * @param {any} value
  * @param {IcebergType} sourceType
@@ -168,6 +169,12 @@ function bucketTransform(value, sourceType, n) {
  */
 function bucketBytes(value, sourceType) {
   const t = typeName(sourceType)
+  if (t.startsWith('decimal(')) {
+    return decimalToUnscaledBytes(value, t)
+  }
+  if (t.startsWith('fixed[') || t === 'binary' || t === 'fixed' || t === 'uuid') {
+    return value instanceof Uint8Array ? value : new Uint8Array(value)
+  }
   switch (t) {
   case 'int':
   case 'long':
@@ -193,13 +200,38 @@ function bucketBytes(value, sourceType) {
   }
   case 'string':
     return new TextEncoder().encode(String(value))
-  case 'binary':
-  case 'fixed':
-  case 'uuid':
-    return value instanceof Uint8Array ? value : new Uint8Array(value)
   default:
     throw new Error(`bucket transform: unsupported source type ${t}`)
   }
+}
+
+/**
+ * Encode a decimal value as the minimum-length two's-complement big-endian
+ * bytes of its unscaled integer representation. Matches the Iceberg
+ * single-value serialization used by both bucket hashing and stats bounds.
+ *
+ * @param {any} value
+ * @param {string} decimalType - e.g. 'decimal(10,2)'
+ * @returns {Uint8Array}
+ */
+function decimalToUnscaledBytes(value, decimalType) {
+  const m = /^decimal\((\d+),\s*(\d+)\)$/.exec(decimalType)
+  if (!m) throw new Error(`bucket transform: invalid decimal type ${decimalType}`)
+  const scale = parseInt(m[2], 10)
+  const factor = 10n ** BigInt(scale)
+  const unscaled = typeof value === 'bigint'
+    ? value * factor
+    : BigInt(Math.round(Number(value) * Number(factor)))
+  const bytes = []
+  let v = unscaled
+  while (true) {
+    const byte = Number(v & 0xffn)
+    bytes.unshift(byte)
+    v >>= 8n
+    const sign = byte & 0x80
+    if (!sign && v === 0n || sign && v === -1n) break
+  }
+  return new Uint8Array(bytes)
 }
 
 /**
@@ -210,6 +242,24 @@ function bucketBytes(value, sourceType) {
  */
 function truncateTransform(value, sourceType, w) {
   const t = typeName(sourceType)
+  if (t.startsWith('decimal(')) {
+    const m = /^decimal\((\d+),\s*(\d+)\)$/.exec(t)
+    if (!m) throw new Error(`truncate transform: invalid decimal type ${t}`)
+    const scale = parseInt(m[2], 10)
+    const factor = 10n ** BigInt(scale)
+    const unscaled = typeof value === 'bigint'
+      ? value * factor
+      : BigInt(Math.round(Number(value) * Number(factor)))
+    const W = BigInt(w)
+    // floor toward negative infinity so truncate(-x, w) ≤ -x
+    const truncated = unscaled - (unscaled % W + W) % W
+    // re-scale; result fits in JS number for typical precisions
+    return Number(truncated) / Number(factor)
+  }
+  if (t.startsWith('fixed[') || t === 'binary' || t === 'fixed') {
+    const b = value instanceof Uint8Array ? value : new Uint8Array(value)
+    return b.slice(0, w)
+  }
   switch (t) {
   case 'int': {
     const v = Number(value)
@@ -230,11 +280,6 @@ function truncateTransform(value, sourceType, w) {
       count++
     }
     return s.slice(0, i)
-  }
-  case 'binary':
-  case 'fixed': {
-    const b = value instanceof Uint8Array ? value : new Uint8Array(value)
-    return b.slice(0, w)
   }
   default:
     throw new Error(`truncate transform: unsupported source type ${t}`)

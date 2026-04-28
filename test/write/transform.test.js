@@ -110,6 +110,35 @@ describe('applyTransform', () => {
     expect(b).toEqual(new Uint8Array([1, 2, 3]))
   })
 
+  it('truncates fixed[N] by leading bytes', () => {
+    const b = applyTransform('truncate[3]', new Uint8Array([1, 2, 3, 4, 5]), 'fixed[5]')
+    expect(b).toEqual(new Uint8Array([1, 2, 3]))
+  })
+
+  it('buckets fixed[N] as raw bytes (matches binary)', () => {
+    const v = new Uint8Array([0, 1, 2, 3])
+    expect(applyTransform('bucket[100]', v, 'fixed[4]'))
+      .toBe(applyTransform('bucket[100]', v, 'binary'))
+  })
+
+  it('truncates decimals toward negative infinity at the unscaled scale', () => {
+    // unscaled 1234, W=10 → 1230 → 12.30
+    expect(applyTransform('truncate[10]', 12.34, 'decimal(9,2)')).toBe(12.30)
+    // unscaled 50, W=50 → 50
+    expect(applyTransform('truncate[50]', 0.50, 'decimal(9,2)')).toBe(0.50)
+    // unscaled -123, W=50 → -150 → -1.50
+    expect(applyTransform('truncate[50]', -1.23, 'decimal(9,2)')).toBe(-1.50)
+    // 0 → 0
+    expect(applyTransform('truncate[10]', 0, 'decimal(9,2)')).toBe(0)
+  })
+
+  it('hashes a decimal as the unscaled value\'s minimum two\'s-complement bytes', () => {
+    // hashBytes(0x04 0xD2) = hash of unscaled 1234 (decimal 12.34, scale 2)
+    const a = applyTransform('bucket[100]', 12.34, 'decimal(9,2)')
+    const b = applyTransform('bucket[100]', new Uint8Array([0x04, 0xD2]), 'binary')
+    expect(a).toBe(b)
+  })
+
   it('extracts year/month/day/hour from a timestamp', () => {
     const ts = new Date('2017-11-16T22:31:08Z')
     expect(applyTransform('year', ts, 'timestamp')).toBe(47)

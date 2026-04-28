@@ -94,6 +94,10 @@ function icebergTypeToParquetField(name, field) {
       repetition_type,
     }
   }
+  const fixedLen = parseFixedType(type)
+  if (fixedLen !== undefined) {
+    return { name, type: 'FIXED_LEN_BYTE_ARRAY', type_length: fixedLen, repetition_type }
+  }
   switch (type) {
   case 'unknown':
     if (field.required) throw new Error('unsupported required iceberg type: unknown')
@@ -139,6 +143,18 @@ function parseDecimalType(type) {
   const m = /^decimal\((\d+),\s*(\d+)\)$/.exec(type)
   if (!m) return undefined
   return { precision: parseInt(m[1], 10), scale: parseInt(m[2], 10) }
+}
+
+/**
+ * Parse iceberg `fixed[N]` strings into the byte length.
+ *
+ * @param {string} type
+ * @returns {number | undefined}
+ */
+function parseFixedType(type) {
+  const m = /^fixed\[(\d+)\]$/.exec(type)
+  if (!m) return undefined
+  return parseInt(m[1], 10)
 }
 
 /**

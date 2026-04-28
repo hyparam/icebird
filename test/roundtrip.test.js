@@ -53,6 +53,120 @@ describe('icebergCreate + icebergStageAppend + icebergRead round-trip', () => {
     expect(read).toEqual(records)
   })
 
+  it('round-trips a fixed[N] column', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/fixed'
+    const { resolver } = memResolver()
+
+    /** @type {Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        { id: 2, name: 'sig', required: false, type: /** @type {const} */ ('fixed[4]') },
+      ],
+    }
+
+    const created = await icebergCreate({ tableUrl, resolver, schema })
+    const records = [
+      { id: 1n, sig: new Uint8Array([0xDE, 0xAD, 0xBE, 0xEF]) },
+      { id: 2n, sig: new Uint8Array([0, 0, 0, 0]) },
+      { id: 3n, sig: null },
+    ]
+
+    const staged = await icebergStageAppend({ tableUrl, metadata: created, records, resolver })
+    const committed = await fileCatalogCommit({ tableUrl, metadata: created, staged, resolver })
+
+    const read = await icebergRead({ tableUrl, metadata: committed, resolver })
+    expect(read).toEqual(records)
+  })
+
+  it('partitions a decimal column by bucket and round-trips', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/decimal-bucket'
+    const { resolver } = memResolver()
+
+    /** @type {Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        { id: 2, name: 'price', required: true, type: 'decimal(9,2)' },
+      ],
+    }
+    const created = await icebergCreate({ tableUrl, resolver, schema })
+    /** @type {TableMetadata} */
+    const partitioned = {
+      ...created,
+      'partition-specs': [{
+        'spec-id': 0,
+        fields: [{
+          'source-id': 2, 'field-id': 1000, name: 'price_bucket',
+          transform: /** @type {const} */ ('bucket[4]'),
+        }],
+      }],
+      'last-partition-id': 1000,
+    }
+
+    const records = [
+      { id: 1n, price: 9.99 },
+      { id: 2n, price: 12.34 },
+      { id: 3n, price: -1.23 },
+      { id: 4n, price: 0.5 },
+    ]
+    const staged = await icebergStageAppend({ tableUrl, metadata: partitioned, records, resolver })
+    expect(staged.snapshot.summary['added-records']).toBe('4')
+
+    const committed = await fileCatalogCommit({ tableUrl, metadata: partitioned, staged, resolver })
+    const read = await icebergRead({ tableUrl, metadata: committed, resolver })
+    expect([...read].sort((a, b) => Number(a.id - b.id))).toEqual(records)
+  })
+
+  it('partitions a decimal column by truncate[W] and round-trips', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/decimal-truncate'
+    const { resolver } = memResolver()
+
+    /** @type {Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        { id: 2, name: 'price', required: true, type: 'decimal(9,2)' },
+      ],
+    }
+    const created = await icebergCreate({ tableUrl, resolver, schema })
+    /** @type {TableMetadata} */
+    const partitioned = {
+      ...created,
+      'partition-specs': [{
+        'spec-id': 0,
+        fields: [{
+          'source-id': 2, 'field-id': 1000, name: 'price_trunc',
+          transform: /** @type {const} */ ('truncate[100]'), // groups by whole-dollar buckets
+        }],
+      }],
+      'last-partition-id': 1000,
+    }
+
+    const records = [
+      { id: 1n, price: 12.34 }, // → 12.00
+      { id: 2n, price: 12.99 }, // → 12.00 (same bucket)
+      { id: 3n, price: 13.00 }, // → 13.00 (new bucket)
+      { id: 4n, price: -0.5 }, // → -1.00
+    ]
+    const staged = await icebergStageAppend({ tableUrl, metadata: partitioned, records, resolver })
+    // 3 groups: 12.00, 13.00, -1.00
+    expect(staged.writtenFiles.filter(p => p.endsWith('.parquet'))).toHaveLength(3)
+
+    const committed = await fileCatalogCommit({ tableUrl, metadata: partitioned, staged, resolver })
+    const read = await icebergRead({ tableUrl, metadata: committed, resolver })
+    expect([...read].sort((a, b) => Number(a.id - b.id))).toEqual(records)
+  })
+
   it('round-trips decimal columns at multiple precisions', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
     const tableUrl = 'http://test/decimal'

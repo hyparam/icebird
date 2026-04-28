@@ -112,6 +112,38 @@ describe('Avro round-trip', () => {
     expect(round[0].ts.getTime()).toBe(ts.getTime())
   })
 
+  it('logical decimal', () => {
+    /** @type {AvroType} */
+    const schema = {
+      type: 'record',
+      name: 'Money',
+      fields: [
+        {
+          name: 'price',
+          type: { type: 'bytes', logicalType: 'decimal', precision: 9, scale: 2 },
+        },
+      ],
+    }
+
+    // Multi-byte unscaled values exercise the zigzag length prefix; a single
+    // wrong-encoding byte made the decoder run off the end with negative length.
+    const recs = [
+      { price: 0 },
+      { price: 12.34 },
+      { price: -1.23 },
+      { price: 99999.99 },
+    ]
+
+    const writer = new ByteWriter()
+    avroWrite({ writer, schema, records: recs })
+
+    const reader = { view: writer.view, offset: 0 }
+    const { metadata, syncMarker } = avroMetadata(reader)
+    const got = avroRead({ reader, metadata, syncMarker })
+
+    expect(got).toEqual(recs)
+  })
+
   it('array + map round-trip', () => {
     /** @type {AvroType} */
     const schema = {

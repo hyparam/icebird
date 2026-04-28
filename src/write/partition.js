@@ -140,6 +140,20 @@ function partitionKeyPart(value) {
  */
 function icebergTypeToAvro(type) {
   const name = typeof type === 'string' ? type : type.type
+  const decimal = /^decimal\((\d+),\s*(\d+)\)$/.exec(name)
+  if (decimal) {
+    return {
+      type: 'bytes',
+      logicalType: 'decimal',
+      precision: parseInt(decimal[1], 10),
+      scale: parseInt(decimal[2], 10),
+    }
+  }
+  // Iceberg's spec uses Avro `fixed` for fixed[N] partition columns, but the
+  // icebird Avro writer doesn't implement the `fixed` complex type. `bytes`
+  // is wire-compatible (length-prefixed byte sequence) and round-trips
+  // through every Avro reader we care about.
+  if (/^fixed\[\d+\]$/.test(name)) return 'bytes'
   switch (name) {
   case 'boolean': return 'boolean'
   case 'int': return 'int'

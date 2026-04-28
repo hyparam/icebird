@@ -75,6 +75,9 @@ function writeType(writer, schema, value) {
       if (tag === 'float' || tag === 'double') return typeof value === 'number'
       if (tag === 'string') return typeof value === 'string'
       if (tag === 'bytes') return value instanceof Uint8Array
+      // Avro `decimal` is `bytes` + logicalType=decimal; the decimal write path
+      // accepts a JS number or bigint and serializes the unscaled bytes itself.
+      if (tag === 'decimal') return typeof value === 'number' || typeof value === 'bigint'
       if (tag === 'record') return typeof value === 'object' && value !== null
       if (tag === 'array') return Array.isArray(value)
       return false
@@ -151,7 +154,9 @@ function writeType(writer, schema, value) {
         throw new Error('decimal value must be bigint or number')
       }
       const b = bigIntToBytes(u)
-      writer.appendVarInt(b.length)
+      // Avro `bytes` length prefix is a zigzag long; appendVarInt would
+      // diverge from readZigZag for any length ≥ 1.
+      appendZigZag(writer, b.length)
       writer.appendBytes(b)
     } else {
       throw new Error(`unknown logical type ${schema.logicalType}`)
