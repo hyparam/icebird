@@ -263,6 +263,69 @@ export function icebergStageSetRef({ metadata, ref, snapshotId, type = 'branch',
 }
 
 /**
+ * Stage a `remove-snapshots` update to expire one or more snapshots from the
+ * table. Pure — produces a `StagedUpdate` to pass into a commit function.
+ * Validates that every id exists, that none are referenced by a branch or
+ * tag, and that the legacy `current-snapshot-id` is not in the removal list.
+ *
+ * Data files belonging to expired snapshots are not deleted from storage
+ * here — that is the responsibility of a separate maintenance pass that can
+ * compute reachability across the surviving snapshots.
+ *
+ * @param {object} options
+ * @param {TableMetadata} options.metadata - Current table metadata.
+ * @param {number[]} options.snapshotIds - Snapshot ids to expire.
+ * @returns {StagedUpdate}
+ */
+export function icebergStageExpireSnapshots({ metadata, snapshotIds }) {
+  if (!Array.isArray(snapshotIds) || snapshotIds.length === 0) {
+    throw new Error('snapshotIds must be a non-empty array')
+  }
+  const removeIds = new Set(snapshotIds)
+  const snapshots = metadata.snapshots ?? []
+  for (const id of removeIds) {
+    if (!snapshots.some(s => s['snapshot-id'] === id)) {
+      throw new Error(`snapshot ${id} not found in metadata.snapshots`)
+    }
+  }
+
+  const refs = metadata.refs ?? {}
+  for (const [name, ref] of Object.entries(refs)) {
+    if (removeIds.has(ref['snapshot-id'])) {
+      throw new Error(`snapshot ${ref['snapshot-id']} is referenced by ${ref.type} ${name}`)
+    }
+  }
+  // Legacy tables may carry current-snapshot-id without a populated refs.main.
+  const currentId = metadata['current-snapshot-id']
+  if (currentId !== undefined && currentId !== null && removeIds.has(currentId) && !refs.main) {
+    throw new Error(`snapshot ${currentId} is the current snapshot`)
+  }
+
+  /** @type {TableRequirement[]} */
+  const requirements = [
+    { type: 'assert-table-uuid', uuid: metadata['table-uuid'] },
+    { type: 'assert-ref-snapshot-id', ref: 'main', 'snapshot-id': refs.main?.['snapshot-id'] ?? currentId ?? null },
+  ]
+
+  /** @type {TableUpdate} */
+  const update = { action: 'remove-snapshots', 'snapshot-ids': [...removeIds] }
+
+  // The snapshot field on StagedUpdate is non-optional; surface the current
+  // snapshot so callers reading `staged.snapshot` after an expire still see
+  // the live tip. Synthesize a minimal placeholder for tables with no
+  // snapshots left after the operation.
+  const tip = currentSnapshot(metadata) ?? snapshots[0]
+  if (!tip) throw new Error('cannot expire snapshots from a table with no snapshots')
+
+  return {
+    snapshot: tip,
+    requirements,
+    updates: [update],
+    writtenFiles: [],
+  }
+}
+
+/**
  * @param {TableMetadata} metadata
  * @returns {Snapshot|undefined}
  */

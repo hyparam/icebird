@@ -1,5 +1,5 @@
 export { applyUpdates, checkRequirements, fileCatalogCommit } from './write/commit.js'
-export { icebergStageAppend, icebergStageSetRef } from './write/stage.js'
+export { icebergStageAppend, icebergStageExpireSnapshots, icebergStageSetRef } from './write/stage.js'
 export { icebergCreate } from './create.js'
 export { restCatalogConnect, restCatalogCreateNamespace, restCatalogCreateTable, restCatalogDropNamespace, restCatalogDropTable, restCatalogListNamespaces, restCatalogListTables, restCatalogLoadCredentials, restCatalogLoadTable, restCatalogRegisterTable, restCatalogRenameTable, restCatalogUpdateTable } from './catalog.rest.js'
 export { s3Lister, urlResolver } from './fetch.js'

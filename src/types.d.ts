@@ -252,6 +252,7 @@ export type TableUpdate =
   | { action: 'set-default-sort-order', 'sort-order-id': number }
   | { action: 'add-spec', spec: PartitionSpec }
   | { action: 'set-default-spec', 'spec-id': number }
+  | { action: 'remove-snapshots', 'snapshot-ids': number[] }
 
 /**
  * Output of an `icebergStage*` call: the snapshot just produced, the CAS

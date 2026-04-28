@@ -273,6 +273,14 @@ export function applyUpdates(metadata, updates) {
         throw new Error(`set-default-spec: spec-id ${id} not found`)
       }
       next = { ...next, 'default-spec-id': id }
+    } else if (up.action === 'remove-snapshots') {
+      const removeIds = new Set(up['snapshot-ids'])
+      const snapshots = (next.snapshots ?? []).filter(s => !removeIds.has(s['snapshot-id']))
+      // Per spec: when snapshots are expired, drop snapshot-log entries that
+      // reference them. The remaining log keeps the linear history of the
+      // surviving snapshots.
+      const log = (next['snapshot-log'] ?? []).filter(e => !removeIds.has(e['snapshot-id']))
+      next = { ...next, snapshots, 'snapshot-log': log }
     } else if (up.action === 'set-snapshot-ref') {
       /** @type {SnapshotRef} */
       const ref = { 'snapshot-id': up['snapshot-id'], type: up.type }

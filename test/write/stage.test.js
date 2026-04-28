@@ -4,7 +4,7 @@ import { fetchAvroRecords } from '../../src/fetch.js'
 import { applyUpdates, checkRequirements, fileCatalogCommit } from '../../src/write/commit.js'
 import { icebergCreate } from '../../src/create.js'
 import { icebergRead } from '../../src/read.js'
-import { icebergStageAppend, icebergStageSetRef } from '../../src/write/stage.js'
+import { icebergStageAppend, icebergStageExpireSnapshots, icebergStageSetRef } from '../../src/write/stage.js'
 
 /**
  * @import {Resolver, Schema, TableMetadata} from '../../src/types.js'
@@ -1280,5 +1280,101 @@ describe('icebergStageSetRef', () => {
     const { metadata, snap1 } = await twoSnapshotTable()
     expect(() => icebergStageSetRef({ metadata, ref: 'main', snapshotId: snap1, type: 'tag' }))
       .toThrow(/main is a branch, cannot set as tag/)
+  })
+})
+
+describe('icebergStageExpireSnapshots', () => {
+  /**
+   * Build a table with three committed snapshots so expire tests can drop
+   * one or more historical snapshots while leaving the tip intact.
+   * @returns {Promise<{ resolver: Resolver, tableUrl: string, metadata: TableMetadata, snap1: number, snap2: number, snap3: number }>}
+   */
+  async function threeSnapshotTable() {
+    const tableUrl = 'http://test/stage-expire'
+    const { resolver } = memResolver()
+    const created = await icebergCreate({ tableUrl, resolver, schema })
+    const s1 = await icebergStageAppend({
+      tableUrl, metadata: created, resolver,
+      records: [{ id: 1n, name: 'alice' }],
+    })
+    const m1 = await fileCatalogCommit({ tableUrl, metadata: created, staged: s1, resolver })
+    const s2 = await icebergStageAppend({
+      tableUrl, metadata: m1, resolver,
+      records: [{ id: 2n, name: 'bob' }],
+    })
+    const m2 = await fileCatalogCommit({ tableUrl, metadata: m1, staged: s2, resolver })
+    const s3 = await icebergStageAppend({
+      tableUrl, metadata: m2, resolver,
+      records: [{ id: 3n, name: 'carol' }],
+    })
+    const m3 = await fileCatalogCommit({ tableUrl, metadata: m2, staged: s3, resolver })
+    return {
+      resolver, tableUrl, metadata: m3,
+      snap1: s1.snapshot['snapshot-id'],
+      snap2: s2.snapshot['snapshot-id'],
+      snap3: s3.snapshot['snapshot-id'],
+    }
+  }
+
+  it('drops the named snapshots and prunes snapshot-log on commit', async () => {
+    const { resolver, tableUrl, metadata, snap1, snap2, snap3 } = await threeSnapshotTable()
+    expect(metadata.snapshots?.map(s => s['snapshot-id'])).toEqual([snap1, snap2, snap3])
+
+    const staged = icebergStageExpireSnapshots({ metadata, snapshotIds: [snap1, snap2] })
+
+    expect(staged.writtenFiles).toEqual([])
+    expect(staged.snapshot['snapshot-id']).toBe(snap3)
+    expect(staged.requirements).toEqual([
+      { type: 'assert-table-uuid', uuid: metadata['table-uuid'] },
+      { type: 'assert-ref-snapshot-id', ref: 'main', 'snapshot-id': snap3 },
+    ])
+    expect(staged.updates).toEqual([
+      { action: 'remove-snapshots', 'snapshot-ids': [snap1, snap2] },
+    ])
+
+    const after = await fileCatalogCommit({ tableUrl, metadata, staged, resolver })
+    expect(after.snapshots?.map(s => s['snapshot-id'])).toEqual([snap3])
+    expect(after['snapshot-log']?.map(e => e['snapshot-id'])).toEqual([snap3])
+    expect(after['current-snapshot-id']).toBe(snap3)
+
+    // Expiring history snapshots does not remove their data files — the tip
+    // snapshot's manifest list still carries them forward, so a read of the
+    // current snapshot returns the full table.
+    const read = await icebergRead({ tableUrl, metadata: after, resolver })
+    expect(read).toEqual([
+      { id: 3n, name: 'carol' },
+      { id: 2n, name: 'bob' },
+      { id: 1n, name: 'alice' },
+    ])
+  })
+
+  it('rejects expiring a snapshot referenced by a tag', async () => {
+    const { metadata, snap1 } = await threeSnapshotTable()
+    const tagged = applyUpdates(metadata, [{
+      action: 'set-snapshot-ref',
+      'ref-name': 'v1.0',
+      type: 'tag',
+      'snapshot-id': snap1,
+    }])
+    expect(() => icebergStageExpireSnapshots({ metadata: tagged, snapshotIds: [snap1] }))
+      .toThrow(/referenced by tag v1.0/)
+  })
+
+  it('rejects expiring the current snapshot', async () => {
+    const { metadata, snap3 } = await threeSnapshotTable()
+    expect(() => icebergStageExpireSnapshots({ metadata, snapshotIds: [snap3] }))
+      .toThrow(/referenced by branch main/)
+  })
+
+  it('rejects unknown snapshot ids', async () => {
+    const { metadata } = await threeSnapshotTable()
+    expect(() => icebergStageExpireSnapshots({ metadata, snapshotIds: [999] }))
+      .toThrow(/snapshot 999 not found/)
+  })
+
+  it('rejects an empty snapshotIds array', async () => {
+    const { metadata } = await threeSnapshotTable()
+    expect(() => icebergStageExpireSnapshots({ metadata, snapshotIds: [] }))
+      .toThrow(/non-empty array/)
   })
 })
