@@ -147,6 +147,7 @@ function encodeMap(m) {
  * @param {bigint} options.snapshotId
  * @param {DataFile[]} options.dataFiles
  * @param {2|3} [options.formatVersion]
+ * @returns {void | Promise<void>} resolves when the writer's `finish()` lands
  */
 export function writeDataManifest({ writer, schema, partitionSpec, snapshotId, dataFiles, formatVersion = 2 }) {
   const records = dataFiles.map(dataFile => {
@@ -156,7 +157,7 @@ export function writeDataManifest({ writer, schema, partitionSpec, snapshotId, d
     return manifestEntryRecord(dataFile, schema, partitionSpec, snapshotId, formatVersion, 0)
   })
 
-  avroWrite({
+  return avroWrite({
     writer,
     schema: manifestEntrySchema(schema, partitionSpec, formatVersion, 0),
     records,
@@ -183,6 +184,7 @@ export function writeDataManifest({ writer, schema, partitionSpec, snapshotId, d
  * @param {bigint} options.snapshotId
  * @param {DataFile[]} options.deleteFiles
  * @param {2|3} [options.formatVersion]
+ * @returns {void | Promise<void>} resolves when the writer's `finish()` lands
  */
 export function writeDeleteManifest({ writer, schema, partitionSpec, snapshotId, deleteFiles, formatVersion = 2 }) {
   const records = deleteFiles.map(deleteFile => {
@@ -195,7 +197,7 @@ export function writeDeleteManifest({ writer, schema, partitionSpec, snapshotId,
     return manifestEntryRecord(deleteFile, schema, partitionSpec, snapshotId, formatVersion, 1)
   })
 
-  avroWrite({
+  return avroWrite({
     writer,
     schema: manifestEntrySchema(schema, partitionSpec, formatVersion, 1),
     records,

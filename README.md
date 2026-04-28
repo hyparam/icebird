@@ -115,8 +115,9 @@ import {
   icebergSetRef,
 } from 'icebird'
 
-// supply a Resolver with `writer` (and `deleter` for drop) — the built-in
-// `urlResolver` is read-only today; bring your own writer for now.
+// `urlResolver()` ships with a `writer` (HTTP PUT) and `deleter` (HTTP DELETE);
+// pass a custom `requestInit` to it for auth headers. For non-HTTP backends,
+// supply your own `Resolver` with `writer` and (for drop) `deleter`.
 const catalog = fileCatalog({ resolver })
 const tableUrl = 's3://my-bucket/warehouse/orders'
 

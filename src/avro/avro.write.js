@@ -7,6 +7,7 @@ import { ByteWriter } from 'hyparquet-writer'
  * @param {Record<string, any>[]} options.records
  * @param {number} [options.blockSize]
  * @param {Record<string, string>} [options.metadata] - extra file-level metadata
+ * @returns {void | Promise<void>} resolves when the writer's `finish()` lands
  */
 export function avroWrite({ writer, schema, records, blockSize = 512, metadata }) {
   writer.appendUint32(0x016a624f) // Obj\x01
@@ -45,7 +46,7 @@ export function avroWrite({ writer, schema, records, blockSize = 512, metadata }
     writer.appendBytes(sync)
   }
 
-  writer.finish()
+  return writer.finish()
 }
 
 /**

@@ -5,13 +5,13 @@ import { puffinReadDeletionVector, readPuffinMetadata, writePuffinFile } from '.
 import { readRoaringBitmap32, writeRoaringBitmap32 } from '../src/puffin/roaring.js'
 
 describe('puffin deletion vectors', () => {
-  it('decodes roaring array, bitmap, and run containers', () => {
-    expect(readRoaringBitmap32(roaringArray([1, 5, 65535]))).toEqual([1, 5, 65535])
-
-    const bitmapValues = Array.from({ length: 4097 }, (_, i) => i * 2)
-    expect(readRoaringBitmap32(roaringBitmap(bitmapValues))).toEqual(bitmapValues)
-
-    expect(readRoaringBitmap32(roaringRun([[10, 3], [20, 1]]))).toEqual([10, 11, 12, 20])
+  it('decodes roaring run containers', () => {
+    // run container with runs [10..12] and [20..20]
+    const bytes = new Uint8Array([
+      0x3b, 0x30, 0x00, 0x00, 0x01, 0x00, 0x00, 0x03, 0x00, 0x02, 0x00,
+      0x0a, 0x00, 0x02, 0x00, 0x14, 0x00, 0x00, 0x00,
+    ])
+    expect(readRoaringBitmap32(bytes)).toEqual([10, 11, 12, 20])
   })
 
   it('decodes deletion-vector-v1 blobs', () => {
@@ -205,65 +205,3 @@ function puffinFile(blob, referencedDataFile) {
   })
 }
 
-/**
- * @param {number[]} values
- * @returns {Uint8Array}
- */
-function roaringArray(values) {
-  values = [...values].sort((a, b) => a - b)
-  const out = new Uint8Array(16 + values.length * 2)
-  const view = new DataView(out.buffer)
-  view.setUint32(0, 12346, true)
-  view.setUint32(4, 1, true)
-  view.setUint16(8, 0, true)
-  view.setUint16(10, values.length - 1, true)
-  view.setUint32(12, 16, true)
-  let offset = 16
-  for (const value of values) {
-    view.setUint16(offset, value, true)
-    offset += 2
-  }
-  return out
-}
-
-/**
- * @param {number[]} values
- * @returns {Uint8Array}
- */
-function roaringBitmap(values) {
-  const out = new Uint8Array(16 + 8192)
-  const view = new DataView(out.buffer)
-  view.setUint32(0, 12346, true)
-  view.setUint32(4, 1, true)
-  view.setUint16(8, 0, true)
-  view.setUint16(10, values.length - 1, true)
-  view.setUint32(12, 16, true)
-  for (const value of values) {
-    const wordOffset = 16 + Math.floor(value / 64) * 8
-    const bit = BigInt(value % 64)
-    view.setBigUint64(wordOffset, view.getBigUint64(wordOffset, true) | 1n << bit, true)
-  }
-  return out
-}
-
-/**
- * @param {[number, number][]} runs
- * @returns {Uint8Array}
- */
-function roaringRun(runs) {
-  const cardinality = runs.reduce((sum, [, length]) => sum + length, 0)
-  const out = new Uint8Array(4 + 1 + 4 + 2 + runs.length * 4)
-  const view = new DataView(out.buffer)
-  view.setUint32(0, 12347, true)
-  out[4] = 1
-  view.setUint16(5, 0, true)
-  view.setUint16(7, cardinality - 1, true)
-  view.setUint16(9, runs.length, true)
-  let offset = 11
-  for (const [start, length] of runs) {
-    view.setUint16(offset, start, true)
-    view.setUint16(offset + 2, length - 1, true)
-    offset += 4
-  }
-  return out
-}

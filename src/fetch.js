@@ -1,5 +1,6 @@
 import { asyncBufferFromUrl, cachedAsyncBuffer, parquetMetadataAsync, parquetReadObjects } from 'hyparquet'
 import { compressors } from 'hyparquet-compressors'
+import { ByteWriter } from 'hyparquet-writer'
 import { avroRead } from './avro/avro.read.js'
 import { avroMetadata } from './avro/avro.metadata.js'
 import { puffinReadDeletionVector } from './puffin/puffin.js'
@@ -41,6 +42,21 @@ export function urlResolver({ requestInit } = {}) {
   return {
     reader(url, byteLength) {
       return asyncBufferFromUrl({ url: translateS3Url(url), byteLength, requestInit })
+    },
+    writer(url) {
+      const w = new ByteWriter()
+      w.finish = async function() {
+        const target = translateS3Url(url)
+        // Snapshot the bytes before the request — fetch may read the body
+        // lazily and the underlying ByteWriter buffer must not mutate
+        // mid-upload (e.g. if the writer is reused after finish).
+        const body = w.getBytes().slice()
+        const res = await fetch(target, { ...requestInit, method: 'PUT', body })
+        if (!res.ok) {
+          throw new Error(`PUT ${url}: ${res.status} ${res.statusText}`)
+        }
+      }
+      return w
     },
     async deleter(url) {
       const res = await fetch(translateS3Url(url), { ...requestInit, method: 'DELETE' })

@@ -66,6 +66,7 @@ function manifestFileSchema(formatVersion) {
  * @param {bigint} options.sequenceNumber
  * @param {Manifest[]} options.manifests
  * @param {2|3} [options.formatVersion]
+ * @returns {void | Promise<void>} resolves when the writer's `finish()` lands
  */
 export function writeManifestList({ writer, snapshotId, sequenceNumber, manifests, formatVersion = 2 }) {
   const records = manifests.map(m => {
@@ -92,7 +93,7 @@ export function writeManifestList({ writer, snapshotId, sequenceNumber, manifest
     return record
   })
 
-  avroWrite({
+  return avroWrite({
     writer,
     schema: manifestFileSchema(formatVersion),
     records,

@@ -20,6 +20,7 @@ import { sanitize } from '../utils.js'
  * @param {Schema} options.schema
  * @param {Record<string, any>[]} options.records
  * @param {CompressionCodec} [options.codec]
+ * @returns {void | Promise<void>} resolves when the writer's `finish()` lands
  */
 export function writeParquet({ writer, schema, records, codec }) {
   /** @type {ColumnSource[]} */
@@ -38,7 +39,7 @@ export function writeParquet({ writer, schema, records, codec }) {
     parquetFields.push(parquetField)
   }
 
-  parquetWrite({
+  return parquetWrite({
     writer,
     columnData,
     schema: [{ name: 'root', num_children: parquetFields.length }, ...parquetFields],

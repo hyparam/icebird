@@ -32,15 +32,15 @@ const POSITION_DELETE_SCHEMA = {
  * @param {Writer} options.writer
  * @param {{file_path: string, pos: bigint|number}[]} options.deletes
  * @param {CompressionCodec} [options.codec]
- * @returns {{
+ * @returns {Promise<{
  *   record_count: bigint,
  *   value_counts: Record<number, bigint>,
  *   null_value_counts: Record<number, bigint>,
  *   lower_bounds: Record<number, Uint8Array>,
  *   upper_bounds: Record<number, Uint8Array>,
- * }}
+ * }>}
  */
-export function writePositionDeleteFile({ writer, deletes, codec }) {
+export async function writePositionDeleteFile({ writer, deletes, codec }) {
   if (!deletes?.length) {
     throw new Error('writePositionDeleteFile requires at least one delete')
   }
@@ -63,7 +63,7 @@ export function writePositionDeleteFile({ writer, deletes, codec }) {
     return 0
   })
 
-  writeParquet({ writer, schema: POSITION_DELETE_SCHEMA, records, codec })
+  await writeParquet({ writer, schema: POSITION_DELETE_SCHEMA, records, codec })
 
   const { value_counts, null_value_counts, lower_bounds, upper_bounds } =
     computeColumnStats(records, POSITION_DELETE_SCHEMA)

@@ -52,12 +52,12 @@ export async function fileCatalogCommit({ tableUrl, metadata, staged, resolver }
 
   const metaWriter = resolver.writer(translateS3Url(newMetadataPath))
   metaWriter.appendBytes(new TextEncoder().encode(JSON.stringify(newMetadata, null, 2)))
-  metaWriter.finish()
+  await metaWriter.finish()
 
   // version-hint last so a partial write doesn't surface a torn commit
   const hintWriter = resolver.writer(translateS3Url(`${tableUrl}/metadata/version-hint.text`))
   hintWriter.appendBytes(new TextEncoder().encode(String(newVersion)))
-  hintWriter.finish()
+  await hintWriter.finish()
 
   // Best-effort cleanup of metadata files dropped from the log when the
   // table opts in via `write.metadata.delete-after-commit.enabled`. Failures

@@ -72,14 +72,14 @@ export async function icebergCreate({
   const metadataWriter = resolver.writer(metadataUrl)
   const metadataBytes = new TextEncoder().encode(JSON.stringify(metadata, null, 2))
   metadataWriter.appendBytes(metadataBytes)
-  metadataWriter.finish()
+  await metadataWriter.finish()
 
-  // write version-hint.text
+  // write version-hint.text last so a partial write doesn't surface a torn create
   const versionHintUrl = translateS3Url(`${tableUrl}/metadata/version-hint.text`)
   const versionHintWriter = resolver.writer(versionHintUrl)
   const versionHintBytes = new TextEncoder().encode(String(metadataVersion))
   versionHintWriter.appendBytes(versionHintBytes)
-  versionHintWriter.finish()
+  await versionHintWriter.finish()
 
   return metadata
 }

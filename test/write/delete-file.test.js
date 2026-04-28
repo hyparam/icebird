@@ -14,7 +14,7 @@ describe('writePositionDeleteFile', () => {
 
   it('round-trips deletes sorted by (file_path, pos)', async () => {
     const writer = new ByteWriter()
-    writePositionDeleteFile({ writer, deletes })
+    await writePositionDeleteFile({ writer, deletes })
     const rows = await parquetReadObjects({ file: writer.getBuffer(), compressors })
     expect(rows).toEqual([
       { file_path: 'a.parquet', pos: 1n },
@@ -24,17 +24,17 @@ describe('writePositionDeleteFile', () => {
     ])
   })
 
-  it('does not mutate the input array', () => {
+  it('does not mutate the input array', async () => {
     const writer = new ByteWriter()
     const input = deletes.slice()
     const before = input.slice()
-    writePositionDeleteFile({ writer, deletes: input })
+    await writePositionDeleteFile({ writer, deletes: input })
     expect(input).toEqual(before)
   })
 
-  it('embeds iceberg.schema with reserved field ids', () => {
+  it('embeds iceberg.schema with reserved field ids', async () => {
     const writer = new ByteWriter()
-    writePositionDeleteFile({ writer, deletes })
+    await writePositionDeleteFile({ writer, deletes })
     const meta = parquetMetadata(writer.getBuffer())
     const kv = meta.key_value_metadata?.find(k => k.key === 'iceberg.schema')
     expect(kv).toBeDefined()
@@ -45,9 +45,9 @@ describe('writePositionDeleteFile', () => {
     ])
   })
 
-  it('returns DataFile-shaped stats keyed by reserved field id', () => {
+  it('returns DataFile-shaped stats keyed by reserved field id', async () => {
     const writer = new ByteWriter()
-    const stats = writePositionDeleteFile({ writer, deletes })
+    const stats = await writePositionDeleteFile({ writer, deletes })
     expect(stats.record_count).toBe(4n)
     expect(stats.value_counts).toEqual({ 2147483546: 4n, 2147483545: 4n })
     expect(stats.null_value_counts).toEqual({ 2147483546: 0n, 2147483545: 0n })
@@ -63,7 +63,7 @@ describe('writePositionDeleteFile', () => {
 
   it('accepts numeric pos and coerces to bigint', async () => {
     const writer = new ByteWriter()
-    writePositionDeleteFile({
+    await writePositionDeleteFile({
       writer,
       deletes: [{ file_path: 'x.parquet', pos: 3 }],
     })
@@ -71,25 +71,25 @@ describe('writePositionDeleteFile', () => {
     expect(rows).toEqual([{ file_path: 'x.parquet', pos: 3n }])
   })
 
-  it('rejects empty input', () => {
+  it('rejects empty input', async () => {
     const writer = new ByteWriter()
-    expect(() => writePositionDeleteFile({ writer, deletes: [] }))
-      .toThrow('at least one delete')
+    await expect(writePositionDeleteFile({ writer, deletes: [] }))
+      .rejects.toThrow('at least one delete')
   })
 
-  it('rejects negative pos', () => {
+  it('rejects negative pos', async () => {
     const writer = new ByteWriter()
-    expect(() => writePositionDeleteFile({
+    await expect(writePositionDeleteFile({
       writer,
       deletes: [{ file_path: 'x.parquet', pos: -1n }],
-    })).toThrow('non-negative')
+    })).rejects.toThrow('non-negative')
   })
 
-  it('rejects missing file_path', () => {
+  it('rejects missing file_path', async () => {
     const writer = new ByteWriter()
-    expect(() => writePositionDeleteFile({
+    await expect(writePositionDeleteFile({
       writer,
       deletes: [/** @type {any} */ ({ pos: 0n })],
-    })).toThrow('file_path')
+    })).rejects.toThrow('file_path')
   })
 })

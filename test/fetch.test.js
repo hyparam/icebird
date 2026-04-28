@@ -22,6 +22,15 @@ function requireDeleter(resolver) {
   return resolver.deleter
 }
 
+/**
+ * @param {Resolver} resolver
+ * @returns {NonNullable<Resolver['writer']>}
+ */
+function requireWriter(resolver) {
+  if (!resolver.writer) throw new Error('resolver.writer is required')
+  return resolver.writer
+}
+
 describe('urlResolver.deleter', () => {
   afterEach(() => {
     vi.restoreAllMocks()
@@ -63,5 +72,48 @@ describe('urlResolver.deleter', () => {
       .mockResolvedValue(fakeResponse({ ok: false, status: 403, statusText: 'Forbidden' }))
     await expect(requireDeleter(urlResolver())('https://h/forbidden'))
       .rejects.toThrow(/DELETE .*: 403 Forbidden/)
+  })
+})
+
+describe('urlResolver.writer', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('PUTs the buffered bytes on finish() and translates s3:// urls', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValue(fakeResponse({ ok: true, status: 200, statusText: 'OK' }))
+    const w = requireWriter(urlResolver())('s3://bucket/key/file.json')
+    w.appendBytes(new TextEncoder().encode('hello'))
+    await w.finish()
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('https://bucket.s3.amazonaws.com/key/file.json')
+    expect(init?.method).toBe('PUT')
+    const body = /** @type {Uint8Array} */ (init?.body)
+    expect(new TextDecoder().decode(body)).toBe('hello')
+  })
+
+  it('forwards requestInit and overrides the method', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValue(fakeResponse({ ok: true, status: 200, statusText: 'OK' }))
+    const w = requireWriter(urlResolver({
+      requestInit: { headers: { authorization: 'Bearer t' }, method: 'GET' },
+    }))('https://h/foo')
+    w.appendBytes(new Uint8Array([1, 2, 3]))
+    await w.finish()
+
+    const init = fetchMock.mock.calls[0][1]
+    expect(init?.method).toBe('PUT')
+    expect(init?.headers).toEqual({ authorization: 'Bearer t' })
+  })
+
+  it('throws on non-ok response', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValue(fakeResponse({ ok: false, status: 403, statusText: 'Forbidden' }))
+    const w = requireWriter(urlResolver())('https://h/forbidden')
+    w.appendBytes(new Uint8Array([0]))
+    await expect(w.finish()).rejects.toThrow(/PUT .*: 403 Forbidden/)
   })
 })

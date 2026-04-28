@@ -59,10 +59,10 @@ export async function icebergStageAppend({ tableUrl, metadata, records, resolver
   const groups = partitionSpec.fields.length
     ? groupByPartition(records, schema, partitionSpec)
     : [{ partition: {}, records }]
-  const writtenDataFiles = await Promise.all(groups.map(group => {
+  const writtenDataFiles = await Promise.all(groups.map(async group => {
     const dataPath = `${tableUrl}/data/${uuid4()}.parquet`
     const dataWriter = writerFn(translateS3Url(dataPath))
-    writeParquet({ writer: dataWriter, schema, records: group.records, codec })
+    await writeParquet({ writer: dataWriter, schema, records: group.records, codec })
     const stats = computeColumnStats(group.records, schema)
     return {
       partition: group.partition,
@@ -88,7 +88,7 @@ export async function icebergStageAppend({ tableUrl, metadata, records, resolver
   // 2. Write a single manifest covering every new data file
   const manifestPath = `${tableUrl}/metadata/${manifestUuid}-m0.avro`
   const manifestWriter = writerFn(translateS3Url(manifestPath))
-  writeDataManifest({
+  await writeDataManifest({
     writer: manifestWriter,
     schema,
     partitionSpec,
@@ -208,7 +208,7 @@ export async function icebergStagePositionDelete({ tableUrl, metadata, deletes, 
   const referencedDataFile = uniqueTargets.size === 1 ? deletes[0].file_path : undefined
   const deletePath = `${tableUrl}/data/${uuid4()}-deletes.parquet`
   const deleteWriter = writerFn(translateS3Url(deletePath))
-  const stats = writePositionDeleteFile({ writer: deleteWriter, deletes, codec })
+  const stats = await writePositionDeleteFile({ writer: deleteWriter, deletes, codec })
   /** @type {DataFile} */
   const deleteFile = {
     content: 1,
@@ -228,7 +228,7 @@ export async function icebergStagePositionDelete({ tableUrl, metadata, deletes, 
   // 2. Write a delete manifest covering the new delete file
   const manifestPath = `${tableUrl}/metadata/${manifestUuid}-m0.avro`
   const manifestWriter = writerFn(translateS3Url(manifestPath))
-  writeDeleteManifest({
+  await writeDeleteManifest({
     writer: manifestWriter,
     schema,
     partitionSpec,
@@ -363,9 +363,9 @@ export async function icebergStageDeletionVector({ tableUrl, metadata, deletes, 
   /** @type {string[]} */
   const writtenPuffinPaths = []
   /** @type {DataFile[]} */
-  const deleteFiles = [...byFile.entries()]
+  const deleteFiles = await Promise.all([...byFile.entries()]
     .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
-    .map(([targetPath, positions]) => {
+    .map(async ([targetPath, positions]) => {
       const blob = writeDeletionVector(positions)
       const puffin = writePuffinFile({
         blobs: [{
@@ -383,7 +383,7 @@ export async function icebergStageDeletionVector({ tableUrl, metadata, deletes, 
       const puffinPath = `${tableUrl}/data/${uuid4()}-deletes.puffin`
       const puffinWriter = writerFn(translateS3Url(puffinPath))
       puffinWriter.appendBytes(puffin)
-      puffinWriter.finish()
+      await puffinWriter.finish()
       writtenPuffinPaths.push(puffinPath)
       return {
         content: /** @type {1} */ (1),
@@ -397,12 +397,12 @@ export async function icebergStageDeletionVector({ tableUrl, metadata, deletes, 
         content_offset: 4n,
         content_size_in_bytes: BigInt(blob.byteLength),
       }
-    })
+    }))
 
   // 3. Write a delete manifest covering every new puffin DV file
   const manifestPath = `${tableUrl}/metadata/${manifestUuid}-m0.avro`
   const manifestWriter = writerFn(translateS3Url(manifestPath))
-  writeDeleteManifest({
+  await writeDeleteManifest({
     writer: manifestWriter,
     schema,
     partitionSpec,
@@ -695,7 +695,7 @@ async function buildSnapshotUpdate({
   const addedRows = rowLineage ? assignFirstRowIds(allManifests, firstRowId) : 0n
   const manifestListPath = `${tableUrl}/metadata/snap-${snapshotId}-1-${manifestUuid}.avro`
   const listWriter = writerFn(translateS3Url(manifestListPath))
-  writeManifestList({ writer: listWriter, snapshotId, sequenceNumber, manifests: allManifests, formatVersion })
+  await writeManifestList({ writer: listWriter, snapshotId, sequenceNumber, manifests: allManifests, formatVersion })
 
   /** @type {Snapshot} */
   const snapshot = {
