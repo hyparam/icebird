@@ -114,8 +114,8 @@ describe('icebergStagePositionDelete', () => {
     expect(read).toEqual([])
   })
 
-  it('rejects partitioned tables', async () => {
-    const tableUrl = 'http://test/del-partitioned'
+  it('rejects deletes targeting an unknown data file', async () => {
+    const tableUrl = 'http://test/del-unknown'
     const { resolver } = memResolver()
     /** @type {Schema} */
     const partitionedSchema = {
@@ -126,18 +126,95 @@ describe('icebergStagePositionDelete', () => {
         { id: 2, name: 'country', required: true, type: 'string' },
       ],
     }
-    const created = await icebergCreate({ tableUrl, resolver, schema: partitionedSchema })
-    const partitioned = {
-      ...created,
-      'partition-specs': [{
+    const created = await icebergCreate({
+      tableUrl, resolver, schema: partitionedSchema,
+      partitionSpec: {
         'spec-id': 0,
         fields: [{ 'source-id': 2, 'field-id': 1000, name: 'country', transform: 'identity' }],
-      }],
-    }
+      },
+    })
+    const appended = await icebergStageAppend({
+      tableUrl, metadata: created,
+      records: [{ id: 1n, country: 'us' }],
+      resolver,
+    })
+    const afterAppend = await fileCatalogCommit({ tableUrl, metadata: created, staged: appended, resolver })
     await expect(icebergStagePositionDelete({
-      tableUrl, metadata: partitioned, resolver,
-      deletes: [{ file_path: 'x', pos: 0n }],
-    })).rejects.toThrow('unpartitioned tables only')
+      tableUrl, metadata: afterAppend, resolver,
+      deletes: [{ file_path: 'no-such-file.parquet', pos: 0n }],
+    })).rejects.toThrow('target data file not found in current snapshot')
+  })
+
+  it('writes per-partition delete files for partitioned tables', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/del-partitioned-rt'
+    const { resolver } = memResolver()
+    /** @type {Schema} */
+    const partitionedSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        { id: 2, name: 'country', required: true, type: 'string' },
+      ],
+    }
+    const created = await icebergCreate({
+      tableUrl, resolver, schema: partitionedSchema,
+      partitionSpec: {
+        'spec-id': 0,
+        fields: [{ 'source-id': 2, 'field-id': 1000, name: 'country', transform: 'identity' }],
+      },
+    })
+    const records = [
+      { id: 1n, country: 'us' },
+      { id: 2n, country: 'us' },
+      { id: 3n, country: 'ca' },
+      { id: 4n, country: 'ca' },
+    ]
+    const appended = await icebergStageAppend({ tableUrl, metadata: created, records, resolver })
+    const afterAppend = await fileCatalogCommit({ tableUrl, metadata: created, staged: appended, resolver })
+
+    // appended.writtenFiles[0..N-1] are the per-partition data files; identify
+    // each by its partition value via the manifest entry.
+    const dataPaths = appended.writtenFiles.filter(f => f.endsWith('.parquet'))
+    expect(dataPaths).toHaveLength(2)
+
+    // Delete row 0 from each partition's file. The stager must look the
+    // partition up from the existing manifest and write one delete file per
+    // partition group.
+    const staged = await icebergStagePositionDelete({
+      tableUrl,
+      metadata: afterAppend,
+      deletes: dataPaths.map(p => ({ file_path: p, pos: 0n })),
+      resolver,
+    })
+    expect(staged.snapshot.summary?.['added-delete-files']).toBe('2')
+    expect(staged.snapshot.summary?.['added-position-deletes']).toBe('2')
+    expect(staged.snapshot.summary?.['changed-partition-count']).toBe('2')
+
+    // Two delete files, one per partition, each referencing one data file.
+    const deletePaths = staged.writtenFiles.filter(f => f.endsWith('-deletes.parquet'))
+    expect(deletePaths).toHaveLength(2)
+
+    // Read the new delete manifest and verify partition tuples are populated.
+    const manifestPaths = staged.writtenFiles.filter(f => f.endsWith('.avro') && !f.includes('snap-'))
+    expect(manifestPaths).toHaveLength(1)
+    const entries = await fetchAvroRecords(manifestPaths[0], resolver)
+    expect(entries).toHaveLength(2)
+    const countries = entries.map(e => e.data_file.partition.country).sort()
+    expect(countries).toEqual(['ca', 'us'])
+    for (const entry of entries) {
+      // Each delete file targets exactly one data file, so referenced_data_file is set.
+      expect(entry.data_file.referenced_data_file).toBeTypeOf('string')
+    }
+
+    // After commit, both deleted rows are gone, others remain.
+    const afterDelete = await fileCatalogCommit({ tableUrl, metadata: afterAppend, staged, resolver })
+    const read = await icebergRead({ tableUrl, metadata: afterDelete, resolver })
+    const ids = read.map(r => r.id).sort((/** @type {bigint} */ a, /** @type {bigint} */ b) => Number(a - b))
+    // We deleted pos 0 from each file. With one file per partition, each file
+    // has 2 rows; pos 0 within each is removed, leaving one row per partition.
+    expect(ids).toHaveLength(2)
   })
 
   it('rejects empty deletes', async () => {
@@ -312,24 +389,104 @@ describe('icebergStageDeletionVector', () => {
     })).rejects.toThrow('format-version 3')
   })
 
-  it('rejects partitioned tables and empty deletes', async () => {
+  it('rejects empty deletes', async () => {
     const tableUrl = 'http://test/dv-bad'
     const { resolver, metadata } = await v3Table(tableUrl)
     await expect(icebergStageDeletionVector({
       tableUrl, metadata, deletes: [], resolver,
     })).rejects.toThrow('non-empty')
+  })
 
-    const partitioned = {
-      ...metadata,
-      'partition-specs': [{
-        'spec-id': 0,
-        fields: [{ 'source-id': 2, 'field-id': 1000, name: 'name', transform: 'identity' }],
-      }],
+  it('rejects deletes targeting an unknown data file (partitioned)', async () => {
+    const tableUrl = 'http://test/dv-unknown'
+    const { resolver } = memResolver()
+    /** @type {Schema} */
+    const partitionedSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        { id: 2, name: 'country', required: true, type: 'string' },
+      ],
     }
+    const created = await icebergCreate({
+      tableUrl, resolver, schema: partitionedSchema, formatVersion: 3,
+      partitionSpec: {
+        'spec-id': 0,
+        fields: [{ 'source-id': 2, 'field-id': 1000, name: 'country', transform: 'identity' }],
+      },
+    })
+    const appended = await icebergStageAppend({
+      tableUrl, metadata: created,
+      records: [{ id: 1n, country: 'us' }],
+      resolver,
+    })
+    const afterAppend = await fileCatalogCommit({ tableUrl, metadata: created, staged: appended, resolver })
     await expect(icebergStageDeletionVector({
-      tableUrl, metadata: partitioned,
-      deletes: [{ file_path: 'x', pos: 0n }], resolver,
-    })).rejects.toThrow('unpartitioned tables only')
+      tableUrl, metadata: afterAppend,
+      deletes: [{ file_path: 'no-such-file.parquet', pos: 0n }], resolver,
+    })).rejects.toThrow('target data file not found in current snapshot')
+  })
+
+  it('writes per-partition deletion vectors for partitioned tables', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/dv-partitioned-rt'
+    const { resolver } = memResolver()
+    /** @type {Schema} */
+    const partitionedSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        { id: 2, name: 'country', required: true, type: 'string' },
+      ],
+    }
+    const created = await icebergCreate({
+      tableUrl, resolver, schema: partitionedSchema, formatVersion: 3,
+      partitionSpec: {
+        'spec-id': 0,
+        fields: [{ 'source-id': 2, 'field-id': 1000, name: 'country', transform: 'identity' }],
+      },
+    })
+    const records = [
+      { id: 1n, country: 'us' },
+      { id: 2n, country: 'us' },
+      { id: 3n, country: 'ca' },
+      { id: 4n, country: 'ca' },
+    ]
+    const appended = await icebergStageAppend({ tableUrl, metadata: created, records, resolver })
+    const afterAppend = await fileCatalogCommit({ tableUrl, metadata: created, staged: appended, resolver })
+
+    const dataPaths = appended.writtenFiles.filter(f => f.endsWith('.parquet'))
+    expect(dataPaths).toHaveLength(2)
+
+    const staged = await icebergStageDeletionVector({
+      tableUrl,
+      metadata: afterAppend,
+      deletes: dataPaths.map(p => ({ file_path: p, pos: 0n })),
+      resolver,
+    })
+    expect(staged.snapshot.summary?.['added-delete-files']).toBe('2')
+    expect(staged.snapshot.summary?.['added-position-deletes']).toBe('2')
+    expect(staged.snapshot.summary?.['changed-partition-count']).toBe('2')
+
+    const puffinPaths = staged.writtenFiles.filter(f => f.endsWith('.puffin'))
+    expect(puffinPaths).toHaveLength(2)
+
+    const manifestPaths = staged.writtenFiles.filter(f => f.endsWith('.avro') && !f.includes('snap-'))
+    expect(manifestPaths).toHaveLength(1)
+    const entries = await fetchAvroRecords(manifestPaths[0], resolver)
+    expect(entries).toHaveLength(2)
+    const countries = entries.map(e => e.data_file.partition.country).sort()
+    expect(countries).toEqual(['ca', 'us'])
+    for (const entry of entries) {
+      expect(entry.data_file.file_format.toLowerCase()).toBe('puffin')
+      expect(entry.data_file.referenced_data_file).toBeTypeOf('string')
+    }
+
+    const afterDelete = await fileCatalogCommit({ tableUrl, metadata: afterAppend, staged, resolver })
+    const read = await icebergRead({ tableUrl, metadata: afterDelete, resolver })
+    expect(read).toHaveLength(2)
   })
 
   it('preserves v3 next-row-id and emits added-rows=0', async () => {

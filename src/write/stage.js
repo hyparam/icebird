@@ -13,7 +13,7 @@ import { transformResultType } from './transform.js'
 
 /**
  * @import {CompressionCodec} from 'hyparquet'
- * @import {DataFile, FieldSummary, Manifest, PartitionSpec, Resolver, Schema, Snapshot, StagedUpdate, TableMetadata, TableRequirement, TableUpdate} from '../../src/types.js'
+ * @import {DataFile, FieldSummary, Manifest, ManifestEntry, PartitionSpec, Resolver, Schema, Snapshot, StagedUpdate, TableMetadata, TableRequirement, TableUpdate} from '../../src/types.js'
  */
 
 /**
@@ -160,10 +160,11 @@ export async function icebergStageAppend({ tableUrl, metadata, records, resolver
  * `delete`. Prior manifests are carried forward so existing data and delete
  * files remain visible.
  *
- * Only unpartitioned tables are supported today — the delete file is written
- * with `partition = {}`, which only matches data files in unpartitioned
- * specs. Partitioned support requires looking up each target's partition
- * tuple and grouping deletes per partition.
+ * For partitioned tables, each delete's target data file is looked up in the
+ * current snapshot's data manifests, deletes are grouped by `(spec-id,
+ * partition tuple)`, and one delete file is written per group. Delete files
+ * inherit each target's partition spec id, so tables that have undergone
+ * partition spec evolution emit one delete manifest per spec touched.
  *
  * Pass the result to a commit function (`fileCatalogCommit`,
  * `restCatalogUpdateTable`).
@@ -186,11 +187,8 @@ export async function icebergStagePositionDelete({ tableUrl, metadata, deletes, 
     throw new Error(`unsupported format-version: ${metadata['format-version']}`)
   }
   const formatVersion = /** @type {2|3} */ (metadata['format-version'])
-  const partitionSpec = metadata['partition-specs'].find(s => s['spec-id'] === metadata['default-spec-id'])
-  if (!partitionSpec) throw new Error('default partition spec not found in metadata')
-  if (partitionSpec.fields.length) {
-    throw new Error('icebergStagePositionDelete supports unpartitioned tables only')
-  }
+  const defaultSpec = metadata['partition-specs'].find(s => s['spec-id'] === metadata['default-spec-id'])
+  if (!defaultSpec) throw new Error('default partition spec not found in metadata')
   const schema = metadata.schemas.find(s => s['schema-id'] === metadata['current-schema-id'])
   if (!schema) throw new Error('current schema not found in metadata')
   validateSchemaForVersion(schema, formatVersion)
@@ -202,61 +200,112 @@ export async function icebergStagePositionDelete({ tableUrl, metadata, deletes, 
   checkWriteFormat(metadata.properties?.['write.format.default'])
   const codec = resolveParquetCodec(metadata.properties?.['write.parquet.compression-codec'])
 
-  // 1. Write the position-delete parquet file. Set referenced_data_file
-  //    only if every position targets the same data file.
-  const uniqueTargets = new Set(deletes.map(d => d.file_path))
-  const referencedDataFile = uniqueTargets.size === 1 ? deletes[0].file_path : undefined
-  const deletePath = `${tableUrl}/data/${uuid4()}-deletes.parquet`
-  const deleteWriter = writerFn(translateS3Url(deletePath))
-  const stats = await writePositionDeleteFile({ writer: deleteWriter, deletes, codec })
-  /** @type {DataFile} */
-  const deleteFile = {
-    content: 1,
-    file_path: deletePath,
-    file_format: 'parquet',
-    partition: {},
-    record_count: stats.record_count,
-    file_size_in_bytes: BigInt(deleteWriter.offset),
-    value_counts: stats.value_counts,
-    null_value_counts: stats.null_value_counts,
-    lower_bounds: stats.lower_bounds,
-    upper_bounds: stats.upper_bounds,
-    sort_order_id: 0,
-    referenced_data_file: referencedDataFile,
+  // 1. Group deletes by (spec-id, partition). Unpartitioned tables collapse
+  //    to a single group keyed by the default spec.
+  const partitionMap = defaultSpec.fields.length
+    ? await findDataFilePartitions(metadata, resolver)
+    : null
+  /** @type {Map<string, { specId: number, partition: Record<string, any>, deletes: typeof deletes }>} */
+  const groups = new Map()
+  for (const d of deletes) {
+    let specId = defaultSpec['spec-id']
+    /** @type {Record<string, any>} */
+    let partition = {}
+    if (partitionMap) {
+      const found = partitionMap.get(d.file_path)
+      if (!found) throw new Error(`target data file not found in current snapshot: ${d.file_path}`)
+      specId = found.partitionSpecId
+      partition = found.partition
+    }
+    const key = `${specId}|${partitionTupleKey(partition)}`
+    let group = groups.get(key)
+    if (!group) {
+      group = { specId, partition, deletes: [] }
+      groups.set(key, group)
+    }
+    group.deletes.push(d)
   }
 
-  // 2. Write a delete manifest covering the new delete file
-  const manifestPath = `${tableUrl}/metadata/${manifestUuid}-m0.avro`
-  const manifestWriter = writerFn(translateS3Url(manifestPath))
-  await writeDeleteManifest({
-    writer: manifestWriter,
-    schema,
-    partitionSpec,
-    snapshotId,
-    deleteFiles: [deleteFile],
-    formatVersion,
-  })
-  const manifestLength = BigInt(manifestWriter.offset)
+  // 2. Write one parquet position-delete file per group, in parallel.
+  const writtenDeleteFiles = await Promise.all([...groups.values()].map(async group => {
+    const uniqueTargets = new Set(group.deletes.map(d => d.file_path))
+    const referencedDataFile = uniqueTargets.size === 1 ? group.deletes[0].file_path : undefined
+    const deletePath = `${tableUrl}/data/${uuid4()}-deletes.parquet`
+    const deleteWriter = writerFn(translateS3Url(deletePath))
+    const stats = await writePositionDeleteFile({ writer: deleteWriter, deletes: group.deletes, codec })
+    /** @type {DataFile} */
+    const deleteFile = {
+      content: 1,
+      file_path: deletePath,
+      file_format: 'parquet',
+      partition: group.partition,
+      record_count: stats.record_count,
+      file_size_in_bytes: BigInt(deleteWriter.offset),
+      value_counts: stats.value_counts,
+      null_value_counts: stats.null_value_counts,
+      lower_bounds: stats.lower_bounds,
+      upper_bounds: stats.upper_bounds,
+      sort_order_id: 0,
+      referenced_data_file: referencedDataFile,
+    }
+    return { specId: group.specId, partition: group.partition, deleteFile, path: deletePath }
+  }))
 
-  /** @type {Manifest} */
-  const newManifest = {
-    manifest_path: manifestPath,
-    manifest_length: manifestLength,
-    partition_spec_id: partitionSpec['spec-id'],
-    content: 1,
-    sequence_number: sequenceNumber,
-    min_sequence_number: sequenceNumber,
-    added_snapshot_id: snapshotId,
-    added_files_count: 1,
-    existing_files_count: 0,
-    deleted_files_count: 0,
-    added_rows_count: stats.record_count,
-    existing_rows_count: 0n,
-    deleted_rows_count: 0n,
-    partitions: [],
+  // 3. Write one delete manifest per partition-spec-id touched. Most tables
+  //    only ever touch one spec; spec-evolved tables may need several.
+  /** @type {Map<number, { spec: PartitionSpec, files: DataFile[], partitions: Record<string, any>[] }>} */
+  const bySpec = new Map()
+  for (const f of writtenDeleteFiles) {
+    let bucket = bySpec.get(f.specId)
+    if (!bucket) {
+      const spec = metadata['partition-specs'].find(s => s['spec-id'] === f.specId)
+      if (!spec) throw new Error(`partition spec ${f.specId} not found in metadata`)
+      bucket = { spec, files: [], partitions: [] }
+      bySpec.set(f.specId, bucket)
+    }
+    bucket.files.push(f.deleteFile)
+    bucket.partitions.push(f.partition)
   }
 
-  // 3. Build summary and assemble the StagedUpdate. Data totals carry forward;
+  /** @type {Manifest[]} */
+  const newManifests = []
+  /** @type {string[]} */
+  const writtenManifestPaths = []
+  let manifestIndex = 0
+  for (const { spec, files, partitions } of bySpec.values()) {
+    const manifestPath = `${tableUrl}/metadata/${manifestUuid}-m${manifestIndex}.avro`
+    const manifestWriter = writerFn(translateS3Url(manifestPath))
+    await writeDeleteManifest({
+      writer: manifestWriter,
+      schema,
+      partitionSpec: spec,
+      snapshotId,
+      deleteFiles: files,
+      formatVersion,
+    })
+    const manifestLength = BigInt(manifestWriter.offset)
+    const totalAddedRows = files.reduce((sum, f) => sum + f.record_count, 0n)
+    newManifests.push({
+      manifest_path: manifestPath,
+      manifest_length: manifestLength,
+      partition_spec_id: spec['spec-id'],
+      content: 1,
+      sequence_number: sequenceNumber,
+      min_sequence_number: sequenceNumber,
+      added_snapshot_id: snapshotId,
+      added_files_count: files.length,
+      existing_files_count: 0,
+      deleted_files_count: 0,
+      added_rows_count: totalAddedRows,
+      existing_rows_count: 0n,
+      deleted_rows_count: 0n,
+      partitions: spec.fields.length ? buildPartitionSummaries(partitions, schema, spec) : [],
+    })
+    writtenManifestPaths.push(manifestPath)
+    manifestIndex++
+  }
+
+  // 4. Build summary and assemble the StagedUpdate. Data totals carry forward;
   //    delete totals bump.
   const prevSummary = currentSnapshot(metadata)?.summary
   const prevTotals = {
@@ -267,28 +316,28 @@ export async function icebergStagePositionDelete({ tableUrl, metadata, deletes, 
     posDeletes: BigInt(prevSummary?.['total-position-deletes'] ?? '0'),
     eqDeletes: BigInt(prevSummary?.['total-equality-deletes'] ?? '0'),
   }
-  const addedSize = deleteFile.file_size_in_bytes
-  const addedPosDeletes = stats.record_count
+  const addedSize = writtenDeleteFiles.reduce((sum, f) => sum + f.deleteFile.file_size_in_bytes, 0n)
+  const addedPosDeletes = writtenDeleteFiles.reduce((sum, f) => sum + f.deleteFile.record_count, 0n)
   /** @type {Snapshot['summary']} */
   const summary = {
     operation: 'delete',
-    'added-delete-files': '1',
+    'added-delete-files': String(writtenDeleteFiles.length),
     'added-position-deletes': String(addedPosDeletes),
     'added-files-size': String(addedSize),
-    'changed-partition-count': '1',
+    'changed-partition-count': String(groups.size),
     'total-records': String(prevTotals.records),
     'total-files-size': String(prevTotals.size + addedSize),
     'total-data-files': String(prevTotals.dataFiles),
-    'total-delete-files': String(prevTotals.deleteFiles + 1n),
+    'total-delete-files': String(prevTotals.deleteFiles + BigInt(writtenDeleteFiles.length)),
     'total-position-deletes': String(prevTotals.posDeletes + addedPosDeletes),
     'total-equality-deletes': String(prevTotals.eqDeletes),
   }
   return await buildSnapshotUpdate({
     tableUrl, metadata, resolver,
     snapshotId, sequenceNumber, manifestUuid, timestampMs, formatVersion,
-    newManifests: [newManifest],
+    newManifests,
     summary,
-    writtenFiles: [deletePath, manifestPath],
+    writtenFiles: [...writtenDeleteFiles.map(f => f.path), ...writtenManifestPaths],
   })
 }
 
@@ -299,9 +348,12 @@ export async function icebergStagePositionDelete({ tableUrl, metadata, deletes, 
  * Each manifest entry carries `referenced_data_file`, `content_offset`, and
  * `content_size_in_bytes` per the v3 spec.
  *
- * Only unpartitioned tables are supported today, matching
- * `icebergStagePositionDelete`. v2 tables go through the parquet path; this
- * function rejects format-version != 3.
+ * For partitioned tables, each puffin entry inherits its target data file's
+ * partition tuple and partition spec id. Tables that have undergone
+ * partition-spec evolution emit one delete manifest per spec touched.
+ *
+ * v2 tables go through the parquet path; this function rejects
+ * format-version != 3.
  *
  * Pass the result to a commit function (`fileCatalogCommit`,
  * `restCatalogUpdateTable`).
@@ -324,11 +376,8 @@ export async function icebergStageDeletionVector({ tableUrl, metadata, deletes, 
     throw new Error('icebergStageDeletionVector requires format-version 3')
   }
   const formatVersion = /** @type {3} */ (3)
-  const partitionSpec = metadata['partition-specs'].find(s => s['spec-id'] === metadata['default-spec-id'])
-  if (!partitionSpec) throw new Error('default partition spec not found in metadata')
-  if (partitionSpec.fields.length) {
-    throw new Error('icebergStageDeletionVector supports unpartitioned tables only')
-  }
+  const defaultSpec = metadata['partition-specs'].find(s => s['spec-id'] === metadata['default-spec-id'])
+  if (!defaultSpec) throw new Error('default partition spec not found in metadata')
   const schema = metadata.schemas.find(s => s['schema-id'] === metadata['current-schema-id'])
   if (!schema) throw new Error('current schema not found in metadata')
   validateSchemaForVersion(schema, formatVersion)
@@ -339,8 +388,12 @@ export async function icebergStageDeletionVector({ tableUrl, metadata, deletes, 
   const timestampMs = Date.now()
   checkWriteFormat(metadata.properties?.['write.format.default'])
 
-  // 1. Group deletes by target data file
-  /** @type {Map<string, Set<bigint>>} */
+  // 1. Group deletes by target data file. For partitioned tables, look up
+  //    each target's partition tuple and spec id from existing manifests.
+  const partitionMap = defaultSpec.fields.length
+    ? await findDataFilePartitions(metadata, resolver)
+    : null
+  /** @type {Map<string, { positions: Set<bigint>, partition: Record<string, any>, partitionSpecId: number }>} */
   const byFile = new Map()
   for (const d of deletes) {
     if (typeof d.file_path !== 'string' || !d.file_path) {
@@ -351,22 +404,30 @@ export async function icebergStageDeletionVector({ tableUrl, metadata, deletes, 
     }
     const pos = typeof d.pos === 'bigint' ? d.pos : BigInt(d.pos)
     if (pos < 0n) throw new Error(`deletion vector pos must be non-negative: ${pos}`)
-    let set = byFile.get(d.file_path)
-    if (!set) {
-      set = new Set()
-      byFile.set(d.file_path, set)
+    let entry = byFile.get(d.file_path)
+    if (!entry) {
+      /** @type {Record<string, any>} */
+      let partition = {}
+      let partitionSpecId = defaultSpec['spec-id']
+      if (partitionMap) {
+        const found = partitionMap.get(d.file_path)
+        if (!found) throw new Error(`target data file not found in current snapshot: ${d.file_path}`)
+        partition = found.partition
+        partitionSpecId = found.partitionSpecId
+      }
+      entry = { positions: new Set(), partition, partitionSpecId }
+      byFile.set(d.file_path, entry)
     }
-    set.add(pos)
+    entry.positions.add(pos)
   }
 
-  // 2. Write one puffin file per target with a single DV blob
+  // 2. Write one puffin file per target with a single DV blob, in parallel.
   /** @type {string[]} */
   const writtenPuffinPaths = []
-  /** @type {DataFile[]} */
-  const deleteFiles = await Promise.all([...byFile.entries()]
+  const writtenDeleteFiles = await Promise.all([...byFile.entries()]
     .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
-    .map(async ([targetPath, positions]) => {
-      const blob = writeDeletionVector(positions)
+    .map(async ([targetPath, info]) => {
+      const blob = writeDeletionVector(info.positions)
       const puffin = writePuffinFile({
         blobs: [{
           type: 'deletion-vector-v1',
@@ -376,7 +437,7 @@ export async function icebergStageDeletionVector({ tableUrl, metadata, deletes, 
           data: blob,
           properties: {
             'referenced-data-file': targetPath,
-            cardinality: String(positions.size),
+            cardinality: String(info.positions.size),
           },
         }],
       })
@@ -385,54 +446,86 @@ export async function icebergStageDeletionVector({ tableUrl, metadata, deletes, 
       puffinWriter.appendBytes(puffin)
       await puffinWriter.finish()
       writtenPuffinPaths.push(puffinPath)
-      return {
-        content: /** @type {1} */ (1),
+      /** @type {DataFile} */
+      const deleteFile = {
+        content: 1,
         file_path: puffinPath,
-        file_format: /** @type {'puffin'} */ ('puffin'),
-        partition: {},
-        record_count: BigInt(positions.size),
+        file_format: 'puffin',
+        partition: info.partition,
+        record_count: BigInt(info.positions.size),
         file_size_in_bytes: BigInt(puffinWriter.offset),
         sort_order_id: 0,
         referenced_data_file: targetPath,
         content_offset: 4n,
         content_size_in_bytes: BigInt(blob.byteLength),
       }
+      return { specId: info.partitionSpecId, partition: info.partition, deleteFile }
     }))
 
-  // 3. Write a delete manifest covering every new puffin DV file
-  const manifestPath = `${tableUrl}/metadata/${manifestUuid}-m0.avro`
-  const manifestWriter = writerFn(translateS3Url(manifestPath))
-  await writeDeleteManifest({
-    writer: manifestWriter,
-    schema,
-    partitionSpec,
-    snapshotId,
-    deleteFiles,
-    formatVersion,
-  })
-  const manifestLength = BigInt(manifestWriter.offset)
-  const totalAddedRows = deleteFiles.reduce((sum, f) => sum + f.record_count, 0n)
-  const totalAddedSize = deleteFiles.reduce((sum, f) => sum + f.file_size_in_bytes, 0n)
-
-  /** @type {Manifest} */
-  const newManifest = {
-    manifest_path: manifestPath,
-    manifest_length: manifestLength,
-    partition_spec_id: partitionSpec['spec-id'],
-    content: 1,
-    sequence_number: sequenceNumber,
-    min_sequence_number: sequenceNumber,
-    added_snapshot_id: snapshotId,
-    added_files_count: deleteFiles.length,
-    existing_files_count: 0,
-    deleted_files_count: 0,
-    added_rows_count: totalAddedRows,
-    existing_rows_count: 0n,
-    deleted_rows_count: 0n,
-    partitions: [],
+  // 3. Write one delete manifest per partition-spec-id touched.
+  /** @type {Map<number, { spec: PartitionSpec, files: DataFile[], partitions: Record<string, any>[] }>} */
+  const bySpec = new Map()
+  for (const f of writtenDeleteFiles) {
+    let bucket = bySpec.get(f.specId)
+    if (!bucket) {
+      const spec = metadata['partition-specs'].find(s => s['spec-id'] === f.specId)
+      if (!spec) throw new Error(`partition spec ${f.specId} not found in metadata`)
+      bucket = { spec, files: [], partitions: [] }
+      bySpec.set(f.specId, bucket)
+    }
+    bucket.files.push(f.deleteFile)
+    bucket.partitions.push(f.partition)
   }
 
-  // 4. Build summary and assemble the StagedUpdate
+  /** @type {Manifest[]} */
+  const newManifests = []
+  /** @type {string[]} */
+  const writtenManifestPaths = []
+  let manifestIndex = 0
+  for (const { spec, files, partitions } of bySpec.values()) {
+    const manifestPath = `${tableUrl}/metadata/${manifestUuid}-m${manifestIndex}.avro`
+    const manifestWriter = writerFn(translateS3Url(manifestPath))
+    await writeDeleteManifest({
+      writer: manifestWriter,
+      schema,
+      partitionSpec: spec,
+      snapshotId,
+      deleteFiles: files,
+      formatVersion,
+    })
+    const manifestLength = BigInt(manifestWriter.offset)
+    const totalAddedRows = files.reduce((sum, f) => sum + f.record_count, 0n)
+    newManifests.push({
+      manifest_path: manifestPath,
+      manifest_length: manifestLength,
+      partition_spec_id: spec['spec-id'],
+      content: 1,
+      sequence_number: sequenceNumber,
+      min_sequence_number: sequenceNumber,
+      added_snapshot_id: snapshotId,
+      added_files_count: files.length,
+      existing_files_count: 0,
+      deleted_files_count: 0,
+      added_rows_count: totalAddedRows,
+      existing_rows_count: 0n,
+      deleted_rows_count: 0n,
+      partitions: spec.fields.length ? buildPartitionSummaries(partitions, schema, spec) : [],
+    })
+    writtenManifestPaths.push(manifestPath)
+    manifestIndex++
+  }
+
+  // 4. Distinct partition tuples touched (across specs) — for changed-partition-count.
+  /** @type {Set<string>} */
+  const partitionKeys = new Set()
+  for (const f of writtenDeleteFiles) {
+    partitionKeys.add(`${f.specId}|${partitionTupleKey(f.partition)}`)
+  }
+
+  const totalAddedRows = writtenDeleteFiles.reduce((sum, f) => sum + f.deleteFile.record_count, 0n)
+  const totalAddedSize = writtenDeleteFiles.reduce((sum, f) => sum + f.deleteFile.file_size_in_bytes, 0n)
+
+  // 5. Build summary and assemble the StagedUpdate
   const prevSummary = currentSnapshot(metadata)?.summary
   const prevTotals = {
     records: BigInt(prevSummary?.['total-records'] ?? '0'),
@@ -445,23 +538,23 @@ export async function icebergStageDeletionVector({ tableUrl, metadata, deletes, 
   /** @type {Snapshot['summary']} */
   const summary = {
     operation: 'delete',
-    'added-delete-files': String(deleteFiles.length),
+    'added-delete-files': String(writtenDeleteFiles.length),
     'added-position-deletes': String(totalAddedRows),
     'added-files-size': String(totalAddedSize),
-    'changed-partition-count': '1',
+    'changed-partition-count': String(partitionKeys.size),
     'total-records': String(prevTotals.records),
     'total-files-size': String(prevTotals.size + totalAddedSize),
     'total-data-files': String(prevTotals.dataFiles),
-    'total-delete-files': String(prevTotals.deleteFiles + BigInt(deleteFiles.length)),
+    'total-delete-files': String(prevTotals.deleteFiles + BigInt(writtenDeleteFiles.length)),
     'total-position-deletes': String(prevTotals.posDeletes + totalAddedRows),
     'total-equality-deletes': String(prevTotals.eqDeletes),
   }
   return await buildSnapshotUpdate({
     tableUrl, metadata, resolver,
     snapshotId, sequenceNumber, manifestUuid, timestampMs, formatVersion,
-    newManifests: [newManifest],
+    newManifests,
     summary,
-    writtenFiles: [...writtenPuffinPaths, manifestPath],
+    writtenFiles: [...writtenPuffinPaths, ...writtenManifestPaths],
   })
 }
 
@@ -796,6 +889,66 @@ function resolveParquetCodec(value) {
   default:
     throw new Error(`unsupported write.parquet.compression-codec: ${value}`)
   }
+}
+
+/**
+ * Read every data manifest entry reachable from the current snapshot and
+ * index it by `data_file.file_path`. Used by delete stagers to look up each
+ * target data file's partition tuple and partition spec id, which a delete
+ * manifest entry must inherit.
+ *
+ * Status === 2 (logically deleted) entries are skipped; the read scanner
+ * skips them too, so deletes against them would have no effect.
+ *
+ * @param {TableMetadata} metadata
+ * @param {Resolver} resolver
+ * @returns {Promise<Map<string, { partition: Record<string, any>, partitionSpecId: number }>>}
+ */
+async function findDataFilePartitions(metadata, resolver) {
+  const snap = currentSnapshot(metadata)
+  if (!snap?.['manifest-list']) return new Map()
+  const manifests = /** @type {Manifest[]} */ (await fetchAvroRecords(snap['manifest-list'], resolver))
+  /** @type {Map<string, { partition: Record<string, any>, partitionSpecId: number }>} */
+  const out = new Map()
+  await Promise.all(manifests.map(async manifest => {
+    if (manifest.content !== 0) return
+    const entries = /** @type {ManifestEntry[]} */ (await fetchAvroRecords(manifest.manifest_path, resolver))
+    for (const entry of entries) {
+      if (entry.status === 2) continue
+      const f = entry.data_file
+      if (f.content !== 0) continue
+      out.set(f.file_path, {
+        partition: /** @type {Record<string, any>} */ (f.partition ?? {}),
+        partitionSpecId: manifest.partition_spec_id ?? 0,
+      })
+    }
+  }))
+  return out
+}
+
+/**
+ * Stable string key for a partition tuple. Spec field order is fixed by the
+ * caller passing pre-sorted keys; we serialize each value with a type tag so
+ * `1` (int) and `1n` (long) hash to different keys.
+ *
+ * @param {Record<string, any>} partition
+ * @returns {string}
+ */
+function partitionTupleKey(partition) {
+  const keys = Object.keys(partition).sort()
+  return keys.map(k => `${k}=${valueTag(partition[k])}`).join(',')
+}
+
+/**
+ * @param {any} v
+ * @returns {string}
+ */
+function valueTag(v) {
+  if (v === null || v === undefined) return 'null'
+  if (typeof v === 'bigint') return `b:${v.toString()}`
+  if (v instanceof Date) return `d:${v.getTime()}`
+  if (v instanceof Uint8Array) return `x:${[...v].map(b => b.toString(16).padStart(2, '0')).join('')}`
+  return `${typeof v}:${String(v)}`
 }
 
 /**
