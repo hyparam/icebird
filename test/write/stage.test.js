@@ -1,46 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ByteWriter } from 'hyparquet-writer'
 import { fetchAvroRecords } from '../../src/fetch.js'
 import { applyUpdates, checkRequirements, fileCatalogCommit } from '../../src/write/commit.js'
 import { icebergCreate } from '../../src/create.js'
 import { icebergRead } from '../../src/read.js'
 import { icebergStageAppend, icebergStageExpireSnapshots, icebergStageSetRef } from '../../src/write/stage.js'
+import { memResolver } from '../helpers.js'
 
 /**
  * @import {Resolver, Schema, TableMetadata} from '../../src/types.js'
  */
-
-/**
- * @returns {{ resolver: Resolver, files: Map<string, Uint8Array> }}
- */
-function memResolver() {
-  /** @type {Map<string, Uint8Array>} */
-  const files = new Map()
-  /** @type {Resolver} */
-  const resolver = {
-    reader(path) {
-      const bytes = files.get(path)
-      if (!bytes) throw new Error(`no such file: ${path}`)
-      const ab = /** @type {ArrayBuffer} */ (
-        bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
-      )
-      return {
-        byteLength: bytes.byteLength,
-        slice: (/** @type {number} */ s, /** @type {number} */ e) => ab.slice(s, e),
-      }
-    },
-    writer(path) {
-      const w = new ByteWriter()
-      const origFinish = w.finish.bind(w)
-      w.finish = () => {
-        origFinish()
-        files.set(path, w.getBytes())
-      }
-      return w
-    },
-  }
-  return { resolver, files }
-}
 
 /** @type {Schema} */
 const schema = {

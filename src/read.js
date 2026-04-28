@@ -178,6 +178,12 @@ async function readDataFile({
     rowStart: fileRowStart,
     rowEnd: fileRowEnd,
     compressors,
+    // Iceberg `binary`/`fixed[N]` columns are plain BYTE_ARRAY/FIXED_LEN_BYTE_ARRAY
+    // with no UTF8/STRING annotation; hyparquet's default would silently decode
+    // them as strings. Disabling its global utf8 fallback preserves bytes —
+    // genuine string columns still convert because the writer always annotates
+    // them with UTF8/STRING.
+    utf8: false,
   })
   let rowEntries = rows.map((row, idx) => ({
     row,

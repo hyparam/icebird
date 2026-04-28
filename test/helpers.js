@@ -1,6 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import { asyncBufferFromFile } from 'hyparquet'
+import { ByteWriter } from 'hyparquet-writer'
 import { s3ParseUrl } from '../src/fetch.js'
 
 /**
@@ -58,4 +59,39 @@ export function localLister(baseDir) {
   return async function list(url) {
     return fs.readdirSync(localPath(baseDir, url))
   }
+}
+
+/**
+ * In-memory Resolver backed by a Map. Useful for round-trip tests that want
+ * to write and then read back without touching the filesystem or S3.
+ *
+ * @returns {{ resolver: Resolver, files: Map<string, Uint8Array> }}
+ */
+export function memResolver() {
+  /** @type {Map<string, Uint8Array>} */
+  const files = new Map()
+  /** @type {Resolver} */
+  const resolver = {
+    reader(p) {
+      const bytes = files.get(p)
+      if (!bytes) throw new Error(`no such file: ${p}`)
+      const ab = /** @type {ArrayBuffer} */ (
+        bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+      )
+      return {
+        byteLength: bytes.byteLength,
+        slice: (/** @type {number} */ s, /** @type {number} */ e) => ab.slice(s, e),
+      }
+    },
+    writer(p) {
+      const w = new ByteWriter()
+      const origFinish = w.finish.bind(w)
+      w.finish = () => {
+        origFinish()
+        files.set(p, w.getBytes())
+      }
+      return w
+    },
+  }
+  return { resolver, files }
 }
