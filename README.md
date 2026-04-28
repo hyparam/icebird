@@ -91,49 +91,66 @@ const data = await icebergRead({
 
 ## REST Catalog
 
-To read a table from an [Iceberg REST Catalog](https://iceberg.apache.org/rest-catalog-spec/), connect to the catalog and load the table metadata, then pass it to `icebergRead`:
+For tables behind an [Iceberg REST Catalog](https://iceberg.apache.org/rest-catalog-spec/), connect via `restCatalogConnect` and pass the loaded metadata into `icebergRead`. Multi-level namespaces are arrays.
+
+```javascript
+import { icebergRead, restCatalogConnect, restCatalogLoadTable } from 'icebird'
+
+const ctx = await restCatalogConnect({ url: 'https://catalog.example.com' })
+const { metadata } = await restCatalogLoadTable(ctx, { namespace: 'analytics', table: 'orders' })
+const data = await icebergRead({ tableUrl: metadata.location, metadata })
+```
+
+## Writing
+
+Icebird has experimental write support for Iceberg v2 (and v3 deletion vectors). All write functions take a `Catalog` and dispatch internally — the same call works against `fileCatalog({ resolver })` or a REST catalog context returned by `restCatalogConnect`.
 
 ```javascript
 import {
-  icebergRead,
-  restCatalogConnect,
-  restCatalogListTables,
-  restCatalogLoadTable,
+  fileCatalog,
+  icebergAppend,
+  icebergCreateTable,
+  icebergDelete,
+  icebergExpireSnapshots,
+  icebergSetRef,
 } from 'icebird'
 
-const requestInit = {
-  headers: { Authorization: 'Bearer my_token' },
+// supply a Resolver with `writer` (and `deleter` for drop) — the built-in
+// `urlResolver` is read-only today; bring your own writer for now.
+const catalog = fileCatalog({ resolver })
+const tableUrl = 's3://my-bucket/warehouse/orders'
+
+const schema = {
+  type: 'struct',
+  'schema-id': 0,
+  fields: [
+    { id: 1, name: 'id', required: true, type: 'long' },
+    { id: 2, name: 'name', required: false, type: 'string' },
+  ],
 }
 
-const ctx = await restCatalogConnect({
-  url: 'https://catalog.example.com',
-  warehouse: 'my-warehouse', // optional
-  requestInit,
+await icebergCreateTable({ catalog, tableUrl, schema })
+await icebergAppend({ catalog, tableUrl, records: [{ id: 1n, name: 'alice' }] })
+
+// position deletes — `mode` defaults to 'puffin' on v3, 'parquet' on v2
+await icebergDelete({
+  catalog, tableUrl,
+  deletes: [{ file_path: 's3://.../data/abc.parquet', pos: 0 }],
 })
 
-const tables = await restCatalogListTables(ctx, { namespace: 'analytics' })
-
-const { metadata } = await restCatalogLoadTable(ctx, {
-  namespace: 'analytics',
-  table: 'orders',
-})
-
-const data = await icebergRead({
-  tableUrl: metadata.location,
-  metadata,
-  rowStart: 0,
-  rowEnd: 10,
-})
+// snapshot management
+await icebergSetRef({ catalog, tableUrl, ref: 'main', snapshotId })
+await icebergExpireSnapshots({ catalog, tableUrl, snapshotIds: [oldSnapshotId] })
 ```
 
-Multi-level namespaces can be passed as an array:
+For a REST catalog, swap `fileCatalog(...)` for the connect context and pass `namespace`/`table` instead of `tableUrl`:
 
 ```javascript
-const { metadata } = await restCatalogLoadTable(ctx, {
-  namespace: ['db', 'sub'],
-  table: 'orders',
-})
+const catalog = await restCatalogConnect({ url: 'https://catalog.example.com' })
+await icebergAppend({ catalog, namespace: 'analytics', table: 'orders', records })
 ```
+
+`icebergDropTable` on a file catalog requires a `lister` to enumerate files; pass `purgeRequested: true` to also delete `data/`.
 
 ## Supported Features
 

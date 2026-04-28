@@ -65,7 +65,7 @@ export function localLister(baseDir) {
  * In-memory Resolver backed by a Map. Useful for round-trip tests that want
  * to write and then read back without touching the filesystem or S3.
  *
- * @returns {{ resolver: Resolver, files: Map<string, Uint8Array> }}
+ * @returns {{ resolver: Resolver, files: Map<string, Uint8Array>, lister: Lister }}
  */
 export function memResolver() {
   /** @type {Map<string, Uint8Array>} */
@@ -92,6 +92,22 @@ export function memResolver() {
       }
       return w
     },
+    async deleter(p) {
+      files.delete(p)
+    },
   }
-  return { resolver, files }
+  /** @type {Lister} */
+  async function lister(dir) {
+    const prefix = dir.endsWith('/') ? dir : `${dir}/`
+    /** @type {string[]} */
+    const out = []
+    for (const k of files.keys()) {
+      if (k.startsWith(prefix)) {
+        const tail = k.slice(prefix.length)
+        if (!tail.includes('/')) out.push(tail)
+      }
+    }
+    return out
+  }
+  return { resolver, files, lister }
 }

@@ -1,17 +1,6 @@
 /**
+ * @import {BoundingBox} from 'hyparquet'
  * @import {Field} from '../../src/types.js'
- */
-
-/**
- * @typedef {object} BoundingBox
- * @property {number} [xmin]
- * @property {number} [xmax]
- * @property {number} [ymin]
- * @property {number} [ymax]
- * @property {number} [zmin]
- * @property {number} [zmax]
- * @property {number} [mmin]
- * @property {number} [mmax]
  */
 
 /**
@@ -35,7 +24,7 @@ export function isGeoType(name) {
  * @returns {{ value_count: bigint, null_count: bigint, lower?: Uint8Array, upper?: Uint8Array }}
  */
 export function computeGeoBounds(records, field) {
-  /** @type {BoundingBox | undefined} */
+  /** @type {Partial<BoundingBox> | undefined} */
   let partial
   let nulls = 0n
   const writeDefault = field['write-default']
@@ -70,9 +59,9 @@ export function computeGeoBounds(records, field) {
 }
 
 /**
- * @param {BoundingBox | undefined} bbox
+ * @param {Partial<BoundingBox> | undefined} bbox
  * @param {any} geometry
- * @returns {BoundingBox | undefined}
+ * @returns {Partial<BoundingBox> | undefined}
  */
 function extendBoundsFromGeometry(bbox, geometry) {
   if (geometry.type === 'GeometryCollection') {
@@ -88,9 +77,9 @@ function extendBoundsFromGeometry(bbox, geometry) {
  * Recurse through nested coordinate arrays. At a leaf position [x,y,(z),(m)],
  * each dimension is filtered independently — a NaN/non-finite value in one
  * dimension does not skip the others.
- * @param {BoundingBox | undefined} bbox
+ * @param {Partial<BoundingBox> | undefined} bbox
  * @param {any[]} coordinates
- * @returns {BoundingBox | undefined}
+ * @returns {Partial<BoundingBox> | undefined}
  */
 function extendBoundsFromCoordinates(bbox, coordinates) {
   if (typeof coordinates[0] === 'number') {
@@ -108,11 +97,11 @@ function extendBoundsFromCoordinates(bbox, coordinates) {
 }
 
 /**
- * @param {BoundingBox | undefined} bbox
+ * @param {Partial<BoundingBox> | undefined} bbox
  * @param {'xmin' | 'ymin' | 'zmin' | 'mmin'} minKey
  * @param {'xmax' | 'ymax' | 'zmax' | 'mmax'} maxKey
  * @param {number | undefined} value
- * @returns {BoundingBox | undefined}
+ * @returns {Partial<BoundingBox> | undefined}
  */
 function updateAxis(bbox, minKey, maxKey, value) {
   if (value === undefined || !Number.isFinite(value)) return bbox

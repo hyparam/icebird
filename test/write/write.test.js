@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { fileCatalog } from '../../src/catalog/file.js'
 import { icebergCreate } from '../../src/create.js'
 import { icebergRead } from '../../src/read.js'
-import { icebergAppend, icebergDelete, icebergExpireSnapshots, icebergSetRef } from '../../src/write/write.js'
+import { icebergAppend, icebergCreateTable, icebergDelete, icebergDropTable, icebergExpireSnapshots, icebergSetRef } from '../../src/write/write.js'
 import { memResolver } from '../helpers.js'
 
 /**
@@ -30,6 +30,136 @@ describe('fileCatalog', () => {
   it('throws when resolver is missing', () => {
     // @ts-expect-error
     expect(() => fileCatalog({})).toThrow(/resolver is required/)
+  })
+})
+
+describe('icebergCreateTable', () => {
+  it('writes v1.metadata.json and version-hint.text via the file catalog resolver', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/create-file'
+    const { resolver, files } = memResolver()
+    const catalog = fileCatalog({ resolver })
+
+    const metadata = await icebergCreateTable({ catalog, tableUrl, schema })
+
+    expect(metadata['format-version']).toBe(2)
+    expect(metadata.location).toBe(tableUrl)
+    expect(files.has(`${tableUrl}/metadata/v1.metadata.json`)).toBe(true)
+    expect(files.has(`${tableUrl}/metadata/version-hint.text`)).toBe(true)
+  })
+
+  it('throws when tableUrl is missing on a file catalog', async () => {
+    const { resolver } = memResolver()
+    const catalog = fileCatalog({ resolver })
+    await expect(icebergCreateTable({ catalog, schema }))
+      .rejects.toThrow(/tableUrl is required/)
+  })
+
+  it('rest catalog: POSTs name + schema and returns metadata', async () => {
+    const created = {
+      'format-version': 2,
+      'table-uuid': 'abc',
+      location: 's3://bucket/orders',
+      schemas: [schema],
+    }
+    /** @type {{url: string, init?: RequestInit}[]} */
+    const calls = []
+    vi.stubGlobal('fetch', async (/** @type {string} */ url, /** @type {RequestInit | undefined} */ init) => {
+      calls.push({ url, init })
+      if (url === 'https://cat/v1/config') return new Response(JSON.stringify({}), { status: 200 })
+      if (url === 'https://cat/v1/namespaces/db/tables') {
+        return new Response(JSON.stringify({
+          'metadata-location': 's3://bucket/orders/metadata/v1.metadata.json',
+          metadata: created,
+        }), { status: 200 })
+      }
+      throw new Error(`unexpected url: ${url}`)
+    })
+
+    const { restCatalogConnect } = await import('../../src/catalog/rest.js')
+    const ctx = await restCatalogConnect({ url: 'https://cat' })
+    const metadata = await icebergCreateTable({ catalog: ctx, namespace: 'db', table: 'orders', schema })
+
+    expect(metadata).toEqual(created)
+    const post = calls.find(c => c.url === 'https://cat/v1/namespaces/db/tables')
+    expect(post?.init?.method).toBe('POST')
+    expect(JSON.parse(/** @type {string} */ (post?.init?.body))).toEqual({ name: 'orders', schema })
+    vi.unstubAllGlobals()
+  })
+
+  it('rest catalog: requires namespace, table, and schema', async () => {
+    const ctx = /** @type {any} */ ({ type: 'rest', url: 'https://cat', prefix: '', defaults: {}, overrides: {} })
+    await expect(icebergCreateTable({ catalog: ctx, table: 'orders', schema }))
+      .rejects.toThrow(/namespace and table are required/)
+    await expect(icebergCreateTable({ catalog: ctx, namespace: 'db', table: 'orders' }))
+      .rejects.toThrow(/schema is required/)
+  })
+})
+
+describe('icebergDropTable', () => {
+  it('file catalog: lists metadata/ and deletes every file', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/drop-file'
+    const { resolver, files, lister } = memResolver()
+    const catalog = fileCatalog({ resolver })
+
+    await icebergCreate({ tableUrl, resolver, schema })
+    await icebergAppend({ catalog, tableUrl, records: [{ id: 1n, name: 'a' }] })
+    expect(files.has(`${tableUrl}/metadata/version-hint.text`)).toBe(true)
+
+    await icebergDropTable({ catalog, tableUrl, lister })
+
+    expect([...files.keys()].some(k => k.startsWith(`${tableUrl}/metadata/`))).toBe(false)
+    // data/ untouched without purgeRequested
+    expect([...files.keys()].some(k => k.startsWith(`${tableUrl}/data/`))).toBe(true)
+  })
+
+  it('file catalog with purgeRequested: also deletes data/', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/drop-file-purge'
+    const { resolver, files, lister } = memResolver()
+    const catalog = fileCatalog({ resolver })
+
+    await icebergCreate({ tableUrl, resolver, schema })
+    await icebergAppend({ catalog, tableUrl, records: [{ id: 1n, name: 'a' }] })
+
+    await icebergDropTable({ catalog, tableUrl, lister, purgeRequested: true })
+
+    expect([...files.keys()].some(k => k.startsWith(`${tableUrl}/`))).toBe(false)
+  })
+
+  it('file catalog: throws when lister is missing', async () => {
+    const { resolver } = memResolver()
+    const catalog = fileCatalog({ resolver })
+    await expect(icebergDropTable({ catalog, tableUrl: 'http://test/drop-no-lister' }))
+      .rejects.toThrow(/lister is required/)
+  })
+
+  it('file catalog: throws when tableUrl is missing', async () => {
+    const { resolver, lister } = memResolver()
+    const catalog = fileCatalog({ resolver })
+    await expect(icebergDropTable({ catalog, lister }))
+      .rejects.toThrow(/tableUrl is required/)
+  })
+
+  it('rest catalog: issues DELETE and forwards purgeRequested', async () => {
+    /** @type {{url: string, init?: RequestInit}[]} */
+    const calls = []
+    vi.stubGlobal('fetch', async (/** @type {string} */ url, /** @type {RequestInit | undefined} */ init) => {
+      calls.push({ url, init })
+      if (url === 'https://cat/v1/config') return new Response(JSON.stringify({}), { status: 200 })
+      return new Response(null, { status: 204 })
+    })
+
+    const { restCatalogConnect } = await import('../../src/catalog/rest.js')
+    const ctx = await restCatalogConnect({ url: 'https://cat' })
+    await icebergDropTable({ catalog: ctx, namespace: 'db', table: 'orders', purgeRequested: true })
+
+    expect(calls.some(c =>
+      c.url === 'https://cat/v1/namespaces/db/tables/orders?purgeRequested=true' &&
+      c.init?.method === 'DELETE'
+    )).toBe(true)
+    vi.unstubAllGlobals()
   })
 })
 

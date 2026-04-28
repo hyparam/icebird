@@ -4,6 +4,9 @@ import { uuid4 } from './utils.js'
 
 /**
  * @import {Resolver} from '../src/types.js'
+ */
+
+/**
  * @param {object} options
  * @param {string} options.tableUrl - Base S3 URL of the table.
  * @param {Resolver} options.resolver - Resolver with a writer method.
@@ -14,7 +17,7 @@ import { uuid4 } from './utils.js'
  * @param {Record<string, string>} [options.properties] - Table properties.
  * @returns {Promise<TableMetadata>} The Iceberg table metadata as a JSON object.
  */
-export async function icebergCreate ({
+export async function icebergCreate({
   tableUrl,
   resolver,
   schema,

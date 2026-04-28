@@ -1,4 +1,5 @@
-import { restCatalogLoadTable, restCatalogUpdateTable } from '../catalog/rest.js'
+import { restCatalogCreateTable, restCatalogDropTable, restCatalogLoadTable, restCatalogUpdateTable } from '../catalog/rest.js'
+import { icebergCreate } from '../create.js'
 import { icebergMetadata } from '../metadata.js'
 import { fileCatalogCommit } from './commit.js'
 import {
@@ -10,7 +11,7 @@ import {
 } from './stage.js'
 
 /**
- * @import {Catalog, Resolver, StagedUpdate, TableMetadata} from '../../src/types.js'
+ * @import {Catalog, Lister, PartitionSpec, Resolver, Schema, SortOrder, StagedUpdate, TableMetadata} from '../../src/types.js'
  */
 
 /**
@@ -131,6 +132,87 @@ export async function icebergExpireSnapshots({ catalog, namespace, table, tableU
   const ctx = await loadTable({ catalog, namespace, table, tableUrl, resolver })
   const staged = icebergStageExpireSnapshots({ metadata: ctx.metadata, snapshotIds })
   return await commitStaged(catalog, { namespace, table }, ctx, staged)
+}
+
+/**
+ * Create a new table. REST: delegates to the catalog's create endpoint.
+ * File: writes the initial `v1.metadata.json` and `version-hint.text` under
+ * `tableUrl` via `catalog.resolver`.
+ *
+ * @param {object} options
+ * @param {Catalog} options.catalog
+ * @param {string | string[]} [options.namespace] - REST catalog only.
+ * @param {string} [options.table] - REST catalog only.
+ * @param {string} [options.tableUrl] - File catalog only; also passed as `location` for REST.
+ * @param {Schema} [options.schema]
+ * @param {PartitionSpec} [options.partitionSpec]
+ * @param {SortOrder} [options.sortOrder]
+ * @param {Record<string, string>} [options.properties]
+ * @param {2 | 3} [options.formatVersion] - File catalog only.
+ * @param {boolean} [options.stageCreate] - REST catalog only.
+ * @returns {Promise<TableMetadata>}
+ */
+export async function icebergCreateTable({
+  catalog, namespace, table, tableUrl,
+  schema, partitionSpec, sortOrder, properties, formatVersion, stageCreate,
+}) {
+  if (catalog.type === 'rest') {
+    if (!namespace || !table) throw new Error('namespace and table are required for rest catalogs')
+    if (!schema) throw new Error('schema is required for rest catalogs')
+    const { metadata } = await restCatalogCreateTable(catalog, {
+      namespace,
+      table,
+      schema,
+      location: tableUrl,
+      partitionSpec,
+      writeOrder: sortOrder,
+      stageCreate,
+      properties,
+    })
+    return metadata
+  }
+  if (!tableUrl) throw new Error('tableUrl is required for file catalogs')
+  return await icebergCreate({
+    tableUrl,
+    resolver: catalog.resolver,
+    schema,
+    formatVersion,
+    partitionSpec,
+    sortOrder,
+    properties,
+  })
+}
+
+/**
+ * Drop a table. REST: delegates to the catalog's drop endpoint, forwarding
+ * `purgeRequested`. File: lists `metadata/` (and `data/` when `purgeRequested`)
+ * via `lister` and deletes each file via `catalog.resolver.deleter`. File
+ * purges do not recurse into partition subdirectories.
+ *
+ * @param {object} options
+ * @param {Catalog} options.catalog
+ * @param {string | string[]} [options.namespace] - REST catalog only.
+ * @param {string} [options.table] - REST catalog only.
+ * @param {string} [options.tableUrl] - File catalog only.
+ * @param {Lister} [options.lister] - File catalog only; required to enumerate files to delete.
+ * @param {boolean} [options.purgeRequested] - REST: forwarded to the server. File: also delete `data/`.
+ * @returns {Promise<void>}
+ */
+export async function icebergDropTable({ catalog, namespace, table, tableUrl, lister, purgeRequested }) {
+  if (catalog.type === 'rest') {
+    if (!namespace || !table) throw new Error('namespace and table are required for rest catalogs')
+    await restCatalogDropTable(catalog, { namespace, table, purgeRequested })
+    return
+  }
+  if (!tableUrl) throw new Error('tableUrl is required for file catalogs')
+  if (!lister) throw new Error('lister is required to drop a file catalog table')
+  const { deleter } = catalog.resolver
+  if (!deleter) throw new Error('resolver.deleter is required to drop a file catalog table')
+  const dirs = purgeRequested ? ['metadata', 'data'] : ['metadata']
+  for (const dir of dirs) {
+    const names = await lister(`${tableUrl}/${dir}`).catch(() => /** @type {string[]} */ ([]))
+    await Promise.allSettled(names.map(n => deleter(`${tableUrl}/${dir}/${n}`)))
+  }
 }
 
 /**
