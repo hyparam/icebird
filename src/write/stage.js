@@ -1,8 +1,9 @@
 import { fetchAvroRecords, translateS3Url } from '../fetch.js'
 import { validateSchemaForVersion } from '../schema.js'
 import { uuid4 } from '../utils.js'
+import { writePositionDeleteFile } from './delete-file.js'
 import { writeParquet } from './parquet.js'
-import { writeDataManifest } from './manifest.js'
+import { writeDataManifest, writeDeleteManifest } from './manifest.js'
 import { writeManifestList } from './manifest-list.js'
 import { groupByPartition } from './partition.js'
 import { computeColumnStats, computeFieldSummary } from './stats.js'
@@ -10,7 +11,7 @@ import { transformResultType } from './transform.js'
 
 /**
  * @import {CompressionCodec} from 'hyparquet'
- * @import {FieldSummary, Manifest, PartitionSpec, Resolver, Schema, Snapshot, StagedUpdate, TableMetadata, TableRequirement, TableUpdate} from '../../src/types.js'
+ * @import {DataFile, FieldSummary, Manifest, PartitionSpec, Resolver, Schema, Snapshot, StagedUpdate, TableMetadata, TableRequirement, TableUpdate} from '../../src/types.js'
  */
 
 /**
@@ -194,6 +195,189 @@ export async function icebergStageAppend({ tableUrl, metadata, records, resolver
       },
     ],
     writtenFiles: [...writtenDataFiles.map(f => f.path), manifestPath, manifestListPath],
+  }
+}
+
+/**
+ * Stage a row-level delete that writes a v2 parquet position-delete file,
+ * the delete manifest covering it, and a new snapshot whose operation is
+ * `delete`. Prior manifests are carried forward so existing data and delete
+ * files remain visible.
+ *
+ * Only unpartitioned tables are supported today — the delete file is written
+ * with `partition = {}`, which only matches data files in unpartitioned
+ * specs. Partitioned support requires looking up each target's partition
+ * tuple and grouping deletes per partition.
+ *
+ * Pass the result to a commit function (`fileCatalogCommit`,
+ * `restCatalogUpdateTable`).
+ *
+ * @param {object} options
+ * @param {string} options.tableUrl
+ * @param {TableMetadata} options.metadata
+ * @param {{file_path: string, pos: bigint|number}[]} options.deletes
+ * @param {Resolver} options.resolver - Resolver with a writer method.
+ * @returns {Promise<StagedUpdate>}
+ */
+export async function icebergStagePositionDelete({ tableUrl, metadata, deletes, resolver }) {
+  if (!tableUrl) throw new Error('tableUrl is required')
+  if (!resolver?.writer) throw new Error('resolver.writer is required')
+  if (!Array.isArray(deletes) || !deletes.length) {
+    throw new Error('deletes must be a non-empty array')
+  }
+  const writerFn = resolver.writer
+  if (metadata['format-version'] !== 2 && metadata['format-version'] !== 3) {
+    throw new Error(`unsupported format-version: ${metadata['format-version']}`)
+  }
+  const formatVersion = /** @type {2|3} */ (metadata['format-version'])
+  const rowLineage = formatVersion >= 3
+  const partitionSpec = metadata['partition-specs'].find(s => s['spec-id'] === metadata['default-spec-id'])
+  if (!partitionSpec) throw new Error('default partition spec not found in metadata')
+  if (partitionSpec.fields.length) {
+    throw new Error('icebergStagePositionDelete supports unpartitioned tables only')
+  }
+  const schema = metadata.schemas.find(s => s['schema-id'] === metadata['current-schema-id'])
+  if (!schema) throw new Error('current schema not found in metadata')
+  validateSchemaForVersion(schema, formatVersion)
+
+  const snapshotId = newSnapshotId()
+  const sequenceNumber = BigInt(metadata['last-sequence-number'] ?? 0) + 1n
+  const manifestUuid = uuid4()
+  const timestampMs = Date.now()
+  checkWriteFormat(metadata.properties?.['write.format.default'])
+  const codec = resolveParquetCodec(metadata.properties?.['write.parquet.compression-codec'])
+
+  // 1. Write the position-delete parquet file. Set referenced_data_file
+  //    only if every position targets the same data file.
+  const uniqueTargets = new Set(deletes.map(d => d.file_path))
+  const referencedDataFile = uniqueTargets.size === 1 ? deletes[0].file_path : undefined
+  const deletePath = `${tableUrl}/data/${uuid4()}-deletes.parquet`
+  const deleteWriter = writerFn(translateS3Url(deletePath))
+  const stats = writePositionDeleteFile({ writer: deleteWriter, deletes, codec })
+  /** @type {DataFile} */
+  const deleteFile = {
+    content: 1,
+    file_path: deletePath,
+    file_format: 'parquet',
+    partition: {},
+    record_count: stats.record_count,
+    file_size_in_bytes: BigInt(deleteWriter.offset),
+    value_counts: stats.value_counts,
+    null_value_counts: stats.null_value_counts,
+    lower_bounds: stats.lower_bounds,
+    upper_bounds: stats.upper_bounds,
+    sort_order_id: 0,
+    referenced_data_file: referencedDataFile,
+  }
+
+  // 2. Write a delete manifest covering the new delete file
+  const manifestPath = `${tableUrl}/metadata/${manifestUuid}-m0.avro`
+  const manifestWriter = writerFn(translateS3Url(manifestPath))
+  writeDeleteManifest({
+    writer: manifestWriter,
+    schema,
+    partitionSpec,
+    snapshotId,
+    deleteFiles: [deleteFile],
+    formatVersion,
+  })
+  const manifestLength = BigInt(manifestWriter.offset)
+
+  /** @type {Manifest} */
+  const newManifest = {
+    manifest_path: manifestPath,
+    manifest_length: manifestLength,
+    partition_spec_id: partitionSpec['spec-id'],
+    content: 1,
+    sequence_number: sequenceNumber,
+    min_sequence_number: sequenceNumber,
+    added_snapshot_id: snapshotId,
+    added_files_count: 1,
+    existing_files_count: 0,
+    deleted_files_count: 0,
+    added_rows_count: stats.record_count,
+    existing_rows_count: 0n,
+    deleted_rows_count: 0n,
+    partitions: [],
+  }
+
+  // 3. Carry forward priors and write new manifest list
+  const priorManifests = await loadPriorManifests(metadata, resolver)
+  const allManifests = [newManifest, ...priorManifests]
+  if (rowLineage) assignFirstRowIds(allManifests, BigInt(metadata['next-row-id'] ?? 0))
+  const manifestListPath = `${tableUrl}/metadata/snap-${snapshotId}-1-${manifestUuid}.avro`
+  const listWriter = writerFn(translateS3Url(manifestListPath))
+  writeManifestList({ writer: listWriter, snapshotId, sequenceNumber, manifests: allManifests, formatVersion })
+
+  // 4. Build the new snapshot. Carry forward data totals; bump delete totals.
+  const prevSummary = currentSnapshot(metadata)?.summary
+  const prevTotals = {
+    records: BigInt(prevSummary?.['total-records'] ?? '0'),
+    size: BigInt(prevSummary?.['total-files-size'] ?? '0'),
+    dataFiles: BigInt(prevSummary?.['total-data-files'] ?? '0'),
+    deleteFiles: BigInt(prevSummary?.['total-delete-files'] ?? '0'),
+    posDeletes: BigInt(prevSummary?.['total-position-deletes'] ?? '0'),
+    eqDeletes: BigInt(prevSummary?.['total-equality-deletes'] ?? '0'),
+  }
+  const addedSize = deleteFile.file_size_in_bytes
+  const addedPosDeletes = stats.record_count
+  /** @type {Snapshot} */
+  const snapshot = {
+    'snapshot-id': Number(snapshotId),
+    'sequence-number': Number(sequenceNumber),
+    'timestamp-ms': timestampMs,
+    'manifest-list': manifestListPath,
+    summary: {
+      operation: 'delete',
+      'added-delete-files': '1',
+      'added-position-deletes': String(addedPosDeletes),
+      'added-files-size': String(addedSize),
+      'changed-partition-count': '1',
+      'total-records': String(prevTotals.records),
+      'total-files-size': String(prevTotals.size + addedSize),
+      'total-data-files': String(prevTotals.dataFiles),
+      'total-delete-files': String(prevTotals.deleteFiles + 1n),
+      'total-position-deletes': String(prevTotals.posDeletes + addedPosDeletes),
+      'total-equality-deletes': String(prevTotals.eqDeletes),
+    },
+    'schema-id': metadata['current-schema-id'],
+  }
+  if (rowLineage) {
+    snapshot['first-row-id'] = toMetadataLong(metadata['next-row-id'] ?? 0)
+    snapshot['added-rows'] = 0
+  }
+  const parentId = metadata['current-snapshot-id']
+  if (parentId !== undefined) snapshot['parent-snapshot-id'] = parentId
+
+  /** @type {TableRequirement[]} */
+  const requirements = [
+    { type: 'assert-table-uuid', uuid: metadata['table-uuid'] },
+    {
+      type: 'assert-ref-snapshot-id',
+      ref: 'main',
+      'snapshot-id': metadata['current-snapshot-id'] ?? null,
+    },
+  ]
+  if (rowLineage) {
+    requirements.push({
+      type: 'assert-next-row-id',
+      'next-row-id': toMetadataLong(metadata['next-row-id'] ?? 0),
+    })
+  }
+
+  return {
+    snapshot,
+    requirements,
+    updates: [
+      { action: 'add-snapshot', snapshot },
+      {
+        action: 'set-snapshot-ref',
+        'ref-name': 'main',
+        type: 'branch',
+        'snapshot-id': snapshot['snapshot-id'],
+      },
+    ],
+    writtenFiles: [deletePath, manifestPath, manifestListPath],
   }
 }
 

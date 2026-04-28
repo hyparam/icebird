@@ -174,16 +174,19 @@ export interface Snapshot {
     // spec: "value of these fields should be of string type"
     operation: string
     // 'spark.app.id'?: string
-    'added-data-files': string
-    'added-records': string
-    'added-files-size': string
-    'changed-partition-count': string
-    'total-records': string
-    'total-files-size': string
-    'total-data-files': string
-    'total-delete-files': string
-    'total-position-deletes': string
-    'total-equality-deletes': string
+    'added-data-files'?: string
+    'added-records'?: string
+    'added-delete-files'?: string
+    'added-position-deletes'?: string
+    'added-equality-deletes'?: string
+    'added-files-size'?: string
+    'changed-partition-count'?: string
+    'total-records'?: string
+    'total-files-size'?: string
+    'total-data-files'?: string
+    'total-delete-files'?: string
+    'total-position-deletes'?: string
+    'total-equality-deletes'?: string
   }
   'schema-id'?: number
   'first-row-id'?: number // V3
