@@ -1,7 +1,7 @@
 import { restCatalogCreateTable, restCatalogDropTable, restCatalogLoadTable, restCatalogUpdateTable } from '../catalog/rest.js'
 import { icebergCreate } from '../create.js'
 import { icebergMetadata } from '../metadata.js'
-import { fileCatalogCommit } from './commit.js'
+import { applyUpdates, fileCatalogCommit } from './commit.js'
 import {
   icebergStageAppend,
   icebergStageDeletionVector,
@@ -11,7 +11,7 @@ import {
 } from './stage.js'
 
 /**
- * @import {Catalog, Lister, PartitionSpec, Resolver, Schema, SortOrder, StagedUpdate, TableMetadata} from '../../src/types.js'
+ * @import {Catalog, IcebergTransaction, Lister, PartitionSpec, Resolver, Schema, Snapshot, SortOrder, StagedUpdate, TableMetadata, TableRequirement} from '../../src/types.js'
  */
 
 /**
@@ -132,6 +132,136 @@ export async function icebergExpireSnapshots({ catalog, namespace, table, tableU
   const ctx = await loadTable({ catalog, namespace, table, tableUrl, resolver })
   const staged = icebergStageExpireSnapshots({ metadata: ctx.metadata, snapshotIds })
   return await commitStaged(catalog, { namespace, table }, ctx, staged)
+}
+
+/**
+ * Run multiple staging operations against a single loaded snapshot of the
+ * table and commit them atomically. The callback receives a `tx` object whose
+ * methods (`append`, `delete`, `setRef`, `expireSnapshots`) mirror the
+ * top-level functions but stage rather than commit. Each call advances an
+ * in-memory working copy of the metadata so subsequent operations see prior
+ * staged snapshots and refs; everything ships in one commit at the end.
+ *
+ * The CAS preconditions sent to the catalog are taken from the FIRST stage
+ * that produces each (type, ref) pair — they reference the original loaded
+ * metadata, not the working copy. If the callback throws or stages nothing,
+ * no commit is sent (already-written data/manifest files become orphans;
+ * cleanup is the caller's responsibility, same as other write paths).
+ *
+ * @param {object} options
+ * @param {Catalog} options.catalog
+ * @param {string | string[]} [options.namespace] - REST catalog only.
+ * @param {string} [options.table] - REST catalog only.
+ * @param {string} [options.tableUrl] - File catalog only.
+ * @param {Resolver} [options.resolver]
+ * @param {(tx: IcebergTransaction) => Promise<void> | void} callback
+ * @returns {Promise<TableMetadata>}
+ */
+export async function icebergTransaction({ catalog, namespace, table, tableUrl, resolver }, callback) {
+  const ctx = await loadTable({ catalog, namespace, table, tableUrl, resolver })
+  let workingMetadata = ctx.metadata
+
+  /** @type {TableRequirement[]} */
+  const allRequirements = []
+  /** @type {import('../types.js').TableUpdate[]} */
+  const allUpdates = []
+  /** @type {string[]} */
+  const allWrittenFiles = []
+  /** @type {Snapshot | undefined} */
+  let lastSnapshot
+
+  /** @param {StagedUpdate} staged */
+  function mergeStaged(staged) {
+    for (const req of staged.requirements) {
+      const key = requirementKey(req)
+      if (!allRequirements.some(r => requirementKey(r) === key)) {
+        allRequirements.push(req)
+      }
+    }
+    allUpdates.push(...staged.updates)
+    allWrittenFiles.push(...staged.writtenFiles)
+    workingMetadata = applyUpdates(workingMetadata, staged.updates)
+    lastSnapshot = staged.snapshot
+  }
+
+  /** @type {IcebergTransaction} */
+  const tx = {
+    async append({ records }) {
+      const writer = requireResolver(ctx.resolver, 'icebergTransaction.append')
+      const staged = await icebergStageAppend({
+        tableUrl: ctx.tableUrl,
+        metadata: workingMetadata,
+        records,
+        resolver: writer,
+      })
+      mergeStaged(staged)
+    },
+    async delete({ deletes, mode }) {
+      const writer = requireResolver(ctx.resolver, 'icebergTransaction.delete')
+      const formatVersion = workingMetadata['format-version']
+      const effective = mode ?? (formatVersion === 3 ? 'puffin' : 'parquet')
+      let staged
+      if (effective === 'puffin') {
+        staged = await icebergStageDeletionVector({
+          tableUrl: ctx.tableUrl,
+          metadata: workingMetadata,
+          deletes,
+          resolver: writer,
+        })
+      } else if (effective === 'parquet') {
+        staged = await icebergStagePositionDelete({
+          tableUrl: ctx.tableUrl,
+          metadata: workingMetadata,
+          deletes,
+          resolver: writer,
+        })
+      } else {
+        throw new Error(`unknown delete mode: ${effective}`)
+      }
+      mergeStaged(staged)
+    },
+    setRef({ ref, snapshotId, type, minSnapshotsToKeep, maxSnapshotAgeMs, maxRefAgeMs }) {
+      const staged = icebergStageSetRef({
+        metadata: workingMetadata,
+        ref,
+        snapshotId,
+        type,
+        minSnapshotsToKeep,
+        maxSnapshotAgeMs,
+        maxRefAgeMs,
+      })
+      mergeStaged(staged)
+    },
+    expireSnapshots({ snapshotIds }) {
+      const staged = icebergStageExpireSnapshots({ metadata: workingMetadata, snapshotIds })
+      mergeStaged(staged)
+    },
+  }
+
+  await callback(tx)
+
+  if (allUpdates.length === 0) return ctx.metadata
+  if (!lastSnapshot) throw new Error('icebergTransaction: no snapshot produced')
+
+  return await commitStaged(catalog, { namespace, table }, ctx, {
+    snapshot: lastSnapshot,
+    requirements: allRequirements,
+    updates: allUpdates,
+    writtenFiles: allWrittenFiles,
+  })
+}
+
+/**
+ * Stable key for a TableRequirement so a transaction can dedupe across
+ * multiple stages: `assert-ref-snapshot-id` is keyed by ref name, every other
+ * type is keyed by type alone (only one of each can apply meaningfully).
+ *
+ * @param {TableRequirement} req
+ * @returns {string}
+ */
+function requirementKey(req) {
+  if (req.type === 'assert-ref-snapshot-id') return `${req.type}:${req.ref}`
+  return req.type
 }
 
 /**

@@ -267,6 +267,28 @@ export type TableUpdate =
   | { action: 'remove-snapshots', 'snapshot-ids': number[] }
 
 /**
+ * Argument passed to the `icebergTransaction` callback. Methods stage
+ * operations against an in-memory working copy of the table metadata; the
+ * accumulated updates ship in one commit when the callback resolves.
+ */
+export interface IcebergTransaction {
+  append(options: { records: Record<string, any>[] }): Promise<void>
+  delete(options: {
+    deletes: { file_path: string, pos: bigint | number }[]
+    mode?: 'puffin' | 'parquet'
+  }): Promise<void>
+  setRef(options: {
+    ref: string
+    snapshotId: number
+    type?: 'branch' | 'tag'
+    minSnapshotsToKeep?: number
+    maxSnapshotAgeMs?: number
+    maxRefAgeMs?: number
+  }): void
+  expireSnapshots(options: { snapshotIds: number[] }): void
+}
+
+/**
  * Output of an `icebergStage*` call: the snapshot just produced, the CAS
  * preconditions and updates a catalog must apply, and the data/manifest files
  * already written to storage (useful for cleanup on commit failure).
