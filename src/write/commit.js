@@ -72,12 +72,15 @@ export async function fileCatalogCommit({ tableUrl, metadata, staged, resolver }
 }
 
 /**
- * Derive the version number of the metadata being committed. The numeric
- * `vN.metadata.json` convention pairs the version with the `metadata-log`
- * length only when the log has never been truncated; once truncation kicks
- * in (`write.metadata.previous-versions-max`), parse the latest log entry's
- * filename instead. Falls back to length+1 for non-`vN` filenames written
- * by other tools.
+ * Derive the version number of the metadata being committed by inspecting
+ * the most recent `metadata-log` entry's filename. Two naming conventions
+ * are accepted:
+ * - `vN.metadata.json` — what Icebird itself writes; numbering starts at 1.
+ * - `NNNNN-<uuid>.metadata.json` — iceberg-java / iceberg-rust / pyiceberg;
+ *   numbering starts at 0.
+ * Both shapes carry the prior version explicitly, so the new current version
+ * is just `prior + 1`. Falls back to `length + 1` for unrecognized filenames
+ * to preserve legacy behavior.
  *
  * @param {{ 'timestamp-ms': number, 'metadata-file': string }[]} priorMetadataLog
  * @returns {number}
@@ -85,8 +88,9 @@ export async function fileCatalogCommit({ tableUrl, metadata, staged, resolver }
 function deriveCurrentVersion(priorMetadataLog) {
   if (priorMetadataLog.length === 0) return 1
   const last = priorMetadataLog[priorMetadataLog.length - 1]['metadata-file']
-  const match = last.match(/v(\d+)\.metadata\.json$/)
-  if (match) return Number(match[1]) + 1
+  const basename = last.split('/').pop() ?? ''
+  const match = basename.match(/^(?:v(\d+)|0*(\d+)-[0-9a-f-]+)\.metadata\.json$/)
+  if (match) return Number(match[1] ?? match[2]) + 1
   return priorMetadataLog.length + 1
 }
 
