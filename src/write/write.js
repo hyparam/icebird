@@ -367,7 +367,7 @@ async function loadTable({ catalog, namespace, table, tableUrl, resolver }) {
   if (catalog.type === 'file') {
     if (!tableUrl) throw new Error('tableUrl is required for file catalogs')
     const eff = resolver ?? catalog.resolver
-    const metadata = await icebergMetadata({ tableUrl, resolver: eff })
+    const metadata = await icebergMetadata({ tableUrl, resolver: eff, lister: catalog.lister })
     return { metadata, tableUrl, resolver: eff }
   }
   throw new Error(`unknown catalog type: ${/** @type {any} */ (catalog)?.type}`)

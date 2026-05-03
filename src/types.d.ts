@@ -21,6 +21,7 @@ export interface RestCatalogContext {
 export interface FileCatalog {
   type: 'file'
   resolver: Resolver
+  lister?: Lister
 }
 
 export type Catalog = RestCatalogContext | FileCatalog
