@@ -112,6 +112,16 @@ function icebergTypeToParquetField(name, field) {
   case 'binary': return { name, type: 'BYTE_ARRAY', repetition_type }
   case 'uuid':
     return { name, type: 'FIXED_LEN_BYTE_ARRAY', type_length: 16, logical_type: { type: 'UUID' }, repetition_type }
+  case 'date':
+    return { name, type: 'INT32', converted_type: 'DATE', logical_type: { type: 'DATE' }, repetition_type }
+  case 'time':
+    return {
+      name,
+      type: 'INT64',
+      converted_type: 'TIME_MICROS',
+      logical_type: { type: 'TIME', isAdjustedToUTC: false, unit: 'MICROS' },
+      repetition_type,
+    }
   case 'timestamp':
     return timestampField(name, repetition_type, false, 'MICROS')
   case 'timestamptz':

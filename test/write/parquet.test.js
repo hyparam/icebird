@@ -43,18 +43,6 @@ describe('writeParquet', () => {
     ])
   })
 
-  it('throws on unsupported type', () => {
-    const writer = new ByteWriter()
-    /** @type {Schema} */
-    const bad = {
-      type: 'struct',
-      'schema-id': 0,
-      fields: [{ id: 1, name: 'x', required: false, type: 'time' }],
-    }
-    expect(() => writeParquet({ writer, schema: bad, records: [] }))
-      .toThrow('unsupported iceberg type: time')
-  })
-
   it('writes a fixed-len-byte-array DECIMAL with computed type_length', async () => {
     const writer = new ByteWriter()
     /** @type {Schema} */
@@ -123,6 +111,42 @@ describe('writeParquet', () => {
 
     const rows = await parquetReadObjects({ file, compressors })
     expect(rows).toEqual([{ ts, tz: ts }])
+  })
+
+  it('writes date and time logical types per spec', async () => {
+    const writer = new ByteWriter()
+    /** @type {Schema} */
+    const dtSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'd', required: false, type: 'date' },
+        { id: 2, name: 't', required: false, type: 'time' },
+      ],
+    }
+    const day = new Date('2024-03-04T00:00:00.000Z')
+    const micros = 22n * 3600n * 1_000_000n + 31n * 60n * 1_000_000n + 8n * 1_000_000n + 123_456n // 22:31:08.123456
+    writeParquet({
+      writer,
+      schema: dtSchema,
+      records: [{ d: day, t: micros }],
+    })
+    const file = writer.getBuffer()
+    const meta = parquetMetadata(file)
+
+    expect(meta.schema.find(s => s.name === 'd')).toMatchObject({
+      type: 'INT32',
+      converted_type: 'DATE',
+      logical_type: { type: 'DATE' },
+    })
+    expect(meta.schema.find(s => s.name === 't')).toMatchObject({
+      type: 'INT64',
+      converted_type: 'TIME_MICROS',
+      logical_type: { type: 'TIME', isAdjustedToUTC: false, unit: 'MICROS' },
+    })
+
+    const rows = await parquetReadObjects({ file, compressors })
+    expect(rows).toEqual([{ d: day, t: micros }])
   })
 
   it('writes v3 geospatial parquet logical types', () => {
