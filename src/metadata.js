@@ -131,6 +131,24 @@ export function icebergListVersions({ tableUrl, resolver, lister }) {
  * @returns {Promise<TableMetadata>} The table metadata as a JSON object
  */
 export async function icebergMetadata({ tableUrl, metadataFileName, resolver, lister }) {
+  return (await resolveMetadata({ tableUrl, metadataFileName, resolver, lister })).metadata
+}
+
+/**
+ * Like `icebergMetadata`, but also returns the actual on-disk filename the
+ * metadata was resolved from. The write/commit path needs this so it can
+ * record the *real* previous metadata filename in `metadata-log` instead of
+ * synthesizing an Icebird-style `vN.metadata.json` path that doesn't exist
+ * when the prior writer (java/rust/python) used `NNNNN-<uuid>.metadata.json`.
+ *
+ * @param {object} options
+ * @param {string} options.tableUrl
+ * @param {string} [options.metadataFileName]
+ * @param {Resolver} [options.resolver]
+ * @param {Lister} [options.lister]
+ * @returns {Promise<{ metadata: TableMetadata, metadataFileName: string }>}
+ */
+export async function resolveMetadata({ tableUrl, metadataFileName, resolver, lister }) {
   resolver ??= urlResolver()
   lister ??= s3Lister()
   if (!metadataFileName) {
@@ -138,21 +156,22 @@ export async function icebergMetadata({ tableUrl, metadataFileName, resolver, li
     metadataFileName = `${version}.metadata.json`
   }
   const url = `${tableUrl}/metadata/${metadataFileName}`
-  return resolveText(resolver, url)
-    .then(text => JSON.parse(text))
-    .catch(async err => {
-      // v{N}.metadata.json failed, try listing to find the real filename
-      try {
-        const metadataDir = `${tableUrl}/metadata`
-        const files = await lister(metadataDir)
-        const match = findMetadataFile(files, metadataFileName)
-        if (match) {
-          const text = await resolveText(resolver, `${metadataDir}/${match}`)
-          return JSON.parse(text)
-        }
-      } catch { /* lister failed, fall through */ }
-      throw new Error(`failed to get iceberg metadata: ${err.message}`)
-    })
+  try {
+    const text = await resolveText(resolver, url)
+    return { metadata: JSON.parse(text), metadataFileName }
+  } catch (err) {
+    // v{N}.metadata.json failed, try listing to find the real filename
+    try {
+      const metadataDir = `${tableUrl}/metadata`
+      const files = await lister(metadataDir)
+      const match = findMetadataFile(files, metadataFileName)
+      if (match) {
+        const text = await resolveText(resolver, `${metadataDir}/${match}`)
+        return { metadata: JSON.parse(text), metadataFileName: match }
+      }
+    } catch { /* lister failed, fall through */ }
+    throw new Error(`failed to get iceberg metadata: ${/** @type {Error} */ (err).message}`)
+  }
 }
 
 /**

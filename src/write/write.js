@@ -1,6 +1,6 @@
 import { restCatalogCreateTable, restCatalogDropTable, restCatalogLoadTable, restCatalogUpdateTable } from '../catalog/rest.js'
 import { icebergCreate } from '../create.js'
-import { icebergMetadata } from '../metadata.js'
+import { resolveMetadata } from '../metadata.js'
 import { applyUpdates, fileCatalogCommit } from './commit.js'
 import {
   icebergStageAppend,
@@ -356,19 +356,20 @@ export async function icebergDropTable({ catalog, namespace, table, tableUrl, li
  * @param {string} [options.table] - Required for REST catalogs.
  * @param {string} [options.tableUrl] - Required for file catalogs (table base URL).
  * @param {Resolver} [options.resolver] - Required for REST catalogs (data file I/O); optional for file catalogs (defaults to `catalog.resolver`).
- * @returns {Promise<{metadata: TableMetadata, tableUrl: string, resolver: Resolver | undefined}>}
+ * @returns {Promise<{metadata: TableMetadata, metadataFileName: string | undefined, tableUrl: string, resolver: Resolver | undefined}>}
  */
 async function loadTable({ catalog, namespace, table, tableUrl, resolver }) {
   if (catalog.type === 'rest') {
     if (!namespace || !table) throw new Error('namespace and table are required for rest catalogs')
     const { metadata } = await restCatalogLoadTable(catalog, { namespace, table })
-    return { metadata, tableUrl: metadata.location, resolver }
+    return { metadata, metadataFileName: undefined, tableUrl: metadata.location, resolver }
   }
   if (catalog.type === 'file') {
     if (!tableUrl) throw new Error('tableUrl is required for file catalogs')
     const eff = resolver ?? catalog.resolver
-    const metadata = await icebergMetadata({ tableUrl, resolver: eff, lister: catalog.lister })
-    return { metadata, tableUrl, resolver: eff }
+    const { metadata, metadataFileName } =
+      await resolveMetadata({ tableUrl, resolver: eff, lister: catalog.lister })
+    return { metadata, metadataFileName, tableUrl, resolver: eff }
   }
   throw new Error(`unknown catalog type: ${/** @type {any} */ (catalog)?.type}`)
 }
@@ -391,7 +392,7 @@ function requireResolver(resolver, caller) {
  *
  * @param {Catalog} catalog
  * @param {{namespace?: string | string[], table?: string}} target
- * @param {{metadata: TableMetadata, tableUrl: string, resolver: Resolver | undefined}} ctx
+ * @param {{metadata: TableMetadata, metadataFileName: string | undefined, tableUrl: string, resolver: Resolver | undefined}} ctx
  * @param {StagedUpdate} staged
  * @returns {Promise<TableMetadata>}
  */
@@ -409,6 +410,7 @@ async function commitStaged(catalog, target, ctx, staged) {
   return await fileCatalogCommit({
     tableUrl: ctx.tableUrl,
     metadata: ctx.metadata,
+    metadataFileName: ctx.metadataFileName,
     staged,
     resolver: ctx.resolver,
   })

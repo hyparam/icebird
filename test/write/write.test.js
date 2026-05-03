@@ -203,6 +203,37 @@ describe('icebergAppend', () => {
     await expect(icebergAppend({ catalog, records: [] }))
       .rejects.toThrow(/tableUrl is required/)
   })
+
+  it('records the prior metadata-file using its real on-disk name (java/rust/python style)', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/append-extwriter'
+    const { resolver, files, lister } = memResolver()
+    const catalog = fileCatalog({ resolver, lister })
+
+    // Bootstrap with Icebird, then rename the resulting metadata file to
+    // mimic iceberg-java/rust/python's `NNNNN-<uuid>.metadata.json` naming
+    // and update version-hint accordingly. Drop `v1.metadata.json` so the
+    // commit path can't accidentally fall back to a synthesized filename
+    // that happens to exist.
+    await icebergCreate({ tableUrl, resolver, schema })
+    const original = `${tableUrl}/metadata/v1.metadata.json`
+    const renamed = '00000-aa56fadd-dad7-4958-840f-9198034d74f0.metadata.json'
+    const renamedPath = `${tableUrl}/metadata/${renamed}`
+    files.set(renamedPath, /** @type {Uint8Array} */ (files.get(original)))
+    files.delete(original)
+    files.set(`${tableUrl}/metadata/version-hint.text`, new TextEncoder().encode('0'))
+
+    const committed = await icebergAppend({
+      catalog, tableUrl,
+      records: [{ id: 1n, name: 'alice' }],
+    })
+
+    const log = committed['metadata-log'] ?? []
+    expect(log).toHaveLength(1)
+    expect(log[0]['metadata-file']).toBe(renamedPath)
+    // Sanity: the entry should point at a file that actually exists on disk.
+    expect(files.has(log[0]['metadata-file'])).toBe(true)
+  })
 })
 
 describe('icebergDelete', () => {

@@ -17,11 +17,15 @@ import { validateSchemaForVersion } from '../schema.js'
  * @param {object} options
  * @param {string} options.tableUrl
  * @param {TableMetadata} options.metadata - Current metadata, used for the CAS check.
+ * @param {string} [options.metadataFileName] - Actual filename the metadata
+ *   was loaded from. Recorded verbatim in the `metadata-log` entry for the
+ *   prior version so rollback / log walks land on a real file even when the
+ *   prior writer used `NNNNN-<uuid>.metadata.json` instead of `vN.metadata.json`.
  * @param {StagedUpdate} options.staged
  * @param {Resolver} options.resolver
  * @returns {Promise<TableMetadata>} The new metadata, already persisted.
  */
-export async function fileCatalogCommit({ tableUrl, metadata, staged, resolver }) {
+export async function fileCatalogCommit({ tableUrl, metadata, metadataFileName, staged, resolver }) {
   if (!tableUrl) throw new Error('tableUrl is required')
   if (!resolver?.writer) throw new Error('resolver.writer is required')
 
@@ -31,7 +35,9 @@ export async function fileCatalogCommit({ tableUrl, metadata, staged, resolver }
   const priorMetadataLog = metadata['metadata-log'] ?? []
   const currentVersion = deriveCurrentVersion(priorMetadataLog)
   const newVersion = currentVersion + 1
-  const currentMetadataPath = `${tableUrl}/metadata/v${currentVersion}.metadata.json`
+  const currentMetadataPath = metadataFileName
+    ? `${tableUrl}/metadata/${metadataFileName}`
+    : `${tableUrl}/metadata/v${currentVersion}.metadata.json`
   const newMetadataPath = `${tableUrl}/metadata/v${newVersion}.metadata.json`
 
   const appendedLog = [
