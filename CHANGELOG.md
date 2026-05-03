@@ -1,5 +1,9 @@
 # Icebird Changelog
 
+## [0.4.1]
+ - Transactions: stage multiple writes and commit atomically
+ - Partitioned table writes
+
 ## [0.4.0]
  - Writer: `icebergCreateTable`, `icebergDropTable`, `icebergAppend`, `icebergDelete` with pluggable catalog type
  - Puffin file reader and writer, including deletion vector support
