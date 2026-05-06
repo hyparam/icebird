@@ -10,7 +10,7 @@ import { equalityMatch, sanitize } from './utils.js'
  * Reads data from the Iceberg table with optional row-level delete processing.
  * Row indices are zero-based and rowEnd is exclusive.
  *
- * @import {Lister, NameMapping, Resolver, Schema, TableMetadata} from '../src/types.js'
+ * @import {Field, Lister, NameMapping, Resolver, Schema, TableMetadata} from '../src/types.js'
  * @param {object} options
  * @param {string} options.tableUrl - Base URL or path of the table.
  * @param {number} [options.rowStart] - The starting global row index to fetch (inclusive).
@@ -146,11 +146,22 @@ async function readDataFile({
   // Read iceberg schema from parquet metadata
   const parquetMetadata = await parquetMetadataAsync(asyncBuffer)
   const kv = parquetMetadata.key_value_metadata?.find(k => k.key === 'iceberg.schema')
-  // AWS Athena tables have no parquet iceberg schema :-(
-  // TODO: pick the right schema from the metadata
-  let parquetIcebergSchema = schema
+  /** @type {Schema} */
+  let parquetIcebergSchema
   if (kv?.value) {
     parquetIcebergSchema = JSON.parse(kv.value)
+  } else if (parquetMetadata.schema.some(s => s.field_id !== undefined)) {
+    // No `iceberg.schema` kv, but the parquet schema carries field_ids
+    // (iceberg-rust, iceberg-java, pyiceberg all set these). Build a
+    // parquet-shaped schema so columns added later in the iceberg schema
+    // correctly fall through to the initial-default / name-mapping chain
+    // instead of silently looking up a name that isn't in the row.
+    parquetIcebergSchema = parquetSchemaToIceberg(parquetMetadata.schema)
+  } else {
+    // AWS Athena tables: no kv and no field_ids. Fall back to the current
+    // iceberg schema and rely on `schema.name-mapping.default` to map
+    // physical column names back to ids.
+    parquetIcebergSchema = schema
   }
 
   // Determine which columns to read based on field ids
@@ -316,6 +327,31 @@ function rowLineageColumnNames(parquetIcebergSchema) {
 function columnNameByFieldId(schema, fieldId) {
   const field = schema.fields.find(f => f.id === fieldId)
   return field ? sanitize(field.name) : undefined
+}
+
+/**
+ * Synthesize a parquet-shaped iceberg schema from the parquet schema
+ * elements when the file has no `iceberg.schema` kv but does carry
+ * field_ids on each column. Only top-level leaf fields are included;
+ * nested types fall through with an `unknown` type marker.
+ *
+ * @import {SchemaElement} from 'hyparquet'
+ * @param {SchemaElement[]} parquetSchema
+ * @returns {Schema}
+ */
+function parquetSchemaToIceberg(parquetSchema) {
+  /** @type {Field[]} */
+  const fields = []
+  for (const elem of parquetSchema) {
+    if (elem.field_id === undefined) continue
+    fields.push({
+      id: elem.field_id,
+      name: elem.name,
+      required: false,
+      type: 'unknown',
+    })
+  }
+  return { type: 'struct', 'schema-id': 0, fields }
 }
 
 /**
