@@ -77,9 +77,7 @@ describe.concurrent('icebergDataSource', () => {
       resolver,
       metadataFileName: 'v2.metadata.json',
     })
-    /** @type {unknown} */
-    const sentinel = { type: 'Literal', value: true }
-    const where = /** @type {ExprNode} */ (sentinel)
+    const where = /** @type {ExprNode} */ ({ type: 'literal', value: true })
     const { appliedWhere, appliedLimitOffset } = source.scan({ where, limit: 5 })
     expect(appliedWhere).toBe(false)
     expect(appliedLimitOffset).toBe(false)
@@ -91,8 +89,9 @@ describe.concurrent('icebergDataSource', () => {
       resolver,
       metadataFileName: 'v4.metadata.json',
     })
-    // numRows is the manifest record_count sum and overstates when deletes
-    // are present; actual streamed rows reflect the post-delete count.
+    // numRows is undefined when deletes apply (the manifest record_count
+    // sum is pre-delete and would overstate the visible count).
+    expect(source.numRows).toBeUndefined()
     const { rows } = source.scan({})
     let count = 0
     for await (const row of rows()) {
@@ -100,6 +99,32 @@ describe.concurrent('icebergDataSource', () => {
       count++
     }
     expect(count).toBe(15)
+  })
+
+  it('OFFSET produces correct rows when deletes are present', async () => {
+    // Property test: whether or not the data source pushes LIMIT/OFFSET
+    // down, the rows it yields for `scan({offset, limit})` must agree with
+    // the corresponding slice of the full post-delete scan. LIMIT/OFFSET
+    // are in post-delete coordinates; the manifest's record_count is
+    // pre-delete, so naive pushdown using record_count miscounts whenever
+    // a file has applicable deletes.
+    const source = await icebergDataSource({
+      tableUrl,
+      resolver,
+      metadataFileName: 'v4.metadata.json',
+    })
+
+    const all = []
+    for await (const row of source.scan({}).rows()) all.push(row.resolved)
+    expect(all).toHaveLength(15)
+
+    for (const offset of [0, 5, 8, 14]) {
+      const plan = source.scan({ offset, limit: 2 })
+      const collected = []
+      for await (const row of plan.rows()) collected.push(row.resolved)
+      const expected = plan.appliedLimitOffset ? all.slice(offset, offset + 2) : all
+      expect(collected).toEqual(expected)
+    }
   })
 
   it('streams rows lazily without reading every data file', async () => {

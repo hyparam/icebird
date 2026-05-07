@@ -17,7 +17,10 @@ import { readDataFile } from '../read.js'
  * Metadata, manifests, schema, and delete maps are resolved once at
  * construction; each `scan()` walks the data files in record-count order and
  * yields rows on demand. WHERE is not pushed down: the engine applies it
- * after the scan. LIMIT/OFFSET is pushed down only when there is no WHERE.
+ * after the scan. LIMIT/OFFSET is pushed down only when there is no WHERE
+ * and the table has no delete files (LIMIT/OFFSET are in post-delete
+ * coordinates, but record_count is pre-delete, so naive pushdown using
+ * record_count miscounts visible rows in any file with applicable deletes).
  *
  * @param {object} options
  * @param {string} options.tableUrl - Base URL or path of the table.
@@ -40,15 +43,21 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
 
   const manifestList = await icebergManifests(tableMetadata, fetchResolver)
   const { dataEntries, deleteEntries } = splitManifestEntries(manifestList)
+  const hasDeletes = deleteEntries.length > 0
 
   // Pre-fetch delete maps once; reused by every scan.
   const deleteMapsPromise = fetchDeleteMaps(deleteEntries, fetchResolver)
 
-  // Sum record_count across data manifest entries. Overstates the count when
-  // delete files are present, but it's only a hint for the engine.
-  let numRows = 0
-  for (const entry of dataEntries) {
-    numRows += Number(entry.data_file.record_count)
+  // Sum record_count across data manifest entries for an exact row count.
+  // When delete files exist the sum is pre-delete and overstates the visible
+  // count, so leave numRows undefined rather than reporting a wrong total.
+  /** @type {number | undefined} */
+  let numRows
+  if (!hasDeletes) {
+    numRows = 0
+    for (const entry of dataEntries) {
+      numRows += Number(entry.data_file.record_count)
+    }
   }
 
   return {
@@ -56,7 +65,7 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
     columns,
     scan({ columns: scanColumns, where, limit, offset, signal }) {
       const rowColumns = scanColumns ?? columns
-      const applyLimitOffset = !where
+      const applyLimitOffset = !where && !hasDeletes
       const skip = applyLimitOffset ? offset ?? 0 : 0
       const take = applyLimitOffset && limit !== undefined ? limit : Infinity
 
@@ -75,9 +84,8 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
             if (remaining <= 0) break
             if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
             const recordCount = Number(entry.data_file.record_count)
-            // Skip the entire file if its row range is entirely before `skip`.
-            // Note: post-delete row counts can be lower than recordCount, so
-            // when deletes are present we have to actually read and discard.
+            // Pushdown is only enabled when the table has no deletes, so
+            // record_count equals the visible row count for this file.
             const fileRowStart = remainingSkip < recordCount ? remainingSkip : recordCount
             const fileRowEnd = recordCount
             if (fileRowStart >= fileRowEnd) {
