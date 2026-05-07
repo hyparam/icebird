@@ -1,6 +1,6 @@
-import { restCatalogCreateTable, restCatalogDropTable, restCatalogLoadTable, restCatalogUpdateTable } from '../catalog/rest.js'
+import { loadTable } from '../catalog/loadTable.js'
+import { restCatalogCreateTable, restCatalogDropTable, restCatalogUpdateTable } from '../catalog/rest.js'
 import { icebergCreate } from '../create.js'
-import { resolveMetadata } from '../metadata.js'
 import { applyUpdates, fileCatalogCommit } from './commit.js'
 import {
   icebergStageAppend,
@@ -343,35 +343,6 @@ export async function icebergDropTable({ catalog, namespace, table, tableUrl, li
     const names = await lister(`${tableUrl}/${dir}`).catch(() => /** @type {string[]} */ ([]))
     await Promise.allSettled(names.map(n => deleter(`${tableUrl}/${dir}/${n}`)))
   }
-}
-
-/**
- * Resolve `(metadata, tableUrl, resolver)` for the catalog branch in use.
- * REST: load via the catalog API and read tableUrl from `metadata.location`.
- * File: read `metadata.json` directly via the resolver.
- *
- * @param {object} options
- * @param {Catalog} options.catalog
- * @param {string | string[]} [options.namespace] - Required for REST catalogs.
- * @param {string} [options.table] - Required for REST catalogs.
- * @param {string} [options.tableUrl] - Required for file catalogs (table base URL).
- * @param {Resolver} [options.resolver] - Required for REST catalogs (data file I/O); optional for file catalogs (defaults to `catalog.resolver`).
- * @returns {Promise<{metadata: TableMetadata, metadataFileName: string | undefined, tableUrl: string, resolver: Resolver | undefined}>}
- */
-async function loadTable({ catalog, namespace, table, tableUrl, resolver }) {
-  if (catalog.type === 'rest') {
-    if (!namespace || !table) throw new Error('namespace and table are required for rest catalogs')
-    const { metadata } = await restCatalogLoadTable(catalog, { namespace, table })
-    return { metadata, metadataFileName: undefined, tableUrl: metadata.location, resolver }
-  }
-  if (catalog.type === 'file') {
-    if (!tableUrl) throw new Error('tableUrl is required for file catalogs')
-    const eff = resolver ?? catalog.resolver
-    const { metadata, metadataFileName } =
-      await resolveMetadata({ tableUrl, resolver: eff, lister: catalog.lister })
-    return { metadata, metadataFileName, tableUrl, resolver: eff }
-  }
-  throw new Error(`unknown catalog type: ${/** @type {any} */ (catalog)?.type}`)
 }
 
 /**
