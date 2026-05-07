@@ -1,5 +1,13 @@
 # Icebird Changelog
 
+## [0.5.0]
+ - SQL query engine via `icebergQuery` and `icebergDataSource`, integrating with squirreling
+ - `initial-default` applied for columns added after data was written
+ - Thread metadata through write APIs
+ - Emit date and time values per spec
+ - Parse both `vN.metadata.json` and `NNNNN-<uuid>.metadata.json` filenames
+ - `Lister` support in write APIs
+
 ## [0.4.1]
  - Transactions: stage multiple writes and commit atomically
  - Partitioned table writes
