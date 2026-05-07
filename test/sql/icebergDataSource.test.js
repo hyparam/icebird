@@ -122,8 +122,13 @@ describe.concurrent('icebergDataSource', () => {
       const plan = source.scan({ offset, limit: 2 })
       const collected = []
       for await (const row of plan.rows()) collected.push(row.resolved)
-      const expected = plan.appliedLimitOffset ? all.slice(offset, offset + 2) : all
-      expect(collected).toEqual(expected)
+      // The data-source contract: whatever the source returns, after the
+      // engine applies LIMIT/OFFSET (when not already applied), the final
+      // result must equal the same slice of the full scan.
+      const engineFinal = plan.appliedLimitOffset
+        ? collected
+        : collected.slice(offset, offset + 2)
+      expect(engineFinal).toEqual(all.slice(offset, offset + 2))
     }
   })
 
@@ -159,6 +164,69 @@ describe.concurrent('icebergDataSource', () => {
     // (parquet reads happen on iteration, not on scan() call).
     expect(parquetOpens - opensAfterConstruct).toBeLessThanOrEqual(1)
     await iter.return?.()
+  })
+
+  it('pushes column projection into the parquet read', async () => {
+    // Wrap parquetReadObjects-via-resolver: hyparquet uses the resolver's
+    // reader to fetch byte ranges, so we instead spy on the underlying call
+    // by intercepting parquetReadObjects via column extraction. Easiest
+    // observable signal: when only a subset of columns is requested, the
+    // emitted rows must only contain those keys.
+    const source = await icebergDataSource({
+      tableUrl,
+      resolver,
+      metadataFileName: 'v2.metadata.json',
+    })
+    const { rows } = source.scan({ columns: ['Breed Name', 'Popularity Rank'] })
+    const collected = []
+    for await (const row of rows()) collected.push(row.resolved)
+    expect(collected).toHaveLength(21)
+    for (const r of collected) {
+      expect(Object.keys(r ?? {}).sort()).toEqual(['Breed Name', 'Popularity Rank'])
+    }
+  })
+
+  it('column projection still applies row-level deletes correctly', async () => {
+    // Equality predicate columns must be read from parquet even when the
+    // caller projects them away, otherwise the predicate can't be evaluated
+    // and the delete silently fails.
+    const source = await icebergDataSource({
+      tableUrl,
+      resolver,
+      metadataFileName: 'v4.metadata.json',
+    })
+    const { rows } = source.scan({ columns: ['Breed Name'] })
+    const collected = []
+    for await (const row of rows()) collected.push(row.resolved)
+    expect(collected).toHaveLength(15)
+    for (const r of collected) {
+      expect(Object.keys(r ?? {})).toEqual(['Breed Name'])
+    }
+  })
+
+  it('LIMIT pushes through deletes - source yields at most offset+limit', async () => {
+    // With deletes, OFFSET cannot be pushed (record_count is pre-delete) so
+    // appliedLimitOffset is false, but the source still caps emission at
+    // offset+limit so the engine does not have to drain the full scan.
+    const source = await icebergDataSource({
+      tableUrl,
+      resolver,
+      metadataFileName: 'v4.metadata.json',
+    })
+    const all = []
+    for await (const row of source.scan({}).rows()) all.push(row.resolved)
+    expect(all).toHaveLength(15)
+
+    for (const [offset, limit] of [[0, 1], [0, 3], [4, 2], [10, 4]]) {
+      const plan = source.scan({ offset, limit })
+      expect(plan.appliedLimitOffset).toBe(false)
+      const got = []
+      for await (const row of plan.rows()) got.push(row.resolved)
+      // Source yields the first offset+limit visible rows of the full scan;
+      // engine then slices [offset, offset+limit] for the final result.
+      expect(got).toEqual(all.slice(0, offset + limit))
+      expect(got.slice(offset, offset + limit)).toEqual(all.slice(offset, offset + limit))
+    }
   })
 
   it('runs a SQL query through squirreling', async () => {

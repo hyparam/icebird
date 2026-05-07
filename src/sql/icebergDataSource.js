@@ -16,11 +16,17 @@ import { readDataFile } from '../read.js'
  *
  * Metadata, manifests, schema, and delete maps are resolved once at
  * construction; each `scan()` walks the data files in record-count order and
- * yields rows on demand. WHERE is not pushed down: the engine applies it
- * after the scan. LIMIT/OFFSET is pushed down only when there is no WHERE
- * and the table has no delete files (LIMIT/OFFSET are in post-delete
- * coordinates, but record_count is pre-delete, so naive pushdown using
- * record_count miscounts visible rows in any file with applicable deletes).
+ * yields rows on demand. Pushdowns:
+ * - Column projection (`columns`) is pushed into the parquet read so only the
+ *   requested columns are decoded. Equality-delete predicate columns and row
+ *   lineage columns are read regardless when needed.
+ * - WHERE is not pushed down (the engine applies it after the scan), so when
+ *   it is present we can't bound the scan by limit/offset.
+ * - When there is no WHERE we always cap the scan at `offset + limit` rows so
+ *   the source terminates early. OFFSET is also pushed into the parquet seek
+ *   when there are no deletes; with deletes the engine still applies OFFSET
+ *   itself (record_count is pre-delete, so seeking by record_count would
+ *   miscount visible rows in any file with applicable deletes).
  *
  * @param {object} options
  * @param {string} options.tableUrl - Base URL or path of the table.
@@ -65,13 +71,23 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
     columns,
     scan({ columns: scanColumns, where, limit, offset, signal }) {
       const rowColumns = scanColumns ?? columns
-      const applyLimitOffset = !where && !hasDeletes
-      const skip = applyLimitOffset ? offset ?? 0 : 0
-      const take = applyLimitOffset && limit !== undefined ? limit : Infinity
+      // OFFSET pushdown (seeking past rows in the parquet file) is only safe
+      // when no WHERE is in play and the table has no deletes - record_count
+      // is pre-delete, so seeking by it would skip the wrong visible rows.
+      const canPushOffset = !where && !hasDeletes
+      const skip = canPushOffset ? offset ?? 0 : 0
+      // LIMIT pushdown (early termination) is safe whenever there is no
+      // WHERE: with deletes we yield offset+limit rows and let the engine
+      // apply the slice, which still saves reading later files.
+      let take = Infinity
+      if (!where && limit !== undefined) {
+        take = canPushOffset ? limit : (offset ?? 0) + limit
+      }
+      const appliedLimitOffset = canPushOffset
 
       return {
         appliedWhere: false,
-        appliedLimitOffset: applyLimitOffset,
+        appliedLimitOffset,
         async *rows() {
           if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
           if (take === 0 || dataEntries.length === 0) return
@@ -84,10 +100,17 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
             if (remaining <= 0) break
             if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
             const recordCount = Number(entry.data_file.record_count)
-            // Pushdown is only enabled when the table has no deletes, so
-            // record_count equals the visible row count for this file.
             const fileRowStart = remainingSkip < recordCount ? remainingSkip : recordCount
-            const fileRowEnd = recordCount
+            // Bound the per-file end at fileRowStart+remaining so readDataFile
+            // skips later row groups in the file once we have enough rows.
+            // Only safe when canPushOffset is true: `remaining` is in
+            // post-delete coordinates, but fileRowStart+remaining is a
+            // pre-delete index, so with deletes this could skip visible rows
+            // we still need. Read the whole file in that case and rely on
+            // the inner per-row break.
+            const fileRowEnd = canPushOffset && remaining !== Infinity
+              ? Math.min(recordCount, fileRowStart + remaining)
+              : recordCount
             if (fileRowStart >= fileRowEnd) {
               remainingSkip -= recordCount
               continue
@@ -104,6 +127,7 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
               rowLineage,
               positionDeletesMap,
               equalityDeleteGroups,
+              wantedColumns: scanColumns,
               signal,
             })) {
               if (signal?.aborted) break

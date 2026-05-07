@@ -109,6 +109,12 @@ export async function icebergRead({
  * Stream rows from a single Iceberg data file, one row group at a time. Applies
  * row-level deletes and maps parquet columns to current-schema field names by id.
  *
+ * `wantedColumns`, when provided, restricts both the parquet columns read and
+ * the iceberg fields emitted in the output. Columns referenced by applicable
+ * equality delete predicates are always read regardless (otherwise the
+ * predicate can't be evaluated), and row lineage parquet columns are read when
+ * a lineage output column is requested.
+ *
  * @import {ManifestEntry} from '../src/types.js'
  * @param {object} options
  * @param {ManifestEntry} options.dataEntry
@@ -120,6 +126,7 @@ export async function icebergRead({
  * @param {boolean} options.rowLineage
  * @param {Map<string, Array<{deleteEntry: ManifestEntry, positions: Set<bigint>}>>} options.positionDeletesMap
  * @param {Array<{deleteEntry: ManifestEntry, rows: Record<string, any>[]}>} options.equalityDeleteGroups
+ * @param {string[]} [options.wantedColumns] - iceberg field names to emit; if undefined, emit all current-schema fields
  * @param {AbortSignal} [options.signal]
  * @returns {AsyncGenerator<Record<string, any>>}
  */
@@ -133,6 +140,7 @@ export async function* readDataFile({
   rowLineage,
   positionDeletesMap,
   equalityDeleteGroups,
+  wantedColumns,
   signal,
 }) {
   const { data_file, sequence_number, partition_spec_id } = dataEntry
@@ -183,10 +191,6 @@ export async function* readDataFile({
     }
   }
   const lineageColumns = rowLineage ? rowLineageColumnNames(parquetIcebergSchema) : {}
-  const columns = parquetColumnNames.filter(n => n !== undefined)
-  for (const column of [lineageColumns.rowId, lineageColumns.lastUpdatedSequenceNumber]) {
-    if (column && !columns.includes(column)) columns.push(column)
-  }
   const dataColumnNamesById = columnNamesById(parquetIcebergSchema)
 
   // Resolve which delete groups apply to this data file once.
@@ -212,6 +216,44 @@ export async function* readDataFile({
   const applicableEqualityGroups = equalityDeleteGroups.filter(group =>
     deleteFileAppliesToDataEntry(dataEntry, group.deleteEntry, metadata, 'equality'))
 
+  // Build the parquet column read list. With no projection (`wantedColumns`
+  // undefined) read every current-schema column whose parquet name is known.
+  // Otherwise restrict to wanted fields, but always include columns referenced
+  // by an applicable equality predicate (needed to evaluate the predicate)
+  // and the row-lineage columns when the caller wants lineage in the output.
+  const wantedSet = wantedColumns ? new Set(wantedColumns) : null
+  const wantsLineageOutput = !wantedSet
+    || wantedSet.has('_row_id')
+    || wantedSet.has('_last_updated_sequence_number')
+  const columns = []
+  for (let i = 0; i < schema.fields.length; i++) {
+    const parquetName = parquetColumnNames[i]
+    if (!parquetName) continue
+    if (wantedSet && !wantedSet.has(schema.fields[i].name)) continue
+    columns.push(parquetName)
+  }
+  for (const group of applicableEqualityGroups) {
+    for (const predicate of group.rows) {
+      for (const key of Object.keys(predicate)) {
+        const colName = dataColumnNamesById[Number(key)] ?? key
+        if (colName === 'file_path' || colName === 'pos') continue
+        if (!columns.includes(colName)) columns.push(colName)
+      }
+    }
+  }
+  if (rowLineage && wantsLineageOutput) {
+    for (const c of [lineageColumns.rowId, lineageColumns.lastUpdatedSequenceNumber]) {
+      if (c && !columns.includes(c)) columns.push(c)
+    }
+  }
+  // hyparquet treats an empty `columns` array as "no columns" rather than
+  // "all columns", which would skip the row decode entirely. If projection
+  // pruned everything (e.g. SELECT COUNT(*) with no equality deletes), fall
+  // back to reading the full set so we still iterate rows.
+  const parquetColumns = columns.length > 0
+    ? columns
+    : parquetColumnNames.filter(n => n !== undefined)
+
   // Stream row groups, intersecting each with [fileRowStart, fileRowEnd)
   let groupStart = 0
   for (const rowGroup of parquetMetadata.row_groups) {
@@ -229,14 +271,14 @@ export async function* readDataFile({
     const rows = await parquetReadObjects({
       file: asyncBuffer,
       metadata: parquetMetadata,
-      columns,
+      columns: parquetColumns,
       rowStart: readStart,
       rowEnd: readEnd,
       compressors,
       // Iceberg `binary`/`fixed[N]` columns are plain BYTE_ARRAY/FIXED_LEN_BYTE_ARRAY
       // with no UTF8/STRING annotation; hyparquet's default would silently decode
-      // them as strings. Disabling its global utf8 fallback preserves bytes —
-      // genuine string columns still convert because the writer always annotates
+      // them as strings. Disabling its global utf8 fallback preserves bytes.
+      // Genuine string columns still convert because the writer always annotates
       // them with UTF8/STRING.
       utf8: false,
     })
@@ -254,6 +296,7 @@ export async function* readDataFile({
       const mapped = {}
       for (let i = 0; i < schema.fields.length; i++) {
         const field = schema.fields[i]
+        if (wantedSet && !wantedSet.has(field.name)) continue
         const parquetColumnName = parquetColumnNames[i]
         if (parquetColumnName) {
           mapped[field.name] = row[parquetColumnName]
@@ -295,7 +338,7 @@ export async function* readDataFile({
           }
         }
       }
-      if (rowLineage) {
+      if (rowLineage && wantsLineageOutput) {
         applyRowLineage(mapped, {
           row,
           pos,
@@ -304,6 +347,8 @@ export async function* readDataFile({
           rowIdColumn: lineageColumns.rowId,
           lastUpdatedSequenceNumberColumn: lineageColumns.lastUpdatedSequenceNumber,
         })
+        if (wantedSet && !wantedSet.has('_row_id')) delete mapped._row_id
+        if (wantedSet && !wantedSet.has('_last_updated_sequence_number')) delete mapped._last_updated_sequence_number
       }
       yield mapped
     }
