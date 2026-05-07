@@ -14,12 +14,13 @@ describe('package.json', () => {
     expect(packageJson.license).toBe('MIT')
   })
 
-  it('should have at most 3 dependencies', () => {
+  it('should have the expected dependencies', () => {
     const { dependencies } = packageJson
     expect(Object.keys(dependencies)).toEqual([
       'hyparquet',
       'hyparquet-compressors',
       'hyparquet-writer',
+      'squirreling',
     ])
   })
 

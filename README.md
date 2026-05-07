@@ -101,6 +101,22 @@ const { metadata } = await restCatalogLoadTable(ctx, { namespace: 'analytics', t
 const data = await icebergRead({ tableUrl: metadata.location, metadata })
 ```
 
+## SQL
+
+Icebird ships a SQL engine on top of [squirreling](https://github.com/hyparam/squirreling). `icebergQuery` runs a SQL query across one or more iceberg tables. Rows are streamed lazily. Multi-segment namespaces in the SQL `FROM` clause must be dot-separated and quoted: `FROM "analytics.orders"` resolves to namespace `analytics`, table `orders`.
+
+```javascript
+import { icebergQuery, restCatalogConnect } from 'icebird'
+import { collect } from 'squirreling'
+
+const catalog = await restCatalogConnect({ url: 'https://catalog.example.com' })
+const result = await icebergQuery({
+  catalog,
+  query: 'SELECT "Breed Name", "Popularity Rank" FROM "java.bunnies" WHERE "Popularity Rank" <= 3 ORDER BY "Popularity Rank"',
+})
+const rows = await collect(result)
+```
+
 ## Writing
 
 Icebird has experimental write support for Iceberg v2 (and v3 deletion vectors). All write functions take a `Catalog` and dispatch internally — the same call works against `fileCatalog({ resolver })` or a REST catalog context returned by `restCatalogConnect`.
