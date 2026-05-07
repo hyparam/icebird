@@ -1,56 +1,65 @@
 import { executeSql, extractTables, parseSql } from 'squirreling'
-import { restCatalogLoadTable } from '../catalog/rest.js'
+import { loadTable } from '../catalog/loadTable.js'
 import { urlResolver } from '../fetch.js'
 import { icebergDataSource } from './icebergDataSource.js'
 
 /**
  * @import {AsyncDataSource, QueryResults} from 'squirreling'
- * @import {RestCatalogContext, Resolver} from '../types.js'
+ * @import {Catalog, Resolver} from '../types.js'
  */
 
 /**
- * Run a SQL query across Iceberg tables resolved from a REST catalog.
+ * Run a SQL query across Iceberg tables. Tables can be supplied two ways:
  *
- * The query is parsed once; every FROM / JOIN table reference is split on
- * '.' to derive a namespace and table name (last segment is the table,
- * earlier segments are the namespace), then loaded via the catalog. Unquoted
- * identifiers can't contain dots, so multi-segment refs require quoting,
- * e.g. `FROM "analytics.orders"`.
+ * 1. `tables` — a map from SQL identifier (e.g. `"analytics.orders"`) to
+ *    a tableUrl. Wins over the catalog when both define a ref.
+ * 2. `catalog` — a REST or file catalog. SQL refs are split on `.` (last
+ *    segment is the table, earlier segments are the namespace) and resolved
+ *    via the catalog. Unquoted identifiers can't contain dots, so multi-segment
+ *    refs require quoting, e.g. `FROM "analytics.orders"`.
+ *
+ * At least one of the two must cover every FROM/JOIN ref in the query. File
+ * catalogs identify tables by URL rather than name, so SQL queries against a
+ * file catalog must use `tables` to map each ref to its tableUrl.
  *
  * Returns the squirreling `QueryResults` where `result.rows()` is an
  * AsyncGenerator that drives parquet reads on demand; rows are not
  * materialized up front.
  *
  * @param {object} options
- * @param {RestCatalogContext} options.catalog
+ * @param {Catalog} [options.catalog]
  * @param {string} options.query
+ * @param {Record<string, string>} [options.tables] - Map from SQL identifier to tableUrl.
  * @param {Resolver} [options.resolver]
  * @param {AbortSignal} [options.signal]
  * @returns {Promise<QueryResults>}
  */
-export async function icebergQuery({ catalog, query, resolver, signal }) {
-  if (!catalog) throw new Error('catalog is required')
+export async function icebergQuery({ catalog, query, tables, resolver, signal }) {
   if (!query) throw new Error('query is required')
-  const fetchResolver = resolver ?? urlResolver()
+  if (!catalog && !tables) throw new Error('catalog or tables is required')
+  const catalogResolver = catalog?.type === 'file' ? catalog.resolver : undefined
+  const fetchResolver = resolver ?? catalogResolver ?? urlResolver()
   const ast = parseSql({ query })
   const refs = extractTables(ast)
 
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
   const loaded = await Promise.all(refs.map(async ref => {
+    const tableUrl = tables?.[ref]
+    if (tableUrl) {
+      const source = await icebergDataSource({ tableUrl, resolver: fetchResolver })
+      return /** @type {const} */ ([ref, source])
+    }
+    if (!catalog) throw new Error(`no source for table "${ref}" — pass tables[${JSON.stringify(ref)}] or a catalog that resolves it`)
     const { namespace, table } = splitRef(ref)
-    const { metadata } = await restCatalogLoadTable(catalog, { namespace, table })
-    const source = await icebergDataSource({
-      tableUrl: metadata.location,
-      metadata,
-      resolver: fetchResolver,
-    })
+    const { metadata, tableUrl: resolvedUrl } = await loadTable({ catalog, namespace, table, resolver: fetchResolver })
+    const source = await icebergDataSource({ tableUrl: resolvedUrl, metadata, resolver: fetchResolver })
     return /** @type {const} */ ([ref, source])
   }))
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
   /** @type {Record<string, AsyncDataSource>} */
-  const tables = Object.fromEntries(loaded)
+  const sources = Object.fromEntries(loaded)
 
-  return executeSql({ tables, query: ast, signal })
+  return executeSql({ tables: sources, query: ast, signal })
 }
 
 /**

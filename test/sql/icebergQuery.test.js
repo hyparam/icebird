@@ -1,5 +1,6 @@
 import { collect } from 'squirreling'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { fileCatalog } from '../../src/catalog/file.js'
 import { restCatalogConnect } from '../../src/catalog/rest.js'
 import { icebergQuery } from '../../src/sql/icebergQuery.js'
 import { makeFetch } from '../catalog.rest.helpers.js'
@@ -20,10 +21,9 @@ describe('icebergQuery', () => {
   beforeEach(() => { mock = makeFetch({}) })
   afterEach(() => { vi.unstubAllGlobals() })
 
-  it('throws when catalog is missing', async () => {
-    const catalog = /** @type {any} */ (undefined)
-    await expect(() => icebergQuery({ catalog, query: 'SELECT 1' }))
-      .rejects.toThrow('catalog is required')
+  it('throws when neither catalog nor tables is provided', async () => {
+    await expect(() => icebergQuery({ query: 'SELECT 1' }))
+      .rejects.toThrow('catalog or tables is required')
   })
 
   it('throws when query is missing', async () => {
@@ -261,5 +261,71 @@ describe('icebergQuery', () => {
       resolver: fullResolver,
     }))
     expect(fullOpened.size).toBeGreaterThan(lazyOpened.size)
+  })
+
+  it('runs without a catalog using a tables → tableUrl map', async () => {
+    const result = await icebergQuery({
+      query: 'SELECT COUNT(*) AS n FROM bunnies',
+      tables: { bunnies: 's3a://hyperparam-iceberg/java/bunnies' },
+      resolver,
+    })
+    const rows = await collect(result)
+    expect(rows).toEqual([{ n: 15 }])
+  })
+
+  it('resolves multi-segment refs via the tables map', async () => {
+    const result = await icebergQuery({
+      query: 'SELECT COUNT(*) AS n FROM "java.bunnies"',
+      tables: { 'java.bunnies': 's3a://hyperparam-iceberg/java/bunnies' },
+      resolver,
+    })
+    const rows = await collect(result)
+    expect(rows).toEqual([{ n: 15 }])
+  })
+
+  it('queries a file catalog when every ref is mapped via tables', async () => {
+    const catalog = fileCatalog({ resolver })
+    const result = await icebergQuery({
+      catalog,
+      query: 'SELECT COUNT(*) AS n FROM bunnies',
+      tables: { bunnies: 's3a://hyperparam-iceberg/java/bunnies' },
+    })
+    const rows = await collect(result)
+    expect(rows).toEqual([{ n: 15 }])
+  })
+
+  it('tables map wins over the catalog for the same ref', async () => {
+    mock = makeFetch({ 'https://cat/v1/config': {} })
+    vi.stubGlobal('fetch', mock.fn)
+    const catalog = await restCatalogConnect({ url: 'https://cat' })
+
+    const result = await icebergQuery({
+      catalog,
+      query: 'SELECT COUNT(*) AS n FROM "java.bunnies"',
+      tables: { 'java.bunnies': 's3a://hyperparam-iceberg/java/bunnies' },
+      resolver,
+    })
+    const rows = await collect(result)
+    expect(rows).toEqual([{ n: 15 }])
+    // Catalog was never consulted for the table.
+    const tableCalls = mock.calls.filter(c => c.url.includes('/tables/'))
+    expect(tableCalls).toHaveLength(0)
+  })
+
+  it('throws when a ref is unmapped and there is no catalog', async () => {
+    await expect(() => icebergQuery({
+      query: 'SELECT * FROM bunnies JOIN other ON 1=1',
+      tables: { bunnies: 's3a://hyperparam-iceberg/java/bunnies' },
+      resolver,
+    })).rejects.toThrow(/no source for table "other"/)
+  })
+
+  it('errors with a helpful message when a SQL ref hits an unmapped file catalog', async () => {
+    const catalog = fileCatalog({ resolver })
+    await expect(() => icebergQuery({
+      catalog,
+      query: 'SELECT 1 FROM bunnies',
+      resolver,
+    })).rejects.toThrow(/tableUrl is required for file catalogs/)
   })
 })
