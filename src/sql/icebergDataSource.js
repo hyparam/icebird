@@ -117,7 +117,8 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
             }
             remainingSkip = 0
 
-            for await (const row of readDataFile({
+            let stop = false
+            for await (const batch of readDataFile({
               dataEntry: entry,
               fileRowStart,
               fileRowEnd,
@@ -130,10 +131,13 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
               wantedColumns: scanColumns,
               signal,
             })) {
-              if (signal?.aborted) break
-              yield asyncRow(row, rowColumns)
-              remaining--
-              if (remaining <= 0) break
+              for (const row of batch) {
+                if (signal?.aborted) { stop = true; break }
+                yield asyncRow(row, rowColumns)
+                remaining--
+                if (remaining <= 0) { stop = true; break }
+              }
+              if (stop) break
             }
           }
         },

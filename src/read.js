@@ -5,6 +5,7 @@ import { icebergMetadata } from './metadata.js'
 import { icebergManifests, splitManifestEntries } from './manifest.js'
 import { deleteFileAppliesToDataEntry } from './delete.js'
 import { equalityMatch, sanitize } from './utils.js'
+import { concat } from 'hyparquet/src/utils.js'
 
 /**
  * Reads data from the Iceberg table with optional row-level delete processing.
@@ -86,7 +87,7 @@ export async function icebergRead({
   const fileResults = await Promise.all(fileReads.map(async ({ entry, fileRowStart, fileRowEnd }) => {
     /** @type {Array<Record<string, any>>} */
     const rows = []
-    for await (const row of readDataFile({
+    for await (const batch of readDataFile({
       dataEntry: entry,
       fileRowStart,
       fileRowEnd,
@@ -97,7 +98,7 @@ export async function icebergRead({
       positionDeletesMap,
       equalityDeleteGroups,
     })) {
-      rows.push(row)
+      concat(rows, batch)
     }
     return rows
   }))
@@ -128,7 +129,7 @@ export async function icebergRead({
  * @param {Array<{deleteEntry: ManifestEntry, rows: Record<string, any>[]}>} options.equalityDeleteGroups
  * @param {string[]} [options.wantedColumns] - iceberg field names to emit; if undefined, emit all current-schema fields
  * @param {AbortSignal} [options.signal]
- * @returns {AsyncGenerator<Record<string, any>>}
+ * @returns {AsyncGenerator<Array<Record<string, any>>>} batches of rows, one per parquet row group
  */
 export async function* readDataFile({
   dataEntry,
@@ -283,6 +284,8 @@ export async function* readDataFile({
       utf8: false,
     })
 
+    /** @type {Array<Record<string, any>>} */
+    const batch = []
     for (let idx = 0; idx < rows.length; idx++) {
       const row = rows[idx]
       const pos = BigInt(readStart + idx)
@@ -350,8 +353,9 @@ export async function* readDataFile({
         if (wantedSet && !wantedSet.has('_row_id')) delete mapped._row_id
         if (wantedSet && !wantedSet.has('_last_updated_sequence_number')) delete mapped._last_updated_sequence_number
       }
-      yield mapped
+      batch.push(mapped)
     }
+    if (batch.length > 0) yield batch
 
     groupStart = groupEnd
   }
