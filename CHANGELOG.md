@@ -1,5 +1,8 @@
 # Icebird Changelog
 
+## [0.5.1]
+ - `icebergQuery` works against non-REST catalogs, including a default file catalog when no resolver is passed
+
 ## [0.5.0]
  - SQL query engine via `icebergQuery` and `icebergDataSource`, integrating with squirreling
  - `initial-default` applied for columns added after data was written
