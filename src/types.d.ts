@@ -480,7 +480,9 @@ type AvroFixed = {
   type: 'fixed'
   name: string
   size: number
-  logicalType?: 'uuid'
+  logicalType?: 'uuid' | 'decimal'
+  precision?: number
+  scale?: number
 }
 
 // Avro complex types: records, enums, arrays, maps, unions, fixed

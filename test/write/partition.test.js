@@ -94,6 +94,40 @@ describe('write partition helpers', () => {
     expect(groups[1].partition).toEqual({ id: 8n })
   })
 
+  it('canonicalizes non-scalar partition keys by value', () => {
+    /** @type {Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'event_time', required: false, type: 'time' },
+        { id: 2, name: 'created_at', required: false, type: 'timestamp' },
+        { id: 3, name: 'payload', required: false, type: 'binary' },
+      ],
+    }
+    /** @type {PartitionSpec} */
+    const partitionSpec = {
+      'spec-id': 0,
+      fields: [
+        { 'source-id': 1, 'field-id': 1000, name: 'event_time', transform: 'identity' },
+        { 'source-id': 2, 'field-id': 1001, name: 'created_at', transform: 'identity' },
+        { 'source-id': 3, 'field-id': 1002, name: 'payload', transform: 'identity' },
+      ],
+    }
+
+    const ts = new Date('2024-01-02T03:04:05.006Z')
+    const groups = groupByPartition([
+      { event_time: 5n, created_at: ts, payload: new Uint8Array([1, 2]) },
+      { event_time: 5n, created_at: new Date(ts.getTime()), payload: new Uint8Array([1, 2]) },
+      { event_time: 6n, created_at: ts, payload: new Uint8Array([1, 2]) },
+      { event_time: 5n, created_at: new Date(ts.getTime() + 1), payload: new Uint8Array([1, 2]) },
+      { event_time: 5n, created_at: ts, payload: new Uint8Array([1, 3]) },
+    ], schema, partitionSpec)
+
+    expect(groups).toHaveLength(4)
+    expect(groups[0].records).toHaveLength(2)
+  })
+
   it('builds Avro partition fields for temporal identity transforms', () => {
     /** @type {Schema} */
     const schema = {
@@ -221,6 +255,38 @@ describe('write partition helpers', () => {
     ])
   })
 
+  it('builds fixed Avro partition fields for decimal identity transforms', () => {
+    /** @type {Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'price', required: false, type: 'decimal(9,2)' },
+      ],
+    }
+    /** @type {PartitionSpec} */
+    const partitionSpec = {
+      'spec-id': 0,
+      fields: [{ 'source-id': 1, 'field-id': 1000, name: 'price', transform: 'identity' }],
+    }
+
+    expect(partitionAvroSchema(schema, partitionSpec).fields).toEqual([
+      {
+        name: 'price',
+        'field-id': 1000,
+        default: null,
+        type: ['null', {
+          type: 'fixed',
+          name: 'r102_1000',
+          size: 4,
+          logicalType: 'decimal',
+          precision: 9,
+          scale: 2,
+        }],
+      },
+    ])
+  })
+
   it('builds int Avro partition fields for void transforms', () => {
     /** @type {Schema} */
     const schema = {
@@ -318,6 +384,49 @@ describe('write partition helpers', () => {
     }, schema, partitionSpec)).toThrow(/expected uuid partition value/)
   })
 
+  it('coerces decimal partition values to fixed-width Avro bytes', () => {
+    /** @type {Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'price', required: false, type: 'decimal(9,2)' },
+      ],
+    }
+    /** @type {PartitionSpec} */
+    const partitionSpec = {
+      'spec-id': 0,
+      fields: [{ 'source-id': 1, 'field-id': 1000, name: 'price', transform: 'identity' }],
+    }
+
+    expect(partitionToAvroRecord({ price: 12.34 }, schema, partitionSpec))
+      .toEqual({ price: new Uint8Array([0x00, 0x00, 0x04, 0xd2]) })
+    expect(partitionToAvroRecord({ price: -1.23 }, schema, partitionSpec))
+      .toEqual({ price: new Uint8Array([0xff, 0xff, 0xff, 0x85]) })
+    const bytes = new Uint8Array([0x00, 0x00, 0x04, 0xd2])
+    expect(partitionToAvroRecord({ price: bytes }, schema, partitionSpec).price).toBe(bytes)
+    expect(() => partitionToAvroRecord({ price: new Uint8Array([0x04, 0xd2]) }, schema, partitionSpec))
+      .toThrow(/expected decimal\(9,2\) partition value/)
+    expect(() => partitionToAvroRecord({ price: '12.34' }, schema, partitionSpec))
+      .toThrow(/expected decimal\(9,2\) partition value/)
+
+    /** @type {Schema} */
+    const tinySchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'digit', required: false, type: 'decimal(1,0)' },
+      ],
+    }
+    /** @type {PartitionSpec} */
+    const tinyPartitionSpec = {
+      'spec-id': 0,
+      fields: [{ 'source-id': 1, 'field-id': 1000, name: 'digit', transform: 'identity' }],
+    }
+    expect(() => partitionToAvroRecord({ digit: 128 }, tinySchema, tinyPartitionSpec))
+      .toThrow(/partition value does not fit in decimal\(1,0\)/)
+  })
+
   it('throws when converting partition values with a missing source field', () => {
     /** @type {Schema} */
     const schema = {
@@ -359,6 +468,13 @@ describe('write partition helpers', () => {
       'spec-id': 0,
       fields: [{ 'source-id': 99, 'field-id': 1000, name: 'missing', transform: 'identity' }],
     })).toThrow(/partition source field id 99 not found/)
+    expect(() => partitionAvroSchema({
+      ...schema,
+      fields: [{ id: 2, name: 'payload', required: false, type: 'variant' }],
+    }, {
+      'spec-id': 0,
+      fields: [{ 'source-id': 2, 'field-id': 1000, name: 'payload', transform: 'identity' }],
+    })).toThrow(/unsupported partition source type: variant/)
   })
 
   it('round-trips identity time partition values through a manifest', async () => {
@@ -430,6 +546,40 @@ describe('write partition helpers', () => {
       0xf7, 0x9c, 0x3e, 0x09, 0x67, 0x7c, 0x4b, 0xbd,
       0xa4, 0x79, 0x3f, 0x34, 0x9c, 0xb7, 0x85, 0xe7,
     ]))
+  })
+
+  it('round-trips identity decimal partition values through a manifest', async () => {
+    /** @type {Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        { id: 2, name: 'price', required: false, type: 'decimal(9,2)' },
+      ],
+    }
+    /** @type {PartitionSpec} */
+    const partitionSpec = {
+      'spec-id': 0,
+      fields: [{ 'source-id': 2, 'field-id': 1000, name: 'price', transform: 'identity' }],
+    }
+    /** @type {DataFile} */
+    const dataFile = {
+      content: 0,
+      file_path: 's3://bucket/table/data/abc.parquet',
+      file_format: 'parquet',
+      partition: { price: 12.34 },
+      record_count: 1n,
+      file_size_in_bytes: 128n,
+    }
+
+    const writer = new ByteWriter()
+    writeDataManifest({ writer, schema, partitionSpec, snapshotId: 12345n, dataFiles: [dataFile] })
+    const reader = { view: new DataView(writer.getBuffer()), offset: 0 }
+    const { metadata, syncMarker } = await avroMetadata(reader)
+    const records = await avroRead({ reader, metadata, syncMarker })
+
+    expect(records[0].data_file.partition.price).toBe(12.34)
   })
 
   it('returns field type names for string and object field types', () => {

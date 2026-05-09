@@ -166,11 +166,15 @@ function icebergTypeToAvro(type, fieldId) {
   const name = typeof type === 'string' ? type : type.type
   const decimal = /^decimal\((\d+),\s*(\d+)\)$/.exec(name)
   if (decimal) {
+    const precision = parseInt(decimal[1], 10)
+    const scale = parseInt(decimal[2], 10)
     return {
-      type: 'bytes',
+      type: 'fixed',
+      name: `r102_${fieldId}`,
+      size: decimalRequiredBytes(precision),
       logicalType: 'decimal',
-      precision: parseInt(decimal[1], 10),
-      scale: parseInt(decimal[2], 10),
+      precision,
+      scale,
     }
   }
   const fixed = /^fixed\[(\d+)\]$/.exec(name)
@@ -224,6 +228,14 @@ function coerceForAvro(value, type) {
   if (name === 'uuid') {
     return uuidToBytes(value)
   }
+  const decimal = /^decimal\((\d+),\s*(\d+)\)$/.exec(name)
+  if (decimal) {
+    return decimalToFixedBytes(
+      value,
+      parseInt(decimal[1], 10),
+      parseInt(decimal[2], 10)
+    )
+  }
   const fixed = /^fixed\[(\d+)\]$/.exec(name)
   if (fixed) {
     const bytes = bytesForAvro(value)
@@ -234,6 +246,68 @@ function coerceForAvro(value, type) {
     return bytes
   }
   return value
+}
+
+/**
+ * @param {any} value
+ * @param {number} precision
+ * @param {number} scale
+ * @returns {Uint8Array}
+ */
+function decimalToFixedBytes(value, precision, scale) {
+  const size = decimalRequiredBytes(precision)
+  if (value instanceof Uint8Array) {
+    if (value.length !== size) {
+      throw new Error(`expected decimal(${precision},${scale}) partition value`)
+    }
+    return value
+  }
+  if (typeof value !== 'number' && typeof value !== 'bigint') {
+    throw new Error(`expected decimal(${precision},${scale}) partition value`)
+  }
+  const factor = 10n ** BigInt(scale)
+  const unscaled = typeof value === 'bigint'
+    ? value * factor
+    : BigInt(Math.round(value * Number(factor)))
+  return bigintToFixedBytes(unscaled, size, `decimal(${precision},${scale})`)
+}
+
+/**
+ * Minimum bytes required for an Avro fixed decimal of the given precision.
+ * @param {number} precision
+ * @returns {number}
+ */
+function decimalRequiredBytes(precision) {
+  const limit = 10n ** BigInt(precision)
+  let n = 1
+  let bound = 128n
+  while (limit > bound) {
+    n++
+    bound <<= 8n
+  }
+  return n
+}
+
+/**
+ * @param {bigint} value
+ * @param {number} size
+ * @param {string} typeName
+ * @returns {Uint8Array}
+ */
+function bigintToFixedBytes(value, size, typeName) {
+  const bytes = new Uint8Array(size)
+  let v = value
+  for (let i = size - 1; i >= 0; i--) {
+    bytes[i] = Number(v & 0xffn)
+    v >>= 8n
+  }
+  const negative = value < 0n
+  const signBitSet = (bytes[0] & 0x80) !== 0
+  if (!negative && (v !== 0n || signBitSet) ||
+      negative && (v !== -1n || !signBitSet)) {
+    throw new Error(`partition value does not fit in ${typeName}`)
+  }
+  return bytes
 }
 
 /**

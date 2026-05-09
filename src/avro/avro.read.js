@@ -96,10 +96,6 @@ function readType(reader, type) {
       }
     }
     return arr
-  } else if (typeof type === 'object' && type.type === 'fixed') {
-    const bytes = new Uint8Array(reader.view.buffer, reader.view.byteOffset + reader.offset, type.size)
-    reader.offset += type.size
-    return bytes
   } else if (typeof type === 'object' && type.logicalType) {
     if (type.logicalType === 'date' && type.type === 'int') {
       const value = readZigZag(reader)
@@ -118,14 +114,20 @@ function readType(reader, type) {
       const value = readZigZagBigInt(reader)
       return new Date(Number(value / 1000000n))
     } else if (type.logicalType === 'decimal' && 'precision' in type) {
-      const bytes = readType(reader, type.type)
+      const bytes = type.type === 'fixed'
+        ? readFixed(reader, type.size)
+        : readType(reader, type.type)
       const scale = type.scale || 0
       const factor = 10 ** -scale
       return parseDecimal(bytes) * factor
     } else {
       console.warn(`unknown logical type: ${type.logicalType}`)
-      return readType(reader, type.type)
+      return type.type === 'fixed'
+        ? readFixed(reader, type.size)
+        : readType(reader, type.type)
     }
+  } else if (typeof type === 'object' && type.type === 'fixed') {
+    return readFixed(reader, type.size)
   } else if (type === 'boolean') {
     const value = reader.view.getUint8(reader.offset) === 1
     reader.offset++
@@ -157,4 +159,15 @@ function readType(reader, type) {
     // enum, fixed, null, map
     throw new Error(`unsupported type: ${type}`)
   }
+}
+
+/**
+ * @param {DataReader} reader
+ * @param {number} size
+ * @returns {Uint8Array}
+ */
+function readFixed(reader, size) {
+  const bytes = new Uint8Array(reader.view.buffer, reader.view.byteOffset + reader.offset, size)
+  reader.offset += size
+  return bytes
 }
