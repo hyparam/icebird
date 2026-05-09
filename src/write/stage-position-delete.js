@@ -6,8 +6,10 @@ import { writeDeleteManifest } from './manifest.js'
 import {
   buildPartitionSummaries,
   buildSnapshotUpdate,
-  checkWriteFormat,
   currentSnapshot,
+} from './snapshot.js'
+import {
+  checkWriteFormat,
   newSnapshotId,
   resolveParquetCodec,
 } from './stage.js'

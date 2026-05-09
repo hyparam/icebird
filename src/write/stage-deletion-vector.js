@@ -8,9 +8,11 @@ import { writeDeleteManifest, writeExistingDeleteManifest } from './manifest.js'
 import {
   buildPartitionSummaries,
   buildSnapshotUpdate,
-  checkWriteFormat,
   currentSnapshot,
   loadPriorManifests,
+} from './snapshot.js'
+import {
+  checkWriteFormat,
   newSnapshotId,
 } from './stage.js'
 import { findDataFileEntries, loadManifestEntries, partitionTupleKey } from './stage-position-delete.js'
