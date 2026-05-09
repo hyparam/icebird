@@ -66,7 +66,7 @@ function writeType(writer, schema, value) {
       // types (record/array) the structural type wins over any logicalType
       // annotation (e.g. an Iceberg array with logicalType=map is still an array).
       const tag = typeof s === 'string' ? s
-        : s.type === 'record' || s.type === 'array' ? s.type
+        : s.type === 'record' || s.type === 'array' || s.type === 'fixed' ? s.type
           : s.logicalType
 
       if (value == null) return tag === 'null'
@@ -87,6 +87,7 @@ function writeType(writer, schema, value) {
       if (tag === 'decimal') return typeof value === 'number' || typeof value === 'bigint'
       if (tag === 'record') return typeof value === 'object' && value !== null
       if (tag === 'array') return Array.isArray(value)
+      if (tag === 'fixed') return value instanceof Uint8Array
       return false
     })
 
@@ -135,6 +136,10 @@ function writeType(writer, schema, value) {
       }
     }
     writer.appendVarInt(0)
+  } else if (schema.type === 'fixed') {
+    if (!(value instanceof Uint8Array)) throw new Error('expected Uint8Array value')
+    if (value.length !== schema.size) throw new Error(`expected fixed[${schema.size}] value`)
+    writer.appendBytes(value)
   } else if ('logicalType' in schema) {
     if (schema.logicalType === 'date') {
       appendZigZag(writer, value instanceof Date ? Math.floor(value.getTime() / 86400000) : value)

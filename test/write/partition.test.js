@@ -84,6 +84,41 @@ describe('write partition helpers', () => {
     ])
   })
 
+  it('builds Avro fixed partition fields for uuid and fixed types', () => {
+    /** @type {Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'uuid_col', required: false, type: 'uuid' },
+        { id: 2, name: 'sig', required: false, type: /** @type {const} */ ('fixed[4]') },
+      ],
+    }
+    /** @type {PartitionSpec} */
+    const partitionSpec = {
+      'spec-id': 0,
+      fields: [
+        { 'source-id': 1, 'field-id': 1000, name: 'uuid_col', transform: 'identity' },
+        { 'source-id': 2, 'field-id': 1001, name: 'sig', transform: 'identity' },
+      ],
+    }
+
+    expect(partitionAvroSchema(schema, partitionSpec).fields).toEqual([
+      {
+        name: 'uuid_col',
+        'field-id': 1000,
+        default: null,
+        type: ['null', { type: 'fixed', name: 'r102_1000', size: 16, logicalType: 'uuid' }],
+      },
+      {
+        name: 'sig',
+        'field-id': 1001,
+        default: null,
+        type: ['null', { type: 'fixed', name: 'r102_1001', size: 4 }],
+      },
+    ])
+  })
+
   it('coerces long partition values for Avro records', () => {
     /** @type {Schema} */
     const schema = {
@@ -100,6 +135,62 @@ describe('write partition helpers', () => {
     }
 
     expect(partitionToAvroRecord({ id: 7 }, schema, partitionSpec)).toEqual({ id: 7n })
+  })
+
+  it('coerces uuid strings and rejects invalid fixed partition values for Avro records', () => {
+    /** @type {Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'uuid_col', required: false, type: 'uuid' },
+        { id: 2, name: 'sig', required: false, type: /** @type {const} */ ('fixed[4]') },
+      ],
+    }
+    /** @type {PartitionSpec} */
+    const partitionSpec = {
+      'spec-id': 0,
+      fields: [
+        { 'source-id': 1, 'field-id': 1000, name: 'uuid_col', transform: 'identity' },
+        { 'source-id': 2, 'field-id': 1001, name: 'sig', transform: 'identity' },
+      ],
+    }
+
+    const record = partitionToAvroRecord({
+      uuid_col: 'f79c3e09-677c-4bbd-a479-3f349cb785e7',
+      sig: new Uint8Array([1, 2, 3, 4]),
+    }, schema, partitionSpec)
+
+    expect(record).toEqual({
+      uuid_col: new Uint8Array([
+        0xf7, 0x9c, 0x3e, 0x09, 0x67, 0x7c, 0x4b, 0xbd,
+        0xa4, 0x79, 0x3f, 0x34, 0x9c, 0xb7, 0x85, 0xe7,
+      ]),
+      sig: new Uint8Array([1, 2, 3, 4]),
+    })
+    expect(() => partitionToAvroRecord({
+      uuid_col: 'f79c3e09-677c-4bbd-a479-3f349cb785e7',
+      sig: new Uint8Array([1, 2, 3]),
+    }, schema, partitionSpec)).toThrow(/expected fixed\[4\] partition value/)
+  })
+
+  it('throws when converting partition values with a missing source field', () => {
+    /** @type {Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+      ],
+    }
+    /** @type {PartitionSpec} */
+    const partitionSpec = {
+      'spec-id': 0,
+      fields: [{ 'source-id': 99, 'field-id': 1000, name: 'missing', transform: 'identity' }],
+    }
+
+    expect(() => partitionToAvroRecord({ missing: 1 }, schema, partitionSpec))
+      .toThrow(/partition source field id 99 not found/)
   })
 
   it('round-trips identity time partition values through a manifest', async () => {
@@ -134,5 +225,42 @@ describe('write partition helpers', () => {
     const records = await avroRead({ reader, metadata, syncMarker })
 
     expect(records[0].data_file.partition.event_time).toBe(45_000_000n)
+  })
+
+  it('round-trips identity uuid partition values through a manifest', async () => {
+    /** @type {Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        { id: 2, name: 'uuid_col', required: false, type: 'uuid' },
+      ],
+    }
+    /** @type {PartitionSpec} */
+    const partitionSpec = {
+      'spec-id': 0,
+      fields: [{ 'source-id': 2, 'field-id': 1000, name: 'uuid_col', transform: 'identity' }],
+    }
+    /** @type {DataFile} */
+    const dataFile = {
+      content: 0,
+      file_path: 's3://bucket/table/data/abc.parquet',
+      file_format: 'parquet',
+      partition: { uuid_col: 'f79c3e09-677c-4bbd-a479-3f349cb785e7' },
+      record_count: 1n,
+      file_size_in_bytes: 128n,
+    }
+
+    const writer = new ByteWriter()
+    writeDataManifest({ writer, schema, partitionSpec, snapshotId: 12345n, dataFiles: [dataFile] })
+    const reader = { view: new DataView(writer.getBuffer()), offset: 0 }
+    const { metadata, syncMarker } = await avroMetadata(reader)
+    const records = await avroRead({ reader, metadata, syncMarker })
+
+    expect(records[0].data_file.partition.uuid_col).toEqual(new Uint8Array([
+      0xf7, 0x9c, 0x3e, 0x09, 0x67, 0x7c, 0x4b, 0xbd,
+      0xa4, 0x79, 0x3f, 0x34, 0x9c, 0xb7, 0x85, 0xe7,
+    ]))
   })
 })

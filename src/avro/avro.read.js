@@ -96,6 +96,10 @@ function readType(reader, type) {
       }
     }
     return arr
+  } else if (typeof type === 'object' && type.type === 'fixed') {
+    const bytes = new Uint8Array(reader.view.buffer, reader.view.byteOffset + reader.offset, type.size)
+    reader.offset += type.size
+    return bytes
   } else if (typeof type === 'object' && type.logicalType) {
     if (type.logicalType === 'date' && type.type === 'int') {
       const value = readZigZag(reader)

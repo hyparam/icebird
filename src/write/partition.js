@@ -81,7 +81,7 @@ export function partitionAvroSchema(schema, partitionSpec) {
       name: pf.name,
       'field-id': pf['field-id'],
       default: null,
-      type: ['null', icebergTypeToAvro(resultType)],
+      type: ['null', icebergTypeToAvro(resultType, pf['field-id'])],
     }
   })
   return { type: 'record', name: 'r102', fields }
@@ -115,7 +115,9 @@ export function partitionToAvroRecord(partition, schema, partitionSpec) {
   const out = {}
   for (const pf of partitionSpec.fields) {
     const sourceField = schema.fields.find(f => f.id === pf['source-id'])
-    if (!sourceField) continue
+    if (!sourceField) {
+      throw new Error(`partition source field id ${pf['source-id']} not found`)
+    }
     const resultType = transformResultType(pf.transform, sourceField.type)
     const value = partition[pf.name]
     out[pf.name] = value == null ? null : coerceForAvro(value, resultType)
@@ -156,9 +158,10 @@ function floatPartitionKey(value, type) {
 
 /**
  * @param {IcebergType} type
+ * @param {number} fieldId
  * @returns {AvroType}
  */
-function icebergTypeToAvro(type) {
+function icebergTypeToAvro(type, fieldId) {
   const name = typeof type === 'string' ? type : type.type
   const decimal = /^decimal\((\d+),\s*(\d+)\)$/.exec(name)
   if (decimal) {
@@ -169,11 +172,14 @@ function icebergTypeToAvro(type) {
       scale: parseInt(decimal[2], 10),
     }
   }
-  // Iceberg's spec uses Avro `fixed` for fixed[N] partition columns, but the
-  // icebird Avro writer doesn't implement the `fixed` complex type. `bytes`
-  // is wire-compatible (length-prefixed byte sequence) and round-trips
-  // through every Avro reader we care about.
-  if (/^fixed\[\d+\]$/.test(name)) return 'bytes'
+  const fixed = /^fixed\[(\d+)\]$/.exec(name)
+  if (fixed) {
+    return {
+      type: 'fixed',
+      name: `r102_${fieldId}`,
+      size: parseInt(fixed[1], 10),
+    }
+  }
   switch (name) {
   case 'boolean': return 'boolean'
   case 'int': return 'int'
@@ -181,6 +187,13 @@ function icebergTypeToAvro(type) {
   case 'float': return 'float'
   case 'double': return 'double'
   case 'string': return 'string'
+  case 'uuid':
+    return {
+      type: 'fixed',
+      name: `r102_${fieldId}`,
+      size: 16,
+      logicalType: 'uuid',
+    }
   case 'binary': return 'bytes'
   case 'date': return { type: 'int', logicalType: 'date' }
   case 'time': return { type: 'long', logicalType: 'time-micros' }
@@ -207,7 +220,46 @@ function coerceForAvro(value, type) {
   if (name === 'long') {
     return typeof value === 'bigint' ? value : BigInt(value)
   }
+  if (name === 'uuid') {
+    return uuidToBytes(value)
+  }
+  const fixed = /^fixed\[(\d+)\]$/.exec(name)
+  if (fixed) {
+    const bytes = bytesForAvro(value)
+    const expected = parseInt(fixed[1], 10)
+    if (bytes.length !== expected) {
+      throw new Error(`expected fixed[${expected}] partition value`)
+    }
+    return bytes
+  }
   return value
+}
+
+/**
+ * @param {any} value
+ * @returns {Uint8Array}
+ */
+function bytesForAvro(value) {
+  return value instanceof Uint8Array ? value : new Uint8Array(value)
+}
+
+/**
+ * @param {any} value
+ * @returns {Uint8Array}
+ */
+function uuidToBytes(value) {
+  if (value instanceof Uint8Array) {
+    if (value.length !== 16) throw new Error('expected uuid partition value')
+    return value
+  }
+  if (typeof value !== 'string') throw new Error('expected uuid partition value')
+  const hex = value.toLowerCase().replace(/-/g, '')
+  if (!/^[0-9a-f]{32}$/.test(hex)) throw new Error('expected uuid partition value')
+  const bytes = new Uint8Array(16)
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)
+  }
+  return bytes
 }
 
 /**
