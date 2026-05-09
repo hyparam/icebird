@@ -231,4 +231,28 @@ describe('createIceberg', () => {
     expect(metadata['format-version']).toBe(3)
     expect(metadata.schemas[0].fields).toHaveLength(2)
   })
+
+  it.each([
+    'unknown',
+    'variant',
+    'geometry',
+    'geography',
+  ])('rejects non-null defaults for v3 %s fields', async type => {
+    const resolver = { reader: vi.fn(), writer: vi.fn(() => new ByteWriter()) }
+    /** @type {Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [{
+        id: 1,
+        name: 'future',
+        required: false,
+        type: /** @type {any} */ (type),
+        'initial-default': 'not-null',
+      }],
+    }
+
+    await expect(icebergCreate({ tableUrl, resolver, schema, formatVersion: 3 }))
+      .rejects.toThrow(/must default to null/)
+  })
 })

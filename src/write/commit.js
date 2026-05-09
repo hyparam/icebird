@@ -212,9 +212,15 @@ export function applyUpdates(metadata, updates) {
       const newSchema = { ...up.schema, 'schema-id': schemaId }
       validateSchemaForVersion(newSchema, next['format-version'])
       const priorLastColumnId = next['last-column-id'] ?? 0
+      validateSchemaEvolution(schemas, newSchema, priorLastColumnId, next['format-version'])
       for (const field of newSchema.fields) {
-        if (field.id > priorLastColumnId && field.required && field['initial-default'] === undefined) {
-          throw new Error(`add-schema: required field ${field.name} (id ${field.id}) needs an initial-default`)
+        if (field.id > priorLastColumnId && field.required) {
+          if (field['initial-default'] == null) {
+            throw new Error(`add-schema: required field ${field.name} (id ${field.id}) needs a non-null initial-default`)
+          }
+          if (field['write-default'] == null) {
+            throw new Error(`add-schema: required field ${field.name} (id ${field.id}) needs a non-null write-default`)
+          }
         }
       }
       next = {
@@ -263,6 +269,7 @@ export function applyUpdates(metadata, updates) {
       }
       /** @type {PartitionSpec} */
       const newSpec = { ...up.spec, 'spec-id': specId }
+      validatePartitionSpecEvolution(specs, newSpec)
       const priorLastPartitionId = next['last-partition-id'] ?? 0
       let nextLastPartitionId = priorLastPartitionId
       for (const f of newSpec.fields) {
@@ -310,6 +317,216 @@ export function applyUpdates(metadata, updates) {
     }
   }
   return next
+}
+
+/**
+ * Validate schema evolution rules that require comparing the new schema with
+ * prior schemas: existing field ids may be renamed/reordered, but their
+ * immutable defaults and types must remain valid.
+ *
+ * @param {Schema[]} schemas
+ * @param {Schema} newSchema
+ * @param {number} priorLastColumnId
+ * @param {number} formatVersion
+ */
+function validateSchemaEvolution(schemas, newSchema, priorLastColumnId, formatVersion) {
+  for (const field of newSchema.fields) {
+    if (field.id > priorLastColumnId) continue
+    const prior = latestFieldById(schemas, field.id)
+    if (!prior) continue
+    if (!canPromoteType(prior.type, field.type, formatVersion)) {
+      throw new Error(`add-schema: cannot promote field ${field.name} from ${typeToString(prior.type)} to ${typeToString(field.type)}`)
+    }
+    if (!defaultsEqual(prior['initial-default'], field['initial-default'])) {
+      throw new Error(`add-schema: initial-default for field ${field.name} cannot change`)
+    }
+  }
+}
+
+/**
+ * @param {Schema[]} schemas
+ * @param {number} id
+ * @returns {Field|undefined}
+ */
+function latestFieldById(schemas, id) {
+  for (let i = schemas.length - 1; i >= 0; i--) {
+    const field = schemas[i].fields.find(f => f.id === id)
+    if (field) return field
+  }
+}
+
+/**
+ * @param {import('../../src/types.js').IcebergType} from
+ * @param {import('../../src/types.js').IcebergType} to
+ * @param {number} formatVersion
+ * @returns {boolean}
+ */
+function canPromoteType(from, to, formatVersion) {
+  if (typesEqual(from, to)) return true
+  if (typeof from !== 'string' || typeof to !== 'string') return false
+  if (formatVersion >= 3 && from === 'unknown') return true
+  if (from === 'int' && to === 'long') return true
+  if (from === 'float' && to === 'double') return true
+  if (formatVersion >= 3 && from === 'date' && (to === 'timestamp' || to === 'timestamp_ns')) return true
+  return decimalPromotionAllowed(from, to)
+}
+
+/**
+ * @param {import('../../src/types.js').IcebergType} a
+ * @param {import('../../src/types.js').IcebergType} b
+ * @returns {boolean}
+ */
+function typesEqual(a, b) {
+  if (typeof a === 'string' || typeof b === 'string') return a === b
+  return JSON.stringify(a) === JSON.stringify(b)
+}
+
+/**
+ * @param {string} from
+ * @param {string} to
+ * @returns {boolean}
+ */
+function decimalPromotionAllowed(from, to) {
+  const a = parseDecimalType(from)
+  const b = parseDecimalType(to)
+  return Boolean(a && b && b.precision > a.precision && b.scale === a.scale)
+}
+
+/**
+ * @param {string} type
+ * @returns {{precision: number, scale: number}|undefined}
+ */
+function parseDecimalType(type) {
+  const m = /^decimal\((\d+),\s*(\d+)\)$/.exec(type)
+  if (!m) return
+  return { precision: Number(m[1]), scale: Number(m[2]) }
+}
+
+/**
+ * @param {import('../../src/types.js').IcebergType} type
+ * @returns {string}
+ */
+function typeToString(type) {
+  return typeof type === 'string' ? type : JSON.stringify(type)
+}
+
+/**
+ * @param {any} a
+ * @param {any} b
+ * @returns {boolean}
+ */
+function defaultsEqual(a, b) {
+  if (Object.is(a, b)) return true
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false
+    for (let i = 0; i < a.length; i++) {
+      if (!defaultsEqual(a[i], b[i])) return false
+    }
+    return true
+  }
+  const aKeys = Object.keys(a)
+  const bKeys = Object.keys(b)
+  if (aKeys.length !== bKeys.length) return false
+  for (const key of aKeys) {
+    if (!Object.hasOwn(b, key)) return false
+    if (!defaultsEqual(a[key], b[key])) return false
+  }
+  return true
+}
+
+/**
+ * @param {PartitionSpec[]} specs
+ * @param {PartitionSpec} newSpec
+ */
+function validatePartitionSpecEvolution(specs, newSpec) {
+  validateWritablePartitionSpec(newSpec)
+  if (specs.some(spec => partitionSpecsEquivalent(spec, newSpec))) {
+    throw new Error('add-spec: equivalent partition spec already exists')
+  }
+  for (const field of newSpec.fields) {
+    const equivalent = equivalentPartitionField(specs, field)
+    if (equivalent && equivalent['field-id'] !== field['field-id']) {
+      throw new Error(`add-spec: partition field ${field.name} must reuse field-id ${equivalent['field-id']}`)
+    }
+  }
+}
+
+/**
+ * @param {PartitionSpec} spec
+ */
+function validateWritablePartitionSpec(spec) {
+  for (const field of spec.fields) {
+    if (!isKnownTransform(field.transform)) {
+      throw new Error(`add-spec: unsupported partition transform: ${field.transform}`)
+    }
+  }
+}
+
+/**
+ * @param {string} transform
+ * @returns {boolean}
+ */
+function isKnownTransform(transform) {
+  return transform === 'identity' ||
+    transform === 'void' ||
+    transform === 'year' ||
+    transform === 'month' ||
+    transform === 'day' ||
+    transform === 'hour' ||
+    /^bucket\[\d+\]$/.test(transform) ||
+    /^truncate\[\d+\]$/.test(transform)
+}
+
+/**
+ * @param {PartitionSpec[]} specs
+ * @param {PartitionSpec['fields'][number]} field
+ * @returns {PartitionSpec['fields'][number]|undefined}
+ */
+function equivalentPartitionField(specs, field) {
+  for (const spec of specs) {
+    const found = spec.fields.find(existing => partitionFieldsEquivalent(existing, field))
+    if (found) return found
+  }
+}
+
+/**
+ * @param {PartitionSpec} a
+ * @param {PartitionSpec} b
+ * @returns {boolean}
+ */
+function partitionSpecsEquivalent(a, b) {
+  if (a.fields.length !== b.fields.length) return false
+  for (let i = 0; i < a.fields.length; i++) {
+    if (!partitionFieldsEquivalent(a.fields[i], b.fields[i])) return false
+  }
+  return true
+}
+
+/**
+ * @param {PartitionSpec['fields'][number]} a
+ * @param {PartitionSpec['fields'][number]} b
+ * @returns {boolean}
+ */
+function partitionFieldsEquivalent(a, b) {
+  return a['source-id'] === b['source-id'] &&
+    idsListEquivalent(a['source-ids'], b['source-ids']) &&
+    a.transform === b.transform &&
+    a.name === b.name
+}
+
+/**
+ * @param {number[]|undefined} a
+ * @param {number[]|undefined} b
+ * @returns {boolean}
+ */
+function idsListEquivalent(a, b) {
+  if (a === undefined || b === undefined) return a === b
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false
+  }
+  return true
 }
 
 /**
