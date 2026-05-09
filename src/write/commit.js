@@ -28,12 +28,13 @@ import { parseDecimalType } from './conversions.js'
  *   was loaded from. Recorded verbatim in the `metadata-log` entry for the
  *   prior version so rollback / log walks land on a real file even when the
  *   prior writer used `NNNNN-<uuid>.metadata.json` instead of `vN.metadata.json`.
+ * @param {number} [options.currentVersion] - If known, the on-disk version of `metadata`. Bypasses deriving from `metadata-log`, which can be empty/stale on foreign-written tables.
  * @param {StagedUpdate} options.staged
  * @param {Resolver} options.resolver
  * @param {boolean} [options.conditionalCommits] - When true, write the metadata file with `ifNoneMatch: '*'` and tolerate version-hint failures.
  * @returns {Promise<TableMetadata>} The new metadata, already persisted.
  */
-export async function fileCatalogCommit({ tableUrl, metadata, metadataFileName, staged, resolver, conditionalCommits }) {
+export async function fileCatalogCommit({ tableUrl, metadata, metadataFileName, currentVersion, staged, resolver, conditionalCommits }) {
   if (!tableUrl) throw new Error('tableUrl is required')
   if (!resolver?.writer) throw new Error('resolver.writer is required')
 
@@ -45,11 +46,11 @@ export async function fileCatalogCommit({ tableUrl, metadata, metadataFileName, 
   const updated = applyUpdates(baseMetadata, staged.updates)
 
   const priorMetadataLog = metadata['metadata-log'] ?? []
-  const currentVersion = deriveCurrentVersion(priorMetadataLog)
-  const newVersion = currentVersion + 1
+  const derivedVersion = currentVersion ?? deriveCurrentVersion(priorMetadataLog)
+  const newVersion = derivedVersion + 1
   const currentMetadataPath = metadataFileName
     ? `${tableUrl}/metadata/${metadataFileName}`
-    : `${tableUrl}/metadata/v${currentVersion}.metadata.json`
+    : `${tableUrl}/metadata/v${derivedVersion}.metadata.json`
   const newMetadataPath = `${tableUrl}/metadata/v${newVersion}.metadata.json`
 
   const appendedLog = [
