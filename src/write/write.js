@@ -2,13 +2,9 @@ import { loadTable } from '../catalog/loadTable.js'
 import { restCatalogCreateTable, restCatalogDropTable, restCatalogUpdateTable } from '../catalog/rest.js'
 import { icebergCreate } from '../create.js'
 import { applyUpdates, fileCatalogCommit } from './commit.js'
-import {
-  icebergStageAppend,
-  icebergStageDeletionVector,
-  icebergStageExpireSnapshots,
-  icebergStagePositionDelete,
-  icebergStageSetRef,
-} from './stage.js'
+import { icebergStageDeletionVector } from './stage-deletion-vector.js'
+import { icebergStagePositionDelete } from './stage-position-delete.js'
+import { icebergStageAppend, icebergStageExpireSnapshots, icebergStageSetRef } from './stage.js'
 
 /**
  * @import {Catalog, IcebergTransaction, Lister, PartitionSpec, Resolver, Schema, Snapshot, SortOrder, StagedUpdate, TableMetadata, TableRequirement} from '../../src/types.js'
