@@ -4,6 +4,10 @@ import { readDeletionVector, writeDeletionVector } from '../src/puffin/deletion-
 import { puffinReadDeletionVector, readPuffinMetadata, writePuffinFile } from '../src/puffin/puffin.js'
 import { readRoaringBitmap32, writeRoaringBitmap32 } from '../src/puffin/roaring.js'
 
+/**
+ * @import {AsyncBuffer} from 'hyparquet'
+ */
+
 describe('puffin deletion vectors', () => {
   it('decodes roaring run containers', () => {
     // run container with runs [10..12] and [20..20]
@@ -178,7 +182,7 @@ describe('puffin writers', () => {
 
 /**
  * @param {Uint8Array} bytes
- * @returns {import('hyparquet').AsyncBuffer}
+ * @returns {AsyncBuffer}
  */
 function asyncBuffer(bytes) {
   return {
@@ -204,4 +208,3 @@ function puffinFile(blob, referencedDataFile) {
     }],
   })
 }
-

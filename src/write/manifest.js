@@ -3,7 +3,7 @@ import { partitionAvroSchema, partitionSpecJson, partitionToAvroRecord } from '.
 
 /**
  * @import {Writer} from 'hyparquet-writer'
- * @import {AvroField, AvroRecord, DataFile, PartitionSpec, Schema} from '../../src/types.js'
+ * @import {AvroField, AvroRecord, DataFile, ManifestEntry, PartitionSpec, Schema} from '../../src/types.js'
  */
 
 /**
@@ -221,7 +221,7 @@ export function writeDeleteManifest({ writer, schema, partitionSpec, snapshotId,
  * @param {Writer} options.writer
  * @param {Schema} options.schema
  * @param {PartitionSpec} options.partitionSpec
- * @param {import('../../src/types.js').ManifestEntry[]} options.entries
+ * @param {ManifestEntry[]} options.entries
  * @param {2|3} [options.formatVersion]
  * @returns {void | Promise<void>} resolves when the writer's `finish()` lands
  */

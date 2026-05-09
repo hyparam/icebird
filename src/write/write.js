@@ -7,7 +7,7 @@ import { icebergStagePositionDelete } from './stage-position-delete.js'
 import { icebergStageAppend, icebergStageExpireSnapshots, icebergStageSetRef } from './stage.js'
 
 /**
- * @import {Catalog, IcebergTransaction, Lister, PartitionSpec, Resolver, Schema, Snapshot, SortOrder, StagedUpdate, TableMetadata, TableRequirement} from '../../src/types.js'
+ * @import {Catalog, IcebergTransaction, Lister, PartitionSpec, Resolver, Schema, Snapshot, SortOrder, StagedUpdate, TableMetadata, TableRequirement, TableUpdate} from '../../src/types.js'
  */
 
 /**
@@ -160,7 +160,7 @@ export async function icebergTransaction({ catalog, namespace, table, tableUrl, 
 
   /** @type {TableRequirement[]} */
   const allRequirements = []
-  /** @type {import('../types.js').TableUpdate[]} */
+  /** @type {TableUpdate[]} */
   const allUpdates = []
   /** @type {string[]} */
   const allWrittenFiles = []

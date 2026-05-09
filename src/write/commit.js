@@ -3,7 +3,7 @@ import { validateSchemaForVersion } from '../schema.js'
 import { parseDecimalType } from './conversions.js'
 
 /**
- * @import {Field, PartitionSpec, Resolver, Schema, SnapshotRef, SortOrder, StagedUpdate, TableMetadata, TableRequirement, TableUpdate} from '../../src/types.js'
+ * @import {Field, IcebergType, PartitionSpec, Resolver, Schema, SnapshotRef, SortOrder, StagedUpdate, TableMetadata, TableRequirement, TableUpdate} from '../../src/types.js'
  */
 
 /**
@@ -361,8 +361,8 @@ function latestFieldById(schemas, id) {
 }
 
 /**
- * @param {import('../../src/types.js').IcebergType} from
- * @param {import('../../src/types.js').IcebergType} to
+ * @param {IcebergType} from
+ * @param {IcebergType} to
  * @param {number} formatVersion
  * @returns {boolean}
  */
@@ -377,8 +377,8 @@ function canPromoteType(from, to, formatVersion) {
 }
 
 /**
- * @param {import('../../src/types.js').IcebergType} a
- * @param {import('../../src/types.js').IcebergType} b
+ * @param {IcebergType} a
+ * @param {IcebergType} b
  * @returns {boolean}
  */
 function typesEqual(a, b) {
@@ -398,7 +398,7 @@ function decimalPromotionAllowed(from, to) {
 }
 
 /**
- * @param {import('../../src/types.js').IcebergType} type
+ * @param {IcebergType} type
  * @returns {string}
  */
 function typeToString(type) {

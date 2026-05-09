@@ -10,7 +10,7 @@ import { icebergStageAppend } from '../../src/write/stage.js'
 import { memResolver } from '../helpers.js'
 
 /**
- * @import {Schema} from '../../src/types.js'
+ * @import {ManifestEntry, Resolver, Schema, TableMetadata} from '../../src/types.js'
  */
 
 /** @type {Schema} */
@@ -24,16 +24,16 @@ const schema = {
 }
 
 /**
- * @param {import('../../src/types.js').TableMetadata} metadata
- * @param {import('../../src/types.js').Resolver} resolver
- * @returns {Promise<import('../../src/types.js').ManifestEntry[]>}
+ * @param {TableMetadata} metadata
+ * @param {Resolver} resolver
+ * @returns {Promise<ManifestEntry[]>}
  */
 async function currentManifestEntries(metadata, resolver) {
   const snapshot = metadata.snapshots?.find(s => s['snapshot-id'] === metadata['current-snapshot-id'])
   if (!snapshot?.['manifest-list']) throw new Error('current snapshot manifest-list missing')
   const manifests = await fetchAvroRecords(snapshot['manifest-list'], resolver)
   const entries = await Promise.all(manifests.map(async manifest => {
-    const records = /** @type {import('../../src/types.js').ManifestEntry[]} */ (
+    const records = /** @type {ManifestEntry[]} */ (
       await fetchAvroRecords(manifest.manifest_path, resolver)
     )
     return records.map(record => ({
@@ -47,7 +47,7 @@ async function currentManifestEntries(metadata, resolver) {
 describe('icebergStageDeletionVector', () => {
   /**
    * @param {string} tableUrl
-   * @returns {Promise<{ resolver: ReturnType<typeof memResolver>['resolver'], files: ReturnType<typeof memResolver>['files'], metadata: import('../../src/types.js').TableMetadata }>}
+   * @returns {Promise<{ resolver: ReturnType<typeof memResolver>['resolver'], files: ReturnType<typeof memResolver>['files'], metadata: TableMetadata }>}
    */
   async function v3Table(tableUrl) {
     const { resolver, files } = memResolver()
