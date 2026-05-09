@@ -160,7 +160,8 @@ function bucketTransform(value, sourceType, n) {
 
 /**
  * Per Iceberg spec: integer-like sources are hashed as 8-byte little-endian
- * longs; strings as UTF-8 bytes; binary/fixed/uuid as raw bytes; decimals
+ * longs; nanosecond timestamps are truncated to microsecond precision before
+ * hashing; strings as UTF-8 bytes; binary/fixed/uuid as raw bytes; decimals
  * as the unscaled value's minimum-length two's-complement big-endian bytes.
  *
  * @param {any} value
@@ -190,7 +191,7 @@ function bucketBytes(value, sourceType) {
     } else if (t === 'timestamp' || t === 'timestamptz') {
       v = value instanceof Date ? BigInt(value.getTime()) * 1000n : BigInt(value)
     } else if (t === 'timestamp_ns' || t === 'timestamptz_ns') {
-      v = value instanceof Date ? BigInt(value.getTime()) * 1000000n : BigInt(value)
+      v = value instanceof Date ? BigInt(value.getTime()) * 1000n : BigInt(value) / 1000n
     } else {
       v = typeof value === 'bigint' ? value : BigInt(value)
     }

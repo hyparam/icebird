@@ -430,6 +430,77 @@ describe('icebergStageDeletionVector', () => {
     expect(vectorsForDataFile[0].data_file.record_count).toBe(2n)
   })
 
+  it('replaces existing position delete files when writing a deletion vector', async () => {
+    const tableUrl = 'http://test/dv-replaces-position-delete'
+    const { resolver } = memResolver()
+
+    const created = await icebergCreate({ tableUrl, resolver, schema })
+    const appended = await icebergStageAppend({
+      tableUrl, metadata: created,
+      records: [
+        { id: 1n, name: 'a' },
+        { id: 2n, name: 'b' },
+        { id: 3n, name: 'c' },
+      ],
+      resolver,
+    })
+    const afterAppend = await fileCatalogCommit({ tableUrl, metadata: created, staged: appended, resolver })
+    const dataPath = appended.writtenFiles[0]
+
+    const positionDelete = await icebergStagePositionDelete({
+      tableUrl,
+      metadata: afterAppend,
+      deletes: [{ file_path: dataPath, pos: 1n }],
+      resolver,
+    })
+    const afterPositionDelete = await fileCatalogCommit({
+      tableUrl,
+      metadata: afterAppend,
+      staged: positionDelete,
+      resolver,
+    })
+
+    const upgraded = await fileCatalogCommit({
+      tableUrl,
+      metadata: { ...afterPositionDelete, 'format-version': /** @type {3} */ (3), 'next-row-id': 0 },
+      resolver,
+      staged: {
+        snapshot: /** @type {any} */ (null),
+        requirements: [{ type: /** @type {const} */ ('assert-table-uuid'), uuid: afterPositionDelete['table-uuid'] }],
+        updates: [],
+        writtenFiles: [],
+      },
+    })
+
+    const deletionVector = await icebergStageDeletionVector({
+      tableUrl,
+      metadata: upgraded,
+      deletes: [{ file_path: dataPath, pos: 2n }],
+      resolver,
+    })
+    const afterDeletionVector = await fileCatalogCommit({
+      tableUrl,
+      metadata: upgraded,
+      staged: deletionVector,
+      resolver,
+    })
+
+    const entries = await currentManifestEntries(afterDeletionVector, resolver)
+    const deletesForTarget = entries.filter(entry =>
+      entry.data_file.content === 1 &&
+      entry.data_file.referenced_data_file === dataPath)
+
+    expect(deletesForTarget).toHaveLength(1)
+    expect(deletesForTarget[0].data_file.file_format.toLowerCase()).toBe('puffin')
+    expect(deletesForTarget[0].data_file.record_count).toBe(2n)
+    expect(deletionVector.snapshot.summary?.['removed-delete-files']).toBe('1')
+    expect(deletionVector.snapshot.summary?.['removed-position-deletes']).toBe('1')
+    expect(deletionVector.snapshot.summary?.['removed-dvs']).toBeUndefined()
+
+    const read = await icebergRead({ tableUrl, metadata: afterDeletionVector, resolver })
+    expect(read.map(r => r.id)).toEqual([1n])
+  })
+
   it('records v3 DV fields on the manifest entry and a readable blob in the puffin file', async () => {
     const tableUrl = 'http://test/dv-fields'
     const { resolver, metadata } = await v3Table(tableUrl)

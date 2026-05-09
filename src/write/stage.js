@@ -417,8 +417,23 @@ export async function icebergStageDeletionVector({ tableUrl, metadata, deletes, 
   const priorDeleteManifests = await loadPriorDeleteManifestEntries(priorManifests, resolver)
   const priorDeleteEntries = priorDeleteManifests.flatMap(m => m.entries)
   const priorPositionDeleteEntries = priorDeleteEntries.filter(entry => entry.data_file.content === 1)
+  const targetPaths = new Set(byFile.keys())
+  /** @type {Set<ManifestEntry>} */
+  const obsoletePositionDeleteEntries = new Set()
   if (priorPositionDeleteEntries.length) {
     const { positionDeletesMap } = await fetchDeleteMaps(priorPositionDeleteEntries, resolver)
+    /** @type {Map<ManifestEntry, Set<string>>} */
+    const positionDeleteTargets = new Map()
+    for (const [targetPath, groups] of positionDeletesMap) {
+      for (const group of groups) {
+        let targets = positionDeleteTargets.get(group.deleteEntry)
+        if (!targets) {
+          targets = new Set()
+          positionDeleteTargets.set(group.deleteEntry, targets)
+        }
+        targets.add(targetPath)
+      }
+    }
     for (const [targetPath, info] of byFile) {
       const groups = positionDeletesMap.get(targetPath) ?? []
       for (const group of groups) {
@@ -426,9 +441,24 @@ export async function icebergStageDeletionVector({ tableUrl, metadata, deletes, 
         for (const pos of group.positions) info.positions.add(pos)
       }
     }
+    for (const [entry, coveredTargets] of positionDeleteTargets) {
+      if (isDeletionVectorForTarget(entry, targetPaths)) continue
+      let allTargetsCovered = true
+      let appliesToTarget = false
+      for (const targetPath of coveredTargets) {
+        if (!targetPaths.has(targetPath)) {
+          allTargetsCovered = false
+          break
+        }
+        const info = byFile.get(targetPath)
+        if (info && deleteFileAppliesToDataEntry(info.dataEntry, entry, metadata, 'position')) {
+          appliesToTarget = true
+        }
+      }
+      if (allTargetsCovered && appliesToTarget) obsoletePositionDeleteEntries.add(entry)
+    }
   }
 
-  const targetPaths = new Set(byFile.keys())
   /** @type {Set<string>} */
   const skipPriorManifestPaths = new Set()
   /** @type {Manifest[]} */
@@ -438,15 +468,17 @@ export async function icebergStageDeletionVector({ tableUrl, metadata, deletes, 
   let replacementIndex = 0
   let removedDeleteFiles = 0n
   let removedPositionDeletes = 0n
+  let removedDvs = 0n
   for (const { manifest, entries } of priorDeleteManifests) {
-    const obsolete = entries.filter(entry => isDeletionVectorForTarget(entry, targetPaths))
+    const obsolete = entries.filter(entry => isObsoleteDeleteEntry(entry, targetPaths, obsoletePositionDeleteEntries))
     if (!obsolete.length) continue
     skipPriorManifestPaths.add(manifest.manifest_path)
     removedDeleteFiles += BigInt(obsolete.length)
     removedPositionDeletes += obsolete.reduce((sum, entry) => sum + entry.data_file.record_count, 0n)
+    removedDvs += BigInt(obsolete.filter(entry => isDeletionVectorForTarget(entry, targetPaths)).length)
 
     const retained = entries
-      .filter(entry => !isDeletionVectorForTarget(entry, targetPaths))
+      .filter(entry => !isObsoleteDeleteEntry(entry, targetPaths, obsoletePositionDeleteEntries))
       .map(entry => ({ ...entry, status: /** @type {0} */ (0) }))
     if (!retained.length) continue
 
@@ -599,6 +631,7 @@ export async function icebergStageDeletionVector({ tableUrl, metadata, deletes, 
   const summary = {
     operation: 'delete',
     'added-delete-files': String(writtenDeleteFiles.length),
+    'added-dvs': String(writtenDeleteFiles.length),
     'added-position-deletes': String(totalAddedRows),
     'added-files-size': String(totalAddedSize),
     'changed-partition-count': String(partitionKeys.size),
@@ -611,8 +644,8 @@ export async function icebergStageDeletionVector({ tableUrl, metadata, deletes, 
   }
   if (removedDeleteFiles > 0n) {
     summary['removed-delete-files'] = String(removedDeleteFiles)
-    summary['removed-dvs'] = String(removedDeleteFiles)
     summary['removed-position-deletes'] = String(removedPositionDeletes)
+    if (removedDvs > 0n) summary['removed-dvs'] = String(removedDvs)
   }
   return await buildSnapshotUpdate({
     tableUrl, metadata, resolver,
@@ -819,6 +852,17 @@ function isDeletionVectorForTarget(entry, targetPaths) {
     entry.data_file.file_format.toLowerCase() === 'puffin' &&
     entry.data_file.referenced_data_file !== undefined &&
     targetPaths.has(entry.data_file.referenced_data_file)
+}
+
+/**
+ * @param {ManifestEntry} entry
+ * @param {Set<string>} targetPaths
+ * @param {Set<ManifestEntry>} obsoletePositionDeleteEntries
+ * @returns {boolean}
+ */
+function isObsoleteDeleteEntry(entry, targetPaths, obsoletePositionDeleteEntries) {
+  return isDeletionVectorForTarget(entry, targetPaths) ||
+    obsoletePositionDeleteEntries.has(entry)
 }
 
 /**

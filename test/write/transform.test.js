@@ -85,6 +85,14 @@ describe('applyTransform', () => {
       .toBe(applyTransform('bucket[100]', micros, 'timestamp'))
   })
 
+  it('hashes nanosecond timestamps at microsecond precision', () => {
+    const ts = new Date('2017-11-16T22:31:08Z')
+    const nanos = 1510871468000001001n
+    expect(applyTransform('bucket[100]', ts, 'timestamp_ns')).toBe(7)
+    expect(applyTransform('bucket[100]', nanos, 'timestamp_ns')).toBe(38)
+    expect(applyTransform('bucket[100]', nanos, 'timestamptz_ns')).toBe(38)
+  })
+
   it('truncates ints toward negative infinity', () => {
     expect(applyTransform('truncate[10]', 1, 'int')).toBe(0)
     expect(applyTransform('truncate[10]', 9, 'int')).toBe(0)
