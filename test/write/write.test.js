@@ -294,6 +294,33 @@ describe('icebergDelete', () => {
     expect(read.map(r => ({ id: r.id, name: r.name }))).toEqual([{ id: 2n, name: 'bob' }])
   })
 
+  it('reads rowStart/rowEnd in post-delete coordinates for v3 deletion vectors', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/delete-v3-range'
+    const { resolver, files } = memResolver()
+    const catalog = fileCatalog({ resolver })
+
+    await icebergCreate({ tableUrl, resolver, schema, formatVersion: 3 })
+    const records = [
+      { id: 1n, name: 'alice' },
+      { id: 2n, name: 'bob' },
+      { id: 3n, name: 'carol' },
+      { id: 4n, name: 'dan' },
+    ]
+    await icebergAppend({ catalog, tableUrl, records })
+    const dataPath = [...findDataFiles({ files })][0]
+    const committed = await icebergDelete({
+      catalog, tableUrl,
+      deletes: [{ file_path: dataPath, pos: 1 }],
+    })
+
+    const full = await icebergRead({ tableUrl, metadata: committed, resolver })
+    const ranged = await icebergRead({ tableUrl, metadata: committed, resolver, rowStart: 1, rowEnd: 3 })
+
+    expect(full.map(r => r.id)).toEqual([1n, 3n, 4n])
+    expect(ranged.map(r => r.id)).toEqual(full.slice(1, 3).map(r => r.id))
+  })
+
   it('rejects parquet delete mode on v3', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
     const tableUrl = 'http://test/delete-override'

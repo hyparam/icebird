@@ -53,23 +53,30 @@ export async function icebergRead({
   if (dataEntries.length === 0) {
     throw new Error('No data manifest files found for current snapshot')
   }
+  const hasDeletes = deleteEntries.length > 0
   const deleteMaps = fetchDeleteMaps(deleteEntries, resolver)
 
   // Determine the global row range to read
   const totalRowsToRead = rowEnd === Infinity ? Infinity : rowEnd - rowStart
 
-  // Find the data file that contains the starting global row
+  // Find the data file that contains the starting global row. When deletes are
+  // present, rowStart/rowEnd are post-delete coordinates, so read all candidate
+  // rows first and slice after delete filtering.
   let fileIndex = 0
   let skipRows = rowStart
-  while (fileIndex < dataEntries.length && skipRows >= dataEntries[fileIndex].data_file.record_count) {
-    skipRows -= Number(dataEntries[fileIndex].data_file.record_count)
-    fileIndex++
+  if (hasDeletes) {
+    skipRows = 0
+  } else {
+    while (fileIndex < dataEntries.length && skipRows >= dataEntries[fileIndex].data_file.record_count) {
+      skipRows -= Number(dataEntries[fileIndex].data_file.record_count)
+      fileIndex++
+    }
   }
 
   // Pre-compute the per-file row ranges based on record_count, so reads can run
-  // in parallel. Deletes may reduce the post-filter count below totalRowsToRead.
+  // in parallel.
   const fileReads = []
-  let rowsRemaining = totalRowsToRead
+  let rowsRemaining = hasDeletes ? Infinity : totalRowsToRead
   for (let i = fileIndex; i < dataEntries.length && rowsRemaining > 0; i++) {
     const recordCount = Number(dataEntries[i].data_file.record_count)
     const fileRowStart = i === fileIndex ? skipRows : 0
@@ -103,7 +110,9 @@ export async function icebergRead({
     return rows
   }))
 
-  return fileResults.flat()
+  const rows = fileResults.flat()
+  if (!hasDeletes) return rows
+  return rows.slice(rowStart, rowEnd === Infinity ? undefined : rowEnd)
 }
 
 /**
