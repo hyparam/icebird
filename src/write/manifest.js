@@ -212,6 +212,51 @@ export function writeDeleteManifest({ writer, schema, partitionSpec, snapshotId,
 }
 
 /**
+ * Write a delete manifest containing already-existing delete entries. Used
+ * when a v3 deletion vector replaces an older vector in a mixed manifest: the
+ * retained entries must keep their original data/file sequence numbers rather
+ * than inheriting the new snapshot sequence.
+ *
+ * @param {object} options
+ * @param {Writer} options.writer
+ * @param {Schema} options.schema
+ * @param {PartitionSpec} options.partitionSpec
+ * @param {import('../../src/types.js').ManifestEntry[]} options.entries
+ * @param {2|3} [options.formatVersion]
+ * @returns {void | Promise<void>} resolves when the writer's `finish()` lands
+ */
+export function writeExistingDeleteManifest({ writer, schema, partitionSpec, entries, formatVersion = 2 }) {
+  const records = entries.map(entry => {
+    const deleteFile = entry.data_file
+    if (deleteFile.content !== 1 && deleteFile.content !== 2) {
+      throw new Error(`writeExistingDeleteManifest expects delete files (content=1 or 2), got content=${deleteFile.content}`)
+    }
+    const record = manifestEntryRecord(deleteFile, schema, partitionSpec, 0n, formatVersion, 1)
+    record.status = 0
+    record.snapshot_id = entry.snapshot_id ?? null
+    record.sequence_number = entry.sequence_number ?? null
+    record.file_sequence_number = entry.file_sequence_number ?? null
+    if (record.sequence_number == null || record.file_sequence_number == null) {
+      throw new Error('existing delete manifest entry missing sequence numbers')
+    }
+    return record
+  })
+
+  return avroWrite({
+    writer,
+    schema: manifestEntrySchema(schema, partitionSpec, formatVersion, 1),
+    records,
+    metadata: {
+      'format-version': String(formatVersion),
+      content: 'deletes',
+      schema: icebergSchemaJson(schema),
+      'partition-spec': partitionSpecJson(partitionSpec),
+      'partition-spec-id': String(partitionSpec['spec-id']),
+    },
+  })
+}
+
+/**
  * Build a single manifest entry record from a DataFile, including the
  * delete-only fields when emitting into a delete manifest.
  *
@@ -242,7 +287,7 @@ function manifestEntryRecord(dataFile, schema, partitionSpec, snapshotId, format
     nan_value_counts: encodeMap(dataFile.nan_value_counts),
     lower_bounds: encodeMap(dataFile.lower_bounds),
     upper_bounds: encodeMap(dataFile.upper_bounds),
-    sort_order_id: dataFile.sort_order_id ?? 0,
+    sort_order_id: dataFile.content === 1 ? null : dataFile.sort_order_id ?? 0,
   }
   if (manifestContent === 1) {
     dataFileRecord.equality_ids = dataFile.equality_ids?.length ? dataFile.equality_ids : null

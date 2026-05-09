@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
+import { fileCatalog } from '../../src/catalog/file.js'
 import { fetchAvroRecords } from '../../src/fetch.js'
 import { puffinReadDeletionVector, readPuffinMetadata } from '../../src/puffin/puffin.js'
 import { fileCatalogCommit } from '../../src/write/commit.js'
 import { icebergCreate } from '../../src/create.js'
 import { icebergRead } from '../../src/read.js'
 import { icebergStageAppend, icebergStageDeletionVector, icebergStagePositionDelete } from '../../src/write/stage.js'
+import { icebergDelete } from '../../src/write/write.js'
 import { memResolver } from '../helpers.js'
 
 /**
@@ -19,6 +21,27 @@ const schema = {
     { id: 1, name: 'id', required: true, type: 'long' },
     { id: 2, name: 'name', required: false, type: 'string' },
   ],
+}
+
+/**
+ * @param {import('../../src/types.js').TableMetadata} metadata
+ * @param {import('../../src/types.js').Resolver} resolver
+ * @returns {Promise<import('../../src/types.js').ManifestEntry[]>}
+ */
+async function currentManifestEntries(metadata, resolver) {
+  const snapshot = metadata.snapshots?.find(s => s['snapshot-id'] === metadata['current-snapshot-id'])
+  if (!snapshot?.['manifest-list']) throw new Error('current snapshot manifest-list missing')
+  const manifests = await fetchAvroRecords(snapshot['manifest-list'], resolver)
+  const entries = await Promise.all(manifests.map(async manifest => {
+    const records = /** @type {import('../../src/types.js').ManifestEntry[]} */ (
+      await fetchAvroRecords(manifest.manifest_path, resolver)
+    )
+    return records.map(record => ({
+      ...record,
+      partition_spec_id: manifest.partition_spec_id,
+    }))
+  }))
+  return entries.flat()
 }
 
 describe('icebergStagePositionDelete', () => {
@@ -79,6 +102,28 @@ describe('icebergStagePositionDelete', () => {
     const entries = await fetchAvroRecords(manifestPath, resolver)
     expect(entries).toHaveLength(1)
     expect(entries[0].data_file.referenced_data_file).toBe(appended.writtenFiles[0])
+  })
+
+  it('writes null sort_order_id for position delete manifest entries', async () => {
+    const tableUrl = 'http://test/del-sort-order-null'
+    const { resolver } = memResolver()
+    const created = await icebergCreate({ tableUrl, resolver, schema })
+    const appended = await icebergStageAppend({
+      tableUrl, metadata: created, records: [{ id: 1n, name: 'a' }], resolver,
+    })
+    const afterAppend = await fileCatalogCommit({ tableUrl, metadata: created, staged: appended, resolver })
+
+    const staged = await icebergStagePositionDelete({
+      tableUrl,
+      metadata: afterAppend,
+      deletes: [{ file_path: appended.writtenFiles[0], pos: 0n }],
+      resolver,
+    })
+    const manifestPath = staged.writtenFiles.find(f => f.endsWith('.avro') && !f.includes('snap-'))
+    if (!manifestPath) throw new Error('delete manifest path missing')
+    const entries = await fetchAvroRecords(manifestPath, resolver)
+
+    expect(entries[0].data_file.sort_order_id).toBeUndefined()
   })
 
   it('omits referenced_data_file when deletes span multiple files', async () => {
@@ -226,30 +271,37 @@ describe('icebergStagePositionDelete', () => {
     })).rejects.toThrow('non-empty')
   })
 
-  it('preserves v3 next-row-id and emits added-rows=0', async () => {
+  it('rejects adding new parquet position delete files to v3 tables', async () => {
+    const tableUrl = 'http://test/del-v3-parquet-reject'
+    const { resolver } = memResolver()
+    const catalog = fileCatalog({ resolver })
+    const created = await icebergCreate({ tableUrl, resolver, schema, formatVersion: 3 })
+    const appended = await icebergStageAppend({
+      tableUrl, metadata: created, records: [{ id: 1n, name: 'a' }, { id: 2n, name: 'b' }], resolver,
+    })
+    await fileCatalogCommit({ tableUrl, metadata: created, staged: appended, resolver })
+
+    await expect(icebergDelete({
+      catalog,
+      tableUrl,
+      deletes: [{ file_path: appended.writtenFiles[0], pos: 0n }],
+      mode: 'parquet',
+    })).rejects.toThrow(/v3|position delete|deletion vector/i)
+  })
+
+  it('rejects format-version 3 tables', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
     const tableUrl = 'http://test/del-v3'
     const { resolver } = memResolver()
     const created = await icebergCreate({ tableUrl, resolver, schema })
     const v3Metadata = { ...created, 'format-version': /** @type {3} */ (3), 'next-row-id': 100 }
-    const appended = await icebergStageAppend({
-      tableUrl, metadata: v3Metadata, records: [{ id: 1n, name: 'a' }, { id: 2n, name: 'b' }], resolver,
-    })
-    const afterAppend = await fileCatalogCommit({ tableUrl, metadata: v3Metadata, staged: appended, resolver })
-    expect(afterAppend['next-row-id']).toBe(102)
 
-    const staged = await icebergStagePositionDelete({
+    await expect(icebergStagePositionDelete({
       tableUrl,
-      metadata: afterAppend,
-      deletes: [{ file_path: appended.writtenFiles[0], pos: 0n }],
+      metadata: v3Metadata,
+      deletes: [{ file_path: 'x.parquet', pos: 0n }],
       resolver,
-    })
-    expect(staged.snapshot['first-row-id']).toBe(102)
-    expect(staged.snapshot['added-rows']).toBe(0)
-    expect(staged.requirements).toContainEqual({ type: 'assert-next-row-id', 'next-row-id': 102 })
-
-    const afterDelete = await fileCatalogCommit({ tableUrl, metadata: afterAppend, staged, resolver })
-    expect(afterDelete['next-row-id']).toBe(102)
+    })).rejects.toThrow(/deletion vectors/)
   })
 })
 
@@ -336,6 +388,48 @@ describe('icebergStageDeletionVector', () => {
     expect(read).toEqual([])
   })
 
+  it('merges repeated deletion vectors for the same data file', async () => {
+    const tableUrl = 'http://test/dv-repeat-merge'
+    const { resolver, metadata } = await v3Table(tableUrl)
+
+    const appended = await icebergStageAppend({
+      tableUrl, metadata,
+      records: [
+        { id: 1n, name: 'a' },
+        { id: 2n, name: 'b' },
+        { id: 3n, name: 'c' },
+        { id: 4n, name: 'd' },
+      ],
+      resolver,
+    })
+    const afterAppend = await fileCatalogCommit({ tableUrl, metadata, staged: appended, resolver })
+    const dataPath = appended.writtenFiles[0]
+
+    const deleteOne = await icebergStageDeletionVector({
+      tableUrl,
+      metadata: afterAppend,
+      deletes: [{ file_path: dataPath, pos: 1n }],
+      resolver,
+    })
+    const afterDeleteOne = await fileCatalogCommit({ tableUrl, metadata: afterAppend, staged: deleteOne, resolver })
+    const deleteTwo = await icebergStageDeletionVector({
+      tableUrl,
+      metadata: afterDeleteOne,
+      deletes: [{ file_path: dataPath, pos: 3n }],
+      resolver,
+    })
+    const afterDeleteTwo = await fileCatalogCommit({ tableUrl, metadata: afterDeleteOne, staged: deleteTwo, resolver })
+
+    const entries = await currentManifestEntries(afterDeleteTwo, resolver)
+    const vectorsForDataFile = entries.filter(entry =>
+      entry.data_file.content === 1 &&
+      entry.data_file.file_format.toLowerCase() === 'puffin' &&
+      entry.data_file.referenced_data_file === dataPath)
+
+    expect(vectorsForDataFile).toHaveLength(1)
+    expect(vectorsForDataFile[0].data_file.record_count).toBe(2n)
+  })
+
   it('records v3 DV fields on the manifest entry and a readable blob in the puffin file', async () => {
     const tableUrl = 'http://test/dv-fields'
     const { resolver, metadata } = await v3Table(tableUrl)
@@ -370,6 +464,8 @@ describe('icebergStageDeletionVector', () => {
     const meta = readPuffinMetadata(new Uint8Array(buffer))
     expect(meta.blobs).toHaveLength(1)
     expect(meta.blobs[0].type).toBe('deletion-vector-v1')
+    expect(meta.blobs[0]['snapshot-id']).toBe(-1)
+    expect(meta.blobs[0]['sequence-number']).toBe(-1)
     expect(meta.blobs[0].properties?.['referenced-data-file']).toBe(appended.writtenFiles[0])
     expect(meta.blobs[0].properties?.cardinality).toBe('2')
     const positions = await puffinReadDeletionVector(puffinFile, {
@@ -378,6 +474,27 @@ describe('icebergStageDeletionVector', () => {
       referencedDataFile: appended.writtenFiles[0],
     })
     expect(positions).toEqual(new Set([0n, 1n]))
+  })
+
+  it('writes null sort_order_id for deletion vector manifest entries', async () => {
+    const tableUrl = 'http://test/dv-sort-order-null'
+    const { resolver, metadata } = await v3Table(tableUrl)
+    const appended = await icebergStageAppend({
+      tableUrl, metadata, records: [{ id: 1n, name: 'a' }], resolver,
+    })
+    const afterAppend = await fileCatalogCommit({ tableUrl, metadata, staged: appended, resolver })
+
+    const staged = await icebergStageDeletionVector({
+      tableUrl,
+      metadata: afterAppend,
+      deletes: [{ file_path: appended.writtenFiles[0], pos: 0n }],
+      resolver,
+    })
+    const manifestPath = staged.writtenFiles.find(f => f.endsWith('.avro') && !f.includes('snap-'))
+    if (!manifestPath) throw new Error('delete manifest path missing')
+    const entries = await fetchAvroRecords(manifestPath, resolver)
+
+    expect(entries[0].data_file.sort_order_id).toBeUndefined()
   })
 
   it('rejects format-version 2', async () => {
@@ -487,6 +604,67 @@ describe('icebergStageDeletionVector', () => {
     const afterDelete = await fileCatalogCommit({ tableUrl, metadata: afterAppend, staged, resolver })
     const read = await icebergRead({ tableUrl, metadata: afterDelete, resolver })
     expect(read).toHaveLength(2)
+  })
+
+  it('uses the target data file partition spec after default spec evolves to unpartitioned', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/dv-partition-evolution'
+    const { resolver } = memResolver()
+    /** @type {Schema} */
+    const partitionedSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        { id: 2, name: 'country', required: true, type: 'string' },
+      ],
+    }
+    const created = await icebergCreate({
+      tableUrl, resolver, schema: partitionedSchema, formatVersion: 3,
+      partitionSpec: {
+        'spec-id': 0,
+        fields: [{ 'source-id': 2, 'field-id': 1000, name: 'country', transform: 'identity' }],
+      },
+    })
+    const appended = await icebergStageAppend({
+      tableUrl, metadata: created,
+      records: [
+        { id: 1n, country: 'us' },
+        { id: 2n, country: 'us' },
+        { id: 3n, country: 'ca' },
+      ],
+      resolver,
+    })
+    const afterAppend = await fileCatalogCommit({ tableUrl, metadata: created, staged: appended, resolver })
+    const targetPath = appended.writtenFiles.find(f => f.endsWith('.parquet'))
+    if (!targetPath) throw new Error('data path missing')
+
+    const evolved = await fileCatalogCommit({
+      tableUrl,
+      metadata: afterAppend,
+      resolver,
+      staged: {
+        snapshot: /** @type {any} */ (null),
+        requirements: [{ type: /** @type {const} */ ('assert-table-uuid'), uuid: afterAppend['table-uuid'] }],
+        updates: [
+          { action: /** @type {const} */ ('add-spec'), spec: { 'spec-id': -1, fields: [] } },
+          { action: /** @type {const} */ ('set-default-spec'), 'spec-id': -1 },
+        ],
+        writtenFiles: [],
+      },
+    })
+
+    const staged = await icebergStageDeletionVector({
+      tableUrl,
+      metadata: evolved,
+      deletes: [{ file_path: targetPath, pos: 0n }],
+      resolver,
+    })
+    const afterDelete = await fileCatalogCommit({ tableUrl, metadata: evolved, staged, resolver })
+    const read = await icebergRead({ tableUrl, metadata: afterDelete, resolver })
+    const ids = read.map(r => r.id).sort((a, b) => Number(a - b))
+
+    expect(ids).toEqual([2n, 3n])
   })
 
   it('preserves v3 next-row-id and emits added-rows=0', async () => {

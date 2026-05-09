@@ -294,7 +294,7 @@ describe('icebergDelete', () => {
     expect(read.map(r => ({ id: r.id, name: r.name }))).toEqual([{ id: 2n, name: 'bob' }])
   })
 
-  it('mode override forces parquet on v3', async () => {
+  it('rejects parquet delete mode on v3', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
     const tableUrl = 'http://test/delete-override'
     const { resolver, files } = memResolver()
@@ -304,14 +304,11 @@ describe('icebergDelete', () => {
     await icebergAppend({ catalog, tableUrl, records: [{ id: 1n, name: 'a' }, { id: 2n, name: 'b' }] })
     const dataPath = [...findDataFiles({ files })][0]
 
-    await icebergDelete({
+    await expect(icebergDelete({
       catalog, tableUrl,
       deletes: [{ file_path: dataPath, pos: 0 }],
       mode: 'parquet',
-    })
-
-    expect([...files.keys()].some(k => k.endsWith('-deletes.parquet'))).toBe(true)
-    expect([...files.keys()].some(k => k.endsWith('.puffin'))).toBe(false)
+    })).rejects.toThrow(/deletion vectors/)
   })
 
   it('rejects unknown delete mode', async () => {

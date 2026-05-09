@@ -1,11 +1,12 @@
-import { fetchAvroRecords, translateS3Url } from '../fetch.js'
+import { deleteFileAppliesToDataEntry } from '../delete.js'
+import { fetchAvroRecords, fetchDeleteMaps, translateS3Url } from '../fetch.js'
 import { writeDeletionVector } from '../puffin/deletion-vector.js'
 import { writePuffinFile } from '../puffin/puffin.js'
 import { validateSchemaForVersion } from '../schema.js'
 import { uuid4 } from '../utils.js'
 import { writePositionDeleteFile } from './delete-file.js'
 import { writeParquet } from './parquet.js'
-import { writeDataManifest, writeDeleteManifest } from './manifest.js'
+import { writeDataManifest, writeDeleteManifest, writeExistingDeleteManifest } from './manifest.js'
 import { writeManifestList } from './manifest-list.js'
 import { groupByPartition } from './partition.js'
 import { computeColumnStats, computeFieldSummary } from './stats.js'
@@ -186,6 +187,9 @@ export async function icebergStagePositionDelete({ tableUrl, metadata, deletes, 
   if (metadata['format-version'] !== 2 && metadata['format-version'] !== 3) {
     throw new Error(`unsupported format-version: ${metadata['format-version']}`)
   }
+  if (metadata['format-version'] === 3) {
+    throw new Error('format-version 3 tables must use deletion vectors, not new position delete files')
+  }
   const formatVersion = /** @type {2|3} */ (metadata['format-version'])
   const defaultSpec = metadata['partition-specs'].find(s => s['spec-id'] === metadata['default-spec-id'])
   if (!defaultSpec) throw new Error('default partition spec not found in metadata')
@@ -200,23 +204,14 @@ export async function icebergStagePositionDelete({ tableUrl, metadata, deletes, 
   checkWriteFormat(metadata.properties?.['write.format.default'])
   const codec = resolveParquetCodec(metadata.properties?.['write.parquet.compression-codec'])
 
-  // 1. Group deletes by (spec-id, partition). Unpartitioned tables collapse
-  //    to a single group keyed by the default spec.
-  const partitionMap = defaultSpec.fields.length
-    ? await findDataFilePartitions(metadata, resolver)
-    : null
+  // 1. Group deletes by the target file's historical (spec-id, partition).
+  const partitionMap = await findDataFilePartitions(metadata, resolver)
   /** @type {Map<string, { specId: number, partition: Record<string, any>, deletes: typeof deletes }>} */
   const groups = new Map()
   for (const d of deletes) {
-    let specId = defaultSpec['spec-id']
-    /** @type {Record<string, any>} */
-    let partition = {}
-    if (partitionMap) {
-      const found = partitionMap.get(d.file_path)
-      if (!found) throw new Error(`target data file not found in current snapshot: ${d.file_path}`)
-      specId = found.partitionSpecId
-      partition = found.partition
-    }
+    const found = partitionMap.get(d.file_path)
+    if (!found) throw new Error(`target data file not found in current snapshot: ${d.file_path}`)
+    const { partition, partitionSpecId: specId } = found
     const key = `${specId}|${partitionTupleKey(partition)}`
     let group = groups.get(key)
     if (!group) {
@@ -388,12 +383,11 @@ export async function icebergStageDeletionVector({ tableUrl, metadata, deletes, 
   const timestampMs = Date.now()
   checkWriteFormat(metadata.properties?.['write.format.default'])
 
-  // 1. Group deletes by target data file. For partitioned tables, look up
-  //    each target's partition tuple and spec id from existing manifests.
-  const partitionMap = defaultSpec.fields.length
-    ? await findDataFilePartitions(metadata, resolver)
-    : null
-  /** @type {Map<string, { positions: Set<bigint>, partition: Record<string, any>, partitionSpecId: number }>} */
+  // 1. Group deletes by target data file. Always look up the target's
+  //    historical partition tuple/spec id; the current default spec may have
+  //    evolved since the target file was written.
+  const dataFileMap = await findDataFileEntries(metadata, resolver)
+  /** @type {Map<string, { positions: Set<bigint>, partition: Record<string, any>, partitionSpecId: number, dataEntry: ManifestEntry }>} */
   const byFile = new Map()
   for (const d of deletes) {
     if (typeof d.file_path !== 'string' || !d.file_path) {
@@ -406,19 +400,86 @@ export async function icebergStageDeletionVector({ tableUrl, metadata, deletes, 
     if (pos < 0n) throw new Error(`deletion vector pos must be non-negative: ${pos}`)
     let entry = byFile.get(d.file_path)
     if (!entry) {
-      /** @type {Record<string, any>} */
-      let partition = {}
-      let partitionSpecId = defaultSpec['spec-id']
-      if (partitionMap) {
-        const found = partitionMap.get(d.file_path)
-        if (!found) throw new Error(`target data file not found in current snapshot: ${d.file_path}`)
-        partition = found.partition
-        partitionSpecId = found.partitionSpecId
+      const found = dataFileMap.get(d.file_path)
+      if (!found) throw new Error(`target data file not found in current snapshot: ${d.file_path}`)
+      entry = {
+        positions: new Set(),
+        partition: found.partition,
+        partitionSpecId: found.partitionSpecId,
+        dataEntry: found.entry,
       }
-      entry = { positions: new Set(), partition, partitionSpecId }
       byFile.set(d.file_path, entry)
     }
     entry.positions.add(pos)
+  }
+
+  const priorManifests = await loadPriorManifests(metadata, resolver)
+  const priorDeleteManifests = await loadPriorDeleteManifestEntries(priorManifests, resolver)
+  const priorDeleteEntries = priorDeleteManifests.flatMap(m => m.entries)
+  const priorPositionDeleteEntries = priorDeleteEntries.filter(entry => entry.data_file.content === 1)
+  if (priorPositionDeleteEntries.length) {
+    const { positionDeletesMap } = await fetchDeleteMaps(priorPositionDeleteEntries, resolver)
+    for (const [targetPath, info] of byFile) {
+      const groups = positionDeletesMap.get(targetPath) ?? []
+      for (const group of groups) {
+        if (!deleteFileAppliesToDataEntry(info.dataEntry, group.deleteEntry, metadata, 'position')) continue
+        for (const pos of group.positions) info.positions.add(pos)
+      }
+    }
+  }
+
+  const targetPaths = new Set(byFile.keys())
+  /** @type {Set<string>} */
+  const skipPriorManifestPaths = new Set()
+  /** @type {Manifest[]} */
+  const replacementManifests = []
+  /** @type {string[]} */
+  const replacementManifestPaths = []
+  let replacementIndex = 0
+  let removedDeleteFiles = 0n
+  let removedPositionDeletes = 0n
+  for (const { manifest, entries } of priorDeleteManifests) {
+    const obsolete = entries.filter(entry => isDeletionVectorForTarget(entry, targetPaths))
+    if (!obsolete.length) continue
+    skipPriorManifestPaths.add(manifest.manifest_path)
+    removedDeleteFiles += BigInt(obsolete.length)
+    removedPositionDeletes += obsolete.reduce((sum, entry) => sum + entry.data_file.record_count, 0n)
+
+    const retained = entries
+      .filter(entry => !isDeletionVectorForTarget(entry, targetPaths))
+      .map(entry => ({ ...entry, status: /** @type {0} */ (0) }))
+    if (!retained.length) continue
+
+    const spec = metadata['partition-specs'].find(s => s['spec-id'] === manifest.partition_spec_id)
+    if (!spec) throw new Error(`partition spec ${manifest.partition_spec_id} not found in metadata`)
+    const manifestPath = `${tableUrl}/metadata/${manifestUuid}-r${replacementIndex}.avro`
+    const manifestWriter = writerFn(translateS3Url(manifestPath))
+    await writeExistingDeleteManifest({
+      writer: manifestWriter,
+      schema,
+      partitionSpec: spec,
+      entries: retained,
+      formatVersion,
+    })
+    const existingRows = retained.reduce((sum, entry) => sum + entry.data_file.record_count, 0n)
+    replacementManifests.push({
+      manifest_path: manifestPath,
+      manifest_length: BigInt(manifestWriter.offset),
+      partition_spec_id: spec['spec-id'],
+      content: 1,
+      sequence_number: sequenceNumber,
+      min_sequence_number: minEntrySequenceNumber(retained, sequenceNumber),
+      added_snapshot_id: snapshotId,
+      added_files_count: 0,
+      existing_files_count: retained.length,
+      deleted_files_count: 0,
+      added_rows_count: 0n,
+      existing_rows_count: existingRows,
+      deleted_rows_count: 0n,
+      partitions: manifest.partitions ?? [],
+    })
+    replacementManifestPaths.push(manifestPath)
+    replacementIndex++
   }
 
   // 2. Write one puffin file per target with a single DV blob, in parallel.
@@ -432,8 +493,8 @@ export async function icebergStageDeletionVector({ tableUrl, metadata, deletes, 
         blobs: [{
           type: 'deletion-vector-v1',
           fields: [],
-          snapshotId: toMetadataLong(snapshotId),
-          sequenceNumber: toMetadataLong(sequenceNumber),
+          snapshotId: -1,
+          sequenceNumber: -1,
           data: blob,
           properties: {
             'referenced-data-file': targetPath,
@@ -454,7 +515,6 @@ export async function icebergStageDeletionVector({ tableUrl, metadata, deletes, 
         partition: info.partition,
         record_count: BigInt(info.positions.size),
         file_size_in_bytes: BigInt(puffinWriter.offset),
-        sort_order_id: 0,
         referenced_data_file: targetPath,
         content_offset: 4n,
         content_size_in_bytes: BigInt(blob.byteLength),
@@ -545,16 +605,23 @@ export async function icebergStageDeletionVector({ tableUrl, metadata, deletes, 
     'total-records': String(prevTotals.records),
     'total-files-size': String(prevTotals.size + totalAddedSize),
     'total-data-files': String(prevTotals.dataFiles),
-    'total-delete-files': String(prevTotals.deleteFiles + BigInt(writtenDeleteFiles.length)),
-    'total-position-deletes': String(prevTotals.posDeletes + totalAddedRows),
+    'total-delete-files': String(prevTotals.deleteFiles + BigInt(writtenDeleteFiles.length) - removedDeleteFiles),
+    'total-position-deletes': String(prevTotals.posDeletes + totalAddedRows - removedPositionDeletes),
     'total-equality-deletes': String(prevTotals.eqDeletes),
+  }
+  if (removedDeleteFiles > 0n) {
+    summary['removed-delete-files'] = String(removedDeleteFiles)
+    summary['removed-dvs'] = String(removedDeleteFiles)
+    summary['removed-position-deletes'] = String(removedPositionDeletes)
   }
   return await buildSnapshotUpdate({
     tableUrl, metadata, resolver,
     snapshotId, sequenceNumber, manifestUuid, timestampMs, formatVersion,
-    newManifests,
+    newManifests: [...replacementManifests, ...newManifests],
     summary,
-    writtenFiles: [...writtenPuffinPaths, ...writtenManifestPaths],
+    writtenFiles: [...replacementManifestPaths, ...writtenPuffinPaths, ...writtenManifestPaths],
+    priorManifests,
+    skipPriorManifestPaths,
   })
 }
 
@@ -708,6 +775,66 @@ async function loadPriorManifests(metadata, resolver) {
 }
 
 /**
+ * @param {Manifest[]} manifests
+ * @param {Resolver} resolver
+ * @returns {Promise<{ manifest: Manifest, entries: ManifestEntry[] }[]>}
+ */
+async function loadPriorDeleteManifestEntries(manifests, resolver) {
+  const groups = await Promise.all(manifests.map(async manifest => {
+    if (manifest.content !== 1) return
+    const entries = await loadManifestEntries(manifest, resolver)
+    return { manifest, entries }
+  }))
+  return groups.filter(g => g !== undefined)
+}
+
+/**
+ * Fetch manifest entries and apply the same inheritance rules used by reads.
+ *
+ * @param {Manifest} manifest
+ * @param {Resolver} resolver
+ * @returns {Promise<ManifestEntry[]>}
+ */
+async function loadManifestEntries(manifest, resolver) {
+  const entries = /** @type {ManifestEntry[]} */ (await fetchAvroRecords(manifest.manifest_path, resolver))
+  for (const entry of entries) {
+    entry.partition_spec_id = manifest.partition_spec_id ?? 0
+    if (entry.sequence_number === undefined) {
+      entry.sequence_number = manifest.sequence_number ?? 0n
+    }
+    if (entry.status === 1 && entry.file_sequence_number === undefined) {
+      entry.file_sequence_number = manifest.sequence_number ?? 0n
+    }
+  }
+  return entries
+}
+
+/**
+ * @param {ManifestEntry} entry
+ * @param {Set<string>} targetPaths
+ * @returns {boolean}
+ */
+function isDeletionVectorForTarget(entry, targetPaths) {
+  return entry.data_file.content === 1 &&
+    entry.data_file.file_format.toLowerCase() === 'puffin' &&
+    entry.data_file.referenced_data_file !== undefined &&
+    targetPaths.has(entry.data_file.referenced_data_file)
+}
+
+/**
+ * @param {ManifestEntry[]} entries
+ * @param {bigint} fallback
+ * @returns {bigint}
+ */
+function minEntrySequenceNumber(entries, fallback) {
+  let min = fallback
+  for (const entry of entries) {
+    if (entry.sequence_number !== undefined && entry.sequence_number < min) min = entry.sequence_number
+  }
+  return min
+}
+
+/**
  * Assign v3 first_row_id values to data manifests that do not already have
  * them and return the number of newly assigned row IDs.
  *
@@ -768,19 +895,24 @@ function toMetadataLong(value) {
  * @param {Manifest[]} options.newManifests - Prepended to priors before write.
  * @param {Snapshot['summary']} options.summary - Caller-built operation summary.
  * @param {string[]} options.writtenFiles - Files this stage already wrote (data, manifests).
+ * @param {Manifest[]} [options.priorManifests] - Already loaded prior manifests.
+ * @param {Set<string>} [options.skipPriorManifestPaths] - Prior manifests to omit from the new list.
  * @returns {Promise<StagedUpdate>}
  */
 async function buildSnapshotUpdate({
   tableUrl, metadata, resolver,
   snapshotId, sequenceNumber, manifestUuid, timestampMs, formatVersion,
-  newManifests, summary, writtenFiles,
+  newManifests, summary, writtenFiles, priorManifests, skipPriorManifestPaths,
 }) {
   const writerFn = resolver.writer
   if (!writerFn) throw new Error('resolver.writer is required')
   const rowLineage = formatVersion >= 3
   const firstRowId = rowLineage ? BigInt(metadata['next-row-id'] ?? 0) : 0n
 
-  const priorManifests = await loadPriorManifests(metadata, resolver)
+  priorManifests ??= await loadPriorManifests(metadata, resolver)
+  if (skipPriorManifestPaths?.size) {
+    priorManifests = priorManifests.filter(manifest => !skipPriorManifestPaths.has(manifest.manifest_path))
+  }
   // Append the new manifests after priors so reads preserve append order.
   // Iceberg's scan semantics don't pin an order, but our Promise.all scanner
   // returns rows in dataEntries order, which is manifest-list order.
@@ -905,14 +1037,33 @@ function resolveParquetCodec(value) {
  * @returns {Promise<Map<string, { partition: Record<string, any>, partitionSpecId: number }>>}
  */
 async function findDataFilePartitions(metadata, resolver) {
+  const entries = await findDataFileEntries(metadata, resolver)
+  /** @type {Map<string, { partition: Record<string, any>, partitionSpecId: number }>} */
+  const out = new Map()
+  for (const [path, found] of entries) {
+    out.set(path, { partition: found.partition, partitionSpecId: found.partitionSpecId })
+  }
+  return out
+}
+
+/**
+ * Read every data manifest entry reachable from the current snapshot and
+ * index it by `data_file.file_path`, preserving sequence and partition
+ * metadata for delete planning.
+ *
+ * @param {TableMetadata} metadata
+ * @param {Resolver} resolver
+ * @returns {Promise<Map<string, { partition: Record<string, any>, partitionSpecId: number, entry: ManifestEntry }>>}
+ */
+async function findDataFileEntries(metadata, resolver) {
   const snap = currentSnapshot(metadata)
   if (!snap?.['manifest-list']) return new Map()
   const manifests = /** @type {Manifest[]} */ (await fetchAvroRecords(snap['manifest-list'], resolver))
-  /** @type {Map<string, { partition: Record<string, any>, partitionSpecId: number }>} */
+  /** @type {Map<string, { partition: Record<string, any>, partitionSpecId: number, entry: ManifestEntry }>} */
   const out = new Map()
   await Promise.all(manifests.map(async manifest => {
     if (manifest.content !== 0) return
-    const entries = /** @type {ManifestEntry[]} */ (await fetchAvroRecords(manifest.manifest_path, resolver))
+    const entries = await loadManifestEntries(manifest, resolver)
     for (const entry of entries) {
       if (entry.status === 2) continue
       const f = entry.data_file
@@ -920,6 +1071,7 @@ async function findDataFilePartitions(metadata, resolver) {
       out.set(f.file_path, {
         partition: /** @type {Record<string, any>} */ (f.partition ?? {}),
         partitionSpecId: manifest.partition_spec_id ?? 0,
+        entry,
       })
     }
   }))

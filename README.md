@@ -149,7 +149,7 @@ const schema = {
 await icebergCreateTable({ catalog, tableUrl, schema })
 await icebergAppend({ catalog, tableUrl, records: [{ id: 1n, name: 'alice' }] })
 
-// position deletes — `mode` defaults to 'puffin' on v3, 'parquet' on v2
+// position deletes — v3 writes deletion vectors; v2 writes parquet delete files
 await icebergDelete({
   catalog, tableUrl,
   deletes: [{ file_path: 's3://.../data/abc.parquet', pos: 0 }],

@@ -187,8 +187,13 @@ export interface Snapshot {
     'added-data-files'?: string
     'added-records'?: string
     'added-delete-files'?: string
+    'removed-delete-files'?: string
     'added-position-deletes'?: string
+    'removed-position-deletes'?: string
     'added-equality-deletes'?: string
+    'removed-equality-deletes'?: string
+    'added-dvs'?: string
+    'removed-dvs'?: string
     'added-files-size'?: string
     'changed-partition-count'?: string
     'total-records'?: string

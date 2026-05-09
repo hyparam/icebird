@@ -42,7 +42,8 @@ export async function icebergAppend({ catalog, namespace, table, tableUrl, resol
 /**
  * Apply row-level position deletes in one call. Picks the v3 puffin deletion
  * vector path on format-version 3 and the v2 parquet position-delete path on
- * format-version 2; pass `mode` to override.
+ * format-version 2. New parquet position delete files are rejected for v3
+ * tables because v3 writers must use deletion vectors.
  *
  * @param {object} options
  * @param {Catalog} options.catalog
