@@ -23,9 +23,9 @@ describe('parseTransform', () => {
 })
 
 describe('transformResultType', () => {
-  it('returns the source type for identity, void, and truncate', () => {
+  it('returns the source type for identity and truncate, and int for void', () => {
     expect(transformResultType('identity', 'long')).toBe('long')
-    expect(transformResultType('void', 'string')).toBe('string')
+    expect(transformResultType('void', 'string')).toBe('int')
     expect(transformResultType('truncate[3]', 'string')).toBe('string')
   })
 

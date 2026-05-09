@@ -37,9 +37,10 @@ export function transformResultType(transform, sourceType) {
   const parsed = parseTransform(transform)
   switch (parsed.kind) {
   case 'identity':
-  case 'void':
   case 'truncate':
     return sourceType
+  case 'void':
+    return 'int'
   case 'year':
   case 'month':
   case 'day':

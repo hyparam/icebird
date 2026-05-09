@@ -136,6 +136,7 @@ function partitionKeyPart(value, type) {
   if (typeof value === 'number' && (name === 'float' || name === 'double')) {
     return `${name}:${floatPartitionKey(value, name)}`
   }
+  if (name === 'long') return `long:${BigInt(value)}`
   if (typeof value === 'bigint') return `b:${value.toString()}`
   if (value instanceof Date) return `d:${value.getTime()}`
   if (value instanceof Uint8Array) return `x:${[...value].map(b => b.toString(16).padStart(2, '0')).join('')}`
