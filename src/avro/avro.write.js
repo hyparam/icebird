@@ -76,6 +76,12 @@ function writeType(writer, schema, value) {
       if (tag === 'float' || tag === 'double') return typeof value === 'number'
       if (tag === 'string') return typeof value === 'string'
       if (tag === 'bytes') return value instanceof Uint8Array
+      if (tag === 'date') return value instanceof Date || typeof value === 'number'
+      if (tag === 'time-millis') return typeof value === 'number'
+      if (tag === 'time-micros') return typeof value === 'bigint' || typeof value === 'number'
+      if (tag === 'timestamp-millis' || tag === 'timestamp-micros' || tag === 'timestamp-nanos') {
+        return value instanceof Date || typeof value === 'bigint' || typeof value === 'number'
+      }
       // Avro `decimal` is `bytes` + logicalType=decimal; the decimal write path
       // accepts a JS number or bigint and serializes the unscaled bytes itself.
       if (tag === 'decimal') return typeof value === 'number' || typeof value === 'bigint'
@@ -132,6 +138,10 @@ function writeType(writer, schema, value) {
   } else if ('logicalType' in schema) {
     if (schema.logicalType === 'date') {
       appendZigZag(writer, value instanceof Date ? Math.floor(value.getTime() / 86400000) : value)
+    } else if (schema.logicalType === 'time-millis') {
+      appendZigZag(writer, value)
+    } else if (schema.logicalType === 'time-micros') {
+      appendZigZag64(writer, BigInt(value))
     } else if (schema.logicalType === 'timestamp-millis') {
       appendZigZag64(writer, value instanceof Date ? BigInt(value.getTime()) : BigInt(value))
     } else if (schema.logicalType === 'timestamp-micros') {

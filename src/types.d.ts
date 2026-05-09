@@ -412,6 +412,16 @@ type AvroDate = {
   logicalType: 'date'
 }
 
+type AvroTimeMillis = {
+  type: 'int'
+  logicalType: 'time-millis'
+}
+
+type AvroTimeMicros = {
+  type: 'long'
+  logicalType: 'time-micros'
+}
+
 type AvroDecimal = {
   type: 'bytes'
   logicalType: 'decimal'
@@ -422,16 +432,19 @@ type AvroDecimal = {
 type AvroTimestampMillis = {
   type: 'long'
   logicalType: 'timestamp-millis'
+  'adjust-to-utc'?: boolean
 }
 
 type AvroTimestampMicros = {
   type: 'long'
   logicalType: 'timestamp-micros'
+  'adjust-to-utc'?: boolean
 }
 
 type AvroTimestampNanos = {
   type: 'long'
   logicalType: 'timestamp-nanos'
+  'adjust-to-utc'?: boolean
 }
 
 type AvroLogicalTypeType =
@@ -455,6 +468,8 @@ type AvroGenericLogicalType = {
 
 type AvroLogicalType =
   AvroDate |
+  AvroTimeMillis |
+  AvroTimeMicros |
   AvroDecimal |
   AvroTimestampMillis |
   AvroTimestampMicros |

@@ -100,6 +100,10 @@ function readType(reader, type) {
     if (type.logicalType === 'date' && type.type === 'int') {
       const value = readZigZag(reader)
       return new Date(value * 86400000)
+    } else if (type.logicalType === 'time-millis' && type.type === 'int') {
+      return readZigZag(reader)
+    } else if (type.logicalType === 'time-micros' && type.type === 'long') {
+      return readZigZagBigInt(reader)
     } else if (type.logicalType === 'timestamp-millis' && type.type === 'long') {
       const value = readZigZagBigInt(reader)
       return new Date(Number(value))

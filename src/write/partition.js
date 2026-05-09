@@ -32,6 +32,7 @@ export function groupByPartition(records, schema, partitionSpec) {
       sourceType: sourceField.type,
       sourceWriteDefault: sourceField['write-default'],
       transform: pf.transform,
+      resultType: transformResultType(pf.transform, sourceField.type),
     }
   })
 
@@ -41,11 +42,11 @@ export function groupByPartition(records, schema, partitionSpec) {
     /** @type {Record<string, any>} */
     const partition = {}
     const keyParts = []
-    for (const { partitionName, sourceName, sourceType, sourceWriteDefault, transform } of sourceFields) {
+    for (const { partitionName, sourceName, sourceType, sourceWriteDefault, transform, resultType } of sourceFields) {
       let v = record[sourceName]
       if (v === undefined && sourceWriteDefault !== undefined) v = sourceWriteDefault
       partition[partitionName] = applyTransform(transform, v === undefined ? null : v, sourceType)
-      keyParts.push(partitionKeyPart(partition[partitionName]))
+      keyParts.push(partitionKeyPart(partition[partitionName], resultType))
     }
     const key = JSON.stringify(keyParts)
     let group = groups.get(key)
@@ -124,14 +125,33 @@ export function partitionToAvroRecord(partition, schema, partitionSpec) {
 
 /**
  * @param {any} value
+ * @param {IcebergType} type
  * @returns {string}
  */
-function partitionKeyPart(value) {
+function partitionKeyPart(value, type) {
   if (value === null || value === undefined) return '__null__'
+  const name = typeof type === 'string' ? type : type.type
+  if (typeof value === 'number' && (name === 'float' || name === 'double')) {
+    return `${name}:${floatPartitionKey(value, name)}`
+  }
   if (typeof value === 'bigint') return `b:${value.toString()}`
   if (value instanceof Date) return `d:${value.getTime()}`
   if (value instanceof Uint8Array) return `x:${[...value].map(b => b.toString(16).padStart(2, '0')).join('')}`
   return `${typeof value}:${String(value)}`
+}
+
+/**
+ * @param {number} value
+ * @param {'float'|'double'} type
+ * @returns {string}
+ */
+function floatPartitionKey(value, type) {
+  if (Number.isNaN(value)) return 'nan'
+  const bytes = new Uint8Array(type === 'float' ? 4 : 8)
+  const view = new DataView(bytes.buffer)
+  if (type === 'float') view.setFloat32(0, value, false)
+  else view.setFloat64(0, value, false)
+  return [...bytes].map(b => b.toString(16).padStart(2, '0')).join('')
 }
 
 /**
@@ -163,12 +183,15 @@ function icebergTypeToAvro(type) {
   case 'string': return 'string'
   case 'binary': return 'bytes'
   case 'date': return { type: 'int', logicalType: 'date' }
+  case 'time': return { type: 'long', logicalType: 'time-micros' }
   case 'timestamp':
+    return { type: 'long', logicalType: 'timestamp-micros', 'adjust-to-utc': false }
   case 'timestamptz':
-    return { type: 'long', logicalType: 'timestamp-micros' }
+    return { type: 'long', logicalType: 'timestamp-micros', 'adjust-to-utc': true }
   case 'timestamp_ns':
+    return { type: 'long', logicalType: 'timestamp-nanos', 'adjust-to-utc': false }
   case 'timestamptz_ns':
-    return { type: 'long', logicalType: 'timestamp-nanos' }
+    return { type: 'long', logicalType: 'timestamp-nanos', 'adjust-to-utc': true }
   default:
     throw new Error(`unsupported partition source type: ${name}`)
   }
