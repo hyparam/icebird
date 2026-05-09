@@ -307,6 +307,7 @@ export async function icebergCreateTable({
     partitionSpec,
     sortOrder,
     properties,
+    conditionalCommits: catalog.conditionalCommits,
   })
 }
 

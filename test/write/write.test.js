@@ -27,6 +27,19 @@ describe('fileCatalog', () => {
     expect(Object.isFrozen(cat)).toBe(true)
   })
 
+  it('exposes conditionalCommits when set', () => {
+    const { resolver } = memResolver()
+    const cat = fileCatalog({ resolver, conditionalCommits: true })
+    expect(cat.conditionalCommits).toBe(true)
+    expect(Object.isFrozen(cat)).toBe(true)
+  })
+
+  it('omits conditionalCommits when not set', () => {
+    const { resolver } = memResolver()
+    const cat = fileCatalog({ resolver })
+    expect('conditionalCommits' in cat).toBe(false)
+  })
+
   it('throws when resolver is missing', () => {
     // @ts-expect-error
     expect(() => fileCatalog({})).toThrow(/resolver is required/)

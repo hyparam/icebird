@@ -33,6 +33,13 @@ export interface FileCatalog {
   type: 'file'
   resolver: Resolver
   lister?: Lister
+  /**
+   * Opt in to S3-safe table creation: `v1.metadata.json` is created with
+   * `If-None-Match: *` and `version-hint.text` is best-effort. Default false
+   * preserves backwards-compatible (overwrite) behavior. (This slice does
+   * not yet apply conditional creates to subsequent commits.)
+   */
+  conditionalCommits?: boolean
 }
 
 export type Catalog = RestCatalogContext | FileCatalog
