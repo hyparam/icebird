@@ -254,4 +254,3 @@ function coerceForAvro(value, type) {
   }
   return value
 }
-

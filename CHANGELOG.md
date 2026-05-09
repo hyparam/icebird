@@ -1,5 +1,13 @@
 # Icebird Changelog
 
+## [0.5.2]
+ - Variant type read support
+ - Fix deletion vector issues; replace existing position delete files when writing a deletion vector
+ - Hash nanosecond timestamps at microsecond precision
+ - Fix `rowStart` / `rowEnd` in the presence of deletes
+ - Update `last-updated-ms` on snapshot writes
+ - Fix partition write edge cases and partition fixed type conversion
+
 ## [0.5.1]
  - `icebergQuery` works against non-REST catalogs, including a default file catalog when no resolver is passed
 
