@@ -45,13 +45,13 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "hyparquet": "1.25.6",
+    "hyparquet": "1.25.8",
     "hyparquet-compressors": "1.1.1",
-    "hyparquet-writer": "0.14.0",
+    "hyparquet-writer": "0.15.0",
     "squirreling": "0.12.18"
   },
   "devDependencies": {
-    "@types/node": "25.6.0",
+    "@types/node": "25.6.2",
     "@vitest/coverage-v8": "4.1.5",
     "eslint": "9.39.4",
     "eslint-plugin-jsdoc": "62.9.0",

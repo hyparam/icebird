@@ -113,6 +113,34 @@ describe('writeParquet', () => {
     expect(rows).toEqual([{ ts, tz: ts }])
   })
 
+  it('writes v3 variant parquet logical type', async () => {
+    const writer = new ByteWriter()
+    /** @type {Schema} */
+    const variantSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        { id: 2, name: 'payload', required: false, type: 'variant', 'initial-default': null, 'write-default': null },
+      ],
+    }
+    const records = [
+      { id: 1n, payload: { event: 'click', count: 1, flags: [true, null] } },
+      { id: 2n, payload: null },
+    ]
+
+    writeParquet({ writer, schema: variantSchema, records })
+    const file = writer.getBuffer()
+    const meta = parquetMetadata(file)
+
+    expect(meta.schema.find(s => s.name === 'payload')).toMatchObject({
+      logical_type: { type: 'VARIANT' },
+      num_children: 2,
+    })
+    const rows = await parquetReadObjects({ file, compressors })
+    expect(rows).toEqual(records)
+  })
+
   it('writes date and time logical types per spec', async () => {
     const writer = new ByteWriter()
     /** @type {Schema} */
