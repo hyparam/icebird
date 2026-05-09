@@ -1,3 +1,5 @@
+import { typeName } from '../schema.js'
+
 /**
  * Iceberg partition transform implementation. Given a source value and the
  * source field's iceberg type, applies the transform and returns the partition
@@ -71,14 +73,6 @@ export function applyTransform(transform, value, sourceType) {
   case 'bucket': return bucketTransform(value, sourceType, parsed.n)
   case 'truncate': return truncateTransform(value, sourceType, parsed.w)
   }
-}
-
-/**
- * @param {IcebergType} type
- * @returns {string}
- */
-function typeName(type) {
-  return typeof type === 'string' ? type : type.type
 }
 
 /**

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { ByteWriter } from 'hyparquet-writer'
 import { avroMetadata } from '../../src/avro/avro.metadata.js'
 import { avroRead } from '../../src/avro/avro.read.js'
-import { fieldTypeName, groupByPartition, partitionAvroSchema, partitionToAvroRecord } from '../../src/write/partition.js'
+import { groupByPartition, partitionAvroSchema, partitionToAvroRecord } from '../../src/write/partition.js'
 import { writeDataManifest } from '../../src/write/manifest.js'
 
 /**
@@ -582,13 +582,4 @@ describe('write partition helpers', () => {
     expect(records[0].data_file.partition.price).toBe(12.34)
   })
 
-  it('returns field type names for string and object field types', () => {
-    expect(fieldTypeName({ id: 1, name: 'id', required: true, type: 'long' })).toBe('long')
-    expect(fieldTypeName({
-      id: 2,
-      name: 'payload',
-      required: false,
-      type: { type: 'struct', 'schema-id': 1, fields: [] },
-    })).toBe('struct')
-  })
 })

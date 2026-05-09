@@ -1,3 +1,4 @@
+import { bytesToHex } from '../utils.js'
 import { applyTransform, transformResultType } from './transform.js'
 import {
   decimalRequiredBytes,
@@ -146,7 +147,7 @@ function partitionKeyPart(value, type) {
   if (name === 'long') return `long:${BigInt(value)}`
   if (typeof value === 'bigint') return `b:${value.toString()}`
   if (value instanceof Date) return `d:${value.getTime()}`
-  if (value instanceof Uint8Array) return `x:${[...value].map(b => b.toString(16).padStart(2, '0')).join('')}`
+  if (value instanceof Uint8Array) return `x:${bytesToHex(value)}`
   return `${typeof value}:${String(value)}`
 }
 
@@ -161,7 +162,7 @@ function floatPartitionKey(value, type) {
   const view = new DataView(bytes.buffer)
   if (type === 'float') view.setFloat32(0, value, false)
   else view.setFloat64(0, value, false)
-  return [...bytes].map(b => b.toString(16).padStart(2, '0')).join('')
+  return bytesToHex(bytes)
 }
 
 /**
@@ -254,12 +255,3 @@ function coerceForAvro(value, type) {
   return value
 }
 
-/**
- * Helper for reusing one Field type. Re-exported for tests.
- *
- * @param {Field} field
- * @returns {string}
- */
-export function fieldTypeName(field) {
-  return typeof field.type === 'string' ? field.type : field.type.type
-}

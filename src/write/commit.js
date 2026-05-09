@@ -1,5 +1,6 @@
 import { translateS3Url } from '../fetch.js'
 import { validateSchemaForVersion } from '../schema.js'
+import { parseDecimalType } from './conversions.js'
 
 /**
  * @import {Field, PartitionSpec, Resolver, Schema, SnapshotRef, SortOrder, StagedUpdate, TableMetadata, TableRequirement, TableUpdate} from '../../src/types.js'
@@ -394,16 +395,6 @@ function decimalPromotionAllowed(from, to) {
   const a = parseDecimalType(from)
   const b = parseDecimalType(to)
   return Boolean(a && b && b.precision > a.precision && b.scale === a.scale)
-}
-
-/**
- * @param {string} type
- * @returns {{precision: number, scale: number}|undefined}
- */
-function parseDecimalType(type) {
-  const m = /^decimal\((\d+),\s*(\d+)\)$/.exec(type)
-  if (!m) return
-  return { precision: Number(m[1]), scale: Number(m[2]) }
 }
 
 /**

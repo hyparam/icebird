@@ -102,7 +102,7 @@ function checkNestedFieldsForVersion(type, formatVersion, path) {
  * @param {IcebergType} type
  * @returns {string}
  */
-function typeName(type) {
+export function typeName(type) {
   return typeof type === 'string' ? type : type.type
 }
 

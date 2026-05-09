@@ -1,4 +1,5 @@
 import { parquetWrite } from 'hyparquet-writer'
+import { typeName } from '../schema.js'
 import { sanitize } from '../utils.js'
 import { decimalRequiredBytes, parseDecimalType } from './conversions.js'
 
@@ -142,14 +143,6 @@ function icebergTypeToParquetFields(name, field) {
   default:
     throw new Error(`unsupported iceberg type: ${type}`)
   }
-}
-
-/**
- * @param {IcebergType} type
- * @returns {string}
- */
-function typeName(type) {
-  return typeof type === 'string' ? type : type.type
 }
 
 /**

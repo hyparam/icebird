@@ -1,3 +1,4 @@
+import { typeName } from '../schema.js'
 import { computeGeoBounds, isGeoType } from './geospatial.js'
 
 /**
@@ -268,14 +269,6 @@ function hasComparableBounds(type) {
   const name = typeName(type)
   if (isGeoType(name)) return false
   return name !== 'unknown' && name !== 'variant'
-}
-
-/**
- * @param {IcebergType} type
- * @returns {string}
- */
-function typeName(type) {
-  return typeof type === 'string' ? type : type.type
 }
 
 /**

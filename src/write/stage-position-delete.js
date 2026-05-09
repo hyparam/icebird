@@ -1,6 +1,6 @@
 import { fetchAvroRecords, translateS3Url } from '../fetch.js'
 import { validateSchemaForVersion } from '../schema.js'
-import { uuid4 } from '../utils.js'
+import { bytesToHex, uuid4 } from '../utils.js'
 import { writePositionDeleteFile } from './delete-file.js'
 import { writeDeleteManifest } from './manifest.js'
 import {
@@ -294,6 +294,6 @@ function valueTag(v) {
   if (v === null || v === undefined) return 'null'
   if (typeof v === 'bigint') return `b:${v.toString()}`
   if (v instanceof Date) return `d:${v.getTime()}`
-  if (v instanceof Uint8Array) return `x:${[...v].map(b => b.toString(16).padStart(2, '0')).join('')}`
+  if (v instanceof Uint8Array) return `x:${bytesToHex(v)}`
   return `${typeof v}:${String(v)}`
 }
