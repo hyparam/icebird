@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest'
-import { applyUpdates } from '../../src/write/commit.js'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { applyUpdates, fileCatalogCommit } from '../../src/write/commit.js'
+import { memResolver } from '../helpers.js'
 
 /**
  * @import {Schema, TableMetadata} from '../../src/types.js'
@@ -11,6 +12,10 @@ const idSchema = {
   'schema-id': 0,
   fields: [{ id: 1, name: 'id', required: true, type: 'long' }],
 }
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
 
 /**
  * @param {Partial<TableMetadata>} [overrides]
@@ -201,6 +206,38 @@ describe('metadata schema updates', () => {
     expect(() => applyUpdates(tableMetadata(), [
       { action: 'set-current-schema', 'schema-id': 7 },
     ])).toThrow(/schema-id 7 not found/)
+  })
+
+  it('updates last-updated-ms for metadata-only schema commits', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000001234)
+    const { resolver } = memResolver()
+    const metadata = tableMetadata({ 'last-updated-ms': 1700000000000 })
+    /** @type {Schema} */
+    const nextSchema = {
+      type: 'struct',
+      'schema-id': -1,
+      fields: [
+        ...idSchema.fields,
+        { id: 2, name: 'tag', required: false, type: 'string', 'initial-default': null, 'write-default': null },
+      ],
+    }
+
+    const committed = await fileCatalogCommit({
+      tableUrl: 'http://test/metadata-only-schema',
+      metadata,
+      resolver,
+      staged: {
+        snapshot: /** @type {any} */ (null),
+        requirements: [{ type: 'assert-table-uuid', uuid: metadata['table-uuid'] }],
+        updates: [
+          { action: 'add-schema', schema: nextSchema },
+          { action: 'set-current-schema', 'schema-id': -1 },
+        ],
+        writtenFiles: [],
+      },
+    })
+
+    expect(committed['last-updated-ms']).toBe(1700000001234)
   })
 })
 

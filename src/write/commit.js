@@ -30,7 +30,11 @@ export async function fileCatalogCommit({ tableUrl, metadata, metadataFileName, 
   if (!resolver?.writer) throw new Error('resolver.writer is required')
 
   checkRequirements(metadata, staged.requirements)
-  const updated = applyUpdates(metadata, staged.updates)
+  const hasSnapshotUpdate = staged.updates.some(up => up.action === 'add-snapshot')
+  const baseMetadata = hasSnapshotUpdate
+    ? metadata
+    : { ...metadata, 'last-updated-ms': Date.now() }
+  const updated = applyUpdates(baseMetadata, staged.updates)
 
   const priorMetadataLog = metadata['metadata-log'] ?? []
   const currentVersion = deriveCurrentVersion(priorMetadataLog)
