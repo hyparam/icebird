@@ -1,9 +1,20 @@
 import type { AsyncBuffer } from 'hyparquet'
 import type { Writer } from 'hyparquet-writer/src/types.js'
 
+export interface WriterOptions {
+  /**
+   * If `'*'`, the writer must create the object only if it does not already
+   * exist (S3 conditional write: `If-None-Match: *`). On collision the
+   * underlying `finish()` rejects with an error whose `status` is 412 (or 409
+   * on some providers). The HTTP/S3 `urlResolver` translates this to the
+   * `If-None-Match` header. Other resolvers may honor or ignore it.
+   */
+  ifNoneMatch?: '*'
+}
+
 export interface Resolver {
   reader: (path: string, byteLength?: number) => AsyncBuffer | Promise<AsyncBuffer>
-  writer?: (path: string) => Writer
+  writer?: (path: string, options?: WriterOptions) => Writer
   deleter?: (path: string) => Promise<void>
 }
 export type Lister = (path: string) => Promise<string[]>

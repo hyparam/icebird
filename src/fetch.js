@@ -43,7 +43,7 @@ export function urlResolver({ requestInit } = {}) {
     reader(url, byteLength) {
       return asyncBufferFromUrl({ url: translateS3Url(url), byteLength, requestInit })
     },
-    writer(url) {
+    writer(url, options) {
       const w = new ByteWriter()
       w.finish = async function() {
         const target = translateS3Url(url)
@@ -51,9 +51,18 @@ export function urlResolver({ requestInit } = {}) {
         // lazily and the underlying ByteWriter buffer must not mutate
         // mid-upload (e.g. if the writer is reused after finish).
         const body = w.getBytes().slice()
-        const res = await fetch(target, { ...requestInit, method: 'PUT', body })
+        /** @type {Record<string, string>} */
+        const headers = {}
+        if (requestInit?.headers) {
+          new Headers(requestInit.headers).forEach((v, k) => { headers[k] = v })
+        }
+        if (options?.ifNoneMatch) headers['If-None-Match'] = options.ifNoneMatch
+        const res = await fetch(target, { ...requestInit, method: 'PUT', headers, body })
         if (!res.ok) {
-          throw new Error(`PUT ${url}: ${res.status} ${res.statusText}`)
+          /** @type {Error & { status?: number }} */
+          const err = new Error(`PUT ${url}: ${res.status} ${res.statusText}`)
+          err.status = res.status
+          throw err
         }
       }
       return w

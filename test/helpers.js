@@ -83,11 +83,17 @@ export function memResolver() {
         slice: (/** @type {number} */ s, /** @type {number} */ e) => ab.slice(s, e),
       }
     },
-    writer(p) {
+    writer(p, options) {
       const w = new ByteWriter()
       const origFinish = w.finish.bind(w)
-      w.finish = () => {
-        origFinish()
+      w.finish = async () => {
+        await origFinish()
+        if (options?.ifNoneMatch === '*' && files.has(p)) {
+          /** @type {Error & { status?: number }} */
+          const err = new Error(`PUT ${p}: 412 Precondition Failed`)
+          err.status = 412
+          throw err
+        }
         files.set(p, w.getBytes())
       }
       return w

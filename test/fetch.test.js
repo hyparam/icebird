@@ -116,4 +116,34 @@ describe('urlResolver.writer', () => {
     w.appendBytes(new Uint8Array([0]))
     await expect(w.finish()).rejects.toThrow(/PUT .*: 403 Forbidden/)
   })
+
+  it('sets If-None-Match: * when ifNoneMatch is "*"', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValue(fakeResponse({ ok: true, status: 200, statusText: 'OK' }))
+    const w = requireWriter(urlResolver())('https://h/key', { ifNoneMatch: '*' })
+    w.appendBytes(new Uint8Array([1]))
+    await w.finish()
+
+    const headers = /** @type {Record<string, string>} */ (fetchMock.mock.calls[0][1]?.headers)
+    expect(headers['If-None-Match']).toBe('*')
+  })
+
+  it('omits If-None-Match by default', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValue(fakeResponse({ ok: true, status: 200, statusText: 'OK' }))
+    const w = requireWriter(urlResolver())('https://h/key')
+    w.appendBytes(new Uint8Array([1]))
+    await w.finish()
+
+    const headers = /** @type {Record<string, string>} */ (fetchMock.mock.calls[0][1]?.headers)
+    expect(headers['If-None-Match']).toBeUndefined()
+  })
+
+  it('attaches HTTP status to the thrown error', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValue(fakeResponse({ ok: false, status: 412, statusText: 'Precondition Failed' }))
+    const w = requireWriter(urlResolver())('https://h/key', { ifNoneMatch: '*' })
+    w.appendBytes(new Uint8Array([1]))
+    await expect(w.finish()).rejects.toMatchObject({ status: 412 })
+  })
 })
