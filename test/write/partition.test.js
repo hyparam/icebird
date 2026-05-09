@@ -424,7 +424,7 @@ describe('write partition helpers', () => {
       fields: [{ 'source-id': 1, 'field-id': 1000, name: 'digit', transform: 'identity' }],
     }
     expect(() => partitionToAvroRecord({ digit: 128 }, tinySchema, tinyPartitionSpec))
-      .toThrow(/partition value does not fit in decimal\(1,0\)/)
+      .toThrow(/decimal\(1,0\) partition value exceeds precision 1/)
   })
 
   it('throws when converting partition values with a missing source field', () => {

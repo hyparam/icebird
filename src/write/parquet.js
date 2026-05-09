@@ -1,5 +1,6 @@
 import { parquetWrite } from 'hyparquet-writer'
 import { sanitize } from '../utils.js'
+import { decimalRequiredBytes, parseDecimalType } from './conversions.js'
 
 /**
  * @import {CompressionCodec} from 'hyparquet'
@@ -152,19 +153,6 @@ function typeName(type) {
 }
 
 /**
- * Parse iceberg `decimal(P,S)` / `decimal(P, S)` strings into precision and
- * scale. Returns undefined for non-decimal types so callers can fall through.
- *
- * @param {string} type
- * @returns {{ precision: number, scale: number } | undefined}
- */
-function parseDecimalType(type) {
-  const m = /^decimal\((\d+),\s*(\d+)\)$/.exec(type)
-  if (!m) return undefined
-  return { precision: parseInt(m[1], 10), scale: parseInt(m[2], 10) }
-}
-
-/**
  * Parse iceberg `fixed[N]` strings into the byte length.
  *
  * @param {string} type
@@ -174,25 +162,6 @@ function parseFixedType(type) {
   const m = /^fixed\[(\d+)\]$/.exec(type)
   if (!m) return undefined
   return parseInt(m[1], 10)
-}
-
-/**
- * Minimum number of bytes needed to store an unscaled decimal of `precision`
- * digits as a two's-complement signed integer. Matches Iceberg's
- * TypeUtil.decimalRequiredBytes; uses BigInt to stay exact for P up to 38.
- *
- * @param {number} precision
- * @returns {number}
- */
-function decimalRequiredBytes(precision) {
-  const limit = 10n ** BigInt(precision)
-  let n = 1
-  let bound = 128n
-  while (limit > bound) {
-    n++
-    bound <<= 8n
-  }
-  return n
 }
 
 /**
