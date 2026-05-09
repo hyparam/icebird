@@ -1,6 +1,7 @@
 import { loadTable } from '../catalog/loadTable.js'
 import { restCatalogCreateTable, restCatalogDropTable, restCatalogUpdateTable } from '../catalog/rest.js'
 import { icebergCreate } from '../create.js'
+import { loadLatestFileCatalogMetadata } from '../metadata.js'
 import { applyUpdates, fileCatalogCommit } from './commit.js'
 import { icebergStageDeletionVector } from './stage-deletion-vector.js'
 import { icebergStagePositionDelete } from './stage-position-delete.js'
@@ -25,14 +26,15 @@ import { icebergStageAppend, icebergStageExpireSnapshots, icebergStageSetRef } f
  */
 export async function icebergAppend({ catalog, namespace, table, tableUrl, resolver, records }) {
   const ctx = await loadTable({ catalog, namespace, table, tableUrl, resolver })
-  const writer = requireResolver(ctx.resolver, 'icebergAppend')
-  const staged = await icebergStageAppend({
-    tableUrl: ctx.tableUrl,
-    metadata: ctx.metadata,
-    records,
-    resolver: writer,
+  return await commitWithRetry({
+    catalog, target: { namespace, table }, ctx,
+    stage: workingCtx => icebergStageAppend({
+      tableUrl: workingCtx.tableUrl,
+      metadata: workingCtx.metadata,
+      records,
+      resolver: requireResolver(workingCtx.resolver, 'icebergAppend'),
+    }),
   })
-  return await commitStaged(catalog, { namespace, table }, ctx, staged)
 }
 
 /**
@@ -53,28 +55,31 @@ export async function icebergAppend({ catalog, namespace, table, tableUrl, resol
  */
 export async function icebergDelete({ catalog, namespace, table, tableUrl, resolver, deletes, mode }) {
   const ctx = await loadTable({ catalog, namespace, table, tableUrl, resolver })
-  const writer = requireResolver(ctx.resolver, 'icebergDelete')
-  const formatVersion = ctx.metadata['format-version']
-  const effective = mode ?? (formatVersion === 3 ? 'puffin' : 'parquet')
-  let staged
-  if (effective === 'puffin') {
-    staged = await icebergStageDeletionVector({
-      tableUrl: ctx.tableUrl,
-      metadata: ctx.metadata,
-      deletes,
-      resolver: writer,
-    })
-  } else if (effective === 'parquet') {
-    staged = await icebergStagePositionDelete({
-      tableUrl: ctx.tableUrl,
-      metadata: ctx.metadata,
-      deletes,
-      resolver: writer,
-    })
-  } else {
-    throw new Error(`unknown delete mode: ${effective}`)
-  }
-  return await commitStaged(catalog, { namespace, table }, ctx, staged)
+  return await commitWithRetry({
+    catalog, target: { namespace, table }, ctx,
+    stage: async workingCtx => {
+      const writer = requireResolver(workingCtx.resolver, 'icebergDelete')
+      const formatVersion = workingCtx.metadata['format-version']
+      const effective = mode ?? (formatVersion === 3 ? 'puffin' : 'parquet')
+      if (effective === 'puffin') {
+        return await icebergStageDeletionVector({
+          tableUrl: workingCtx.tableUrl,
+          metadata: workingCtx.metadata,
+          deletes,
+          resolver: writer,
+        })
+      }
+      if (effective === 'parquet') {
+        return await icebergStagePositionDelete({
+          tableUrl: workingCtx.tableUrl,
+          metadata: workingCtx.metadata,
+          deletes,
+          resolver: writer,
+        })
+      }
+      throw new Error(`unknown delete mode: ${effective}`)
+    },
+  })
 }
 
 /**
@@ -100,16 +105,18 @@ export async function icebergSetRef({
   ref, snapshotId, type, minSnapshotsToKeep, maxSnapshotAgeMs, maxRefAgeMs,
 }) {
   const ctx = await loadTable({ catalog, namespace, table, tableUrl, resolver })
-  const staged = icebergStageSetRef({
-    metadata: ctx.metadata,
-    ref,
-    snapshotId,
-    type,
-    minSnapshotsToKeep,
-    maxSnapshotAgeMs,
-    maxRefAgeMs,
+  return await commitWithRetry({
+    catalog, target: { namespace, table }, ctx,
+    stage: workingCtx => icebergStageSetRef({
+      metadata: workingCtx.metadata,
+      ref,
+      snapshotId,
+      type,
+      minSnapshotsToKeep,
+      maxSnapshotAgeMs,
+      maxRefAgeMs,
+    }),
   })
-  return await commitStaged(catalog, { namespace, table }, ctx, staged)
 }
 
 /**
@@ -127,8 +134,10 @@ export async function icebergSetRef({
  */
 export async function icebergExpireSnapshots({ catalog, namespace, table, tableUrl, resolver, snapshotIds }) {
   const ctx = await loadTable({ catalog, namespace, table, tableUrl, resolver })
-  const staged = icebergStageExpireSnapshots({ metadata: ctx.metadata, snapshotIds })
-  return await commitStaged(catalog, { namespace, table }, ctx, staged)
+  return await commitWithRetry({
+    catalog, target: { namespace, table }, ctx,
+    stage: workingCtx => icebergStageExpireSnapshots({ metadata: workingCtx.metadata, snapshotIds }),
+  })
 }
 
 /**
@@ -361,7 +370,7 @@ function requireResolver(resolver, caller) {
  *
  * @param {Catalog} catalog
  * @param {{namespace?: string | string[], table?: string}} target
- * @param {{metadata: TableMetadata, metadataFileName: string | undefined, tableUrl: string, resolver: Resolver | undefined}} ctx
+ * @param {{metadata: TableMetadata, metadataFileName: string | undefined, version?: number, tableUrl: string, resolver: Resolver | undefined}} ctx
  * @param {StagedUpdate} staged
  * @returns {Promise<TableMetadata>}
  */
@@ -380,8 +389,72 @@ async function commitStaged(catalog, target, ctx, staged) {
     tableUrl: ctx.tableUrl,
     metadata: ctx.metadata,
     metadataFileName: ctx.metadataFileName,
+    currentVersion: ctx.version,
     staged,
     resolver: ctx.resolver,
     conditionalCommits: catalog.type === 'file' && catalog.conditionalCommits,
   })
+}
+
+/**
+ * Stage and commit, retrying on concurrent-commit conflicts when the catalog
+ * opts in via `conditionalCommits`. The `stage` callback is invoked once per
+ * attempt against the freshest loaded metadata, so each retry rebuilds the
+ * snapshot/manifest-list against the new parent (sequence number, parent
+ * snapshot id, ref pointer, etc., all advance correctly). Data and manifest
+ * files written by failed attempts may become orphans; cleanup is left to a
+ * separate maintenance pass.
+ *
+ * For non-file catalogs and file catalogs without `conditionalCommits`, the
+ * callback runs exactly once and any error from `commitStaged` is re-thrown.
+ *
+ * @param {object} options
+ * @param {Catalog} options.catalog
+ * @param {{namespace?: string | string[], table?: string}} options.target
+ * @param {{metadata: TableMetadata, metadataFileName: string | undefined, version?: number, tableUrl: string, resolver: Resolver | undefined}} options.ctx - The initial loaded ctx; refreshed on retry.
+ * @param {(workingCtx: {metadata: TableMetadata, metadataFileName: string | undefined, version?: number, tableUrl: string, resolver: Resolver | undefined}) => Promise<StagedUpdate> | StagedUpdate} options.stage
+ * @param {number} [options.maxRetries] - Number of additional attempts after the first (default 5).
+ * @returns {Promise<TableMetadata>}
+ */
+async function commitWithRetry({ catalog, target, ctx, stage, maxRetries = 5 }) {
+  const conditional = catalog.type === 'file' && catalog.conditionalCommits === true
+  let workingCtx = ctx
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const staged = await stage(workingCtx)
+    try {
+      return await commitStaged(catalog, target, workingCtx, staged)
+    } catch (err) {
+      if (!conditional || !isCommitConflict(err)) throw err
+      if (attempt === maxRetries) {
+        throw new Error(
+          `file catalog commit failed after ${maxRetries + 1} attempts due to concurrent commits`
+        )
+      }
+      const lister = catalog.type === 'file' ? catalog.lister : undefined
+      if (!workingCtx.resolver) throw err
+      const fresh = await loadLatestFileCatalogMetadata({
+        tableUrl: workingCtx.tableUrl,
+        resolver: workingCtx.resolver,
+        lister,
+      })
+      workingCtx = {
+        metadata: fresh.metadata,
+        metadataFileName: fresh.metadataFileName,
+        version: fresh.version,
+        tableUrl: workingCtx.tableUrl,
+        resolver: workingCtx.resolver,
+      }
+    }
+  }
+  throw new Error('unreachable')
+}
+
+/**
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+function isCommitConflict(err) {
+  if (!err || typeof err !== 'object') return false
+  const { status } = /** @type {any} */ (err)
+  return status === 412 || status === 409
 }

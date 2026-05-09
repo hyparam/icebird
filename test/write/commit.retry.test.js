@@ -73,3 +73,47 @@ describe('loadLatestFileCatalogMetadata', () => {
       .rejects.toThrow(/no metadata files/)
   })
 })
+
+describe('icebergAppend retry under conditionalCommits', () => {
+  it('two writers staged against the same parent both eventually commit', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/two-staged'
+    const { resolver, files } = memResolver()
+    const catalog = fileCatalog({ resolver, conditionalCommits: true })
+
+    await icebergCreateTable({ catalog, tableUrl, schema })
+
+    // Both calls load v1, stage against v1, race for v2. One wins, the other
+    // 412s, reloads (sees v2), re-stages against v2, and writes v3.
+    const [a, b] = await Promise.all([
+      icebergAppend({ catalog, tableUrl, records: [{ id: 1n, name: 'a' }] }),
+      icebergAppend({ catalog, tableUrl, records: [{ id: 2n, name: 'b' }] }),
+    ])
+
+    expect(files.has(`${tableUrl}/metadata/v2.metadata.json`)).toBe(true)
+    expect(files.has(`${tableUrl}/metadata/v3.metadata.json`)).toBe(true)
+    // The committed metadata reflects whatever ran last; both have a
+    // current-snapshot-id and one of them sees 2 snapshots.
+    const finalSnapCount = Math.max(a.snapshots?.length ?? 0, b.snapshots?.length ?? 0)
+    expect(finalSnapCount).toBe(2)
+  })
+
+  it('does not retry when conditionalCommits is off (legacy overwrite)', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/no-retry-default'
+    const { resolver, files } = memResolver()
+    const catalog = fileCatalog({ resolver })
+
+    await icebergCreateTable({ catalog, tableUrl, schema })
+
+    // Two parallel appends without the flag — last one wins by overwrite. We
+    // just verify both resolved and exactly v2 was written.
+    await Promise.all([
+      icebergAppend({ catalog, tableUrl, records: [{ id: 1n, name: 'a' }] }),
+      icebergAppend({ catalog, tableUrl, records: [{ id: 2n, name: 'b' }] }),
+    ])
+
+    expect(files.has(`${tableUrl}/metadata/v2.metadata.json`)).toBe(true)
+    expect(files.has(`${tableUrl}/metadata/v3.metadata.json`)).toBe(false)
+  })
+})

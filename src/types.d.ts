@@ -36,10 +36,10 @@ export interface FileCatalog {
   /**
    * Opt in to S3-safe metadata commits: every `vN.metadata.json` (the
    * initial create and every subsequent commit) is written with
-   * `If-None-Match: *` and `version-hint.text` is best-effort. The losing
-   * writer surfaces the 412/409 to the caller; this catalog does not yet
-   * retry. Default false preserves backwards-compatible (overwrite)
-   * behavior.
+   * `If-None-Match: *` and `version-hint.text` is best-effort. High-level
+   * write functions retry on 412/409 by reloading the latest metadata and
+   * re-staging. `icebergCreateTable` and `icebergTransaction` do not retry.
+   * Default false preserves backwards-compatible (overwrite) behavior.
    */
   conditionalCommits?: boolean
 }

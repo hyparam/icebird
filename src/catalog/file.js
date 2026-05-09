@@ -11,7 +11,7 @@
  * @param {object} options
  * @param {Resolver} options.resolver - Resolver used for both data file I/O and metadata commits. Must have `writer` for write operations.
  * @param {Lister} [options.lister] - Optional lister for metadata-version discovery on tables without `version-hint.text`. Defaults to `s3Lister()` inside the metadata module.
- * @param {boolean} [options.conditionalCommits] - When true, every metadata commit (`v1.metadata.json` and each subsequent `vN+1.metadata.json`) is created with `If-None-Match: *`, so two concurrent writers see one success and one 412/409. `version-hint.text` is treated as a best-effort cache. The losing writer surfaces the 412/409 to the caller; this catalog does not yet retry. Default false preserves backwards-compatible (overwrite) behavior.
+ * @param {boolean} [options.conditionalCommits] - When true, every metadata commit (`v1.metadata.json` and each subsequent `vN+1.metadata.json`) is created with `If-None-Match: *`, so two concurrent writers see one success and one 412/409. The high-level write functions (`icebergAppend`, `icebergDelete`, `icebergSetRef`, `icebergExpireSnapshots`) retry on 412/409 by reloading the latest metadata via `loadLatestFileCatalogMetadata` and re-staging. `icebergCreateTable` and `icebergTransaction` do not retry (initial create has nothing to rebase; transactions can't safely re-run their callback). `version-hint.text` is a best-effort cache. Default false preserves backwards-compatible (overwrite) behavior.
  * @returns {FileCatalog}
  */
 export function fileCatalog({ resolver, lister, conditionalCommits }) {
