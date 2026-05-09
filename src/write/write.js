@@ -382,5 +382,6 @@ async function commitStaged(catalog, target, ctx, staged) {
     metadataFileName: ctx.metadataFileName,
     staged,
     resolver: ctx.resolver,
+    conditionalCommits: catalog.type === 'file' && catalog.conditionalCommits,
   })
 }

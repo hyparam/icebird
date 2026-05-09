@@ -11,7 +11,7 @@
  * @param {object} options
  * @param {Resolver} options.resolver - Resolver used for both data file I/O and metadata commits. Must have `writer` for write operations.
  * @param {Lister} [options.lister] - Optional lister for metadata-version discovery on tables without `version-hint.text`. Defaults to `s3Lister()` inside the metadata module.
- * @param {boolean} [options.conditionalCommits] - When true, table-creation writes `v1.metadata.json` with `If-None-Match: *` so two concurrent creators see one success and one 412/409. `version-hint.text` is treated as a best-effort cache. Default false preserves backwards-compatible (overwrite) behavior. (This slice does not yet apply conditional creates to subsequent commits.)
+ * @param {boolean} [options.conditionalCommits] - When true, every metadata commit (`v1.metadata.json` and each subsequent `vN+1.metadata.json`) is created with `If-None-Match: *`, so two concurrent writers see one success and one 412/409. `version-hint.text` is treated as a best-effort cache. The losing writer surfaces the 412/409 to the caller; this catalog does not yet retry. Default false preserves backwards-compatible (overwrite) behavior.
  * @returns {FileCatalog}
  */
 export function fileCatalog({ resolver, lister, conditionalCommits }) {
