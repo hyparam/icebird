@@ -8,6 +8,3 @@ export { icebergLatestVersion, icebergListVersions, icebergMetadata, loadLatestF
 export { icebergManifests } from './manifest.js'
 export { icebergDataSource } from './sql/icebergDataSource.js'
 export { icebergQuery } from './sql/icebergQuery.js'
-export { avroMetadata } from './avro/avro.metadata.js'
-export { avroRead } from './avro/avro.read.js'
-export { avroWrite } from './avro/avro.write.js'

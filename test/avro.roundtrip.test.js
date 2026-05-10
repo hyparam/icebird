@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ByteWriter } from 'hyparquet-writer'
-import { avroMetadata, avroRead, avroWrite } from '../src/index.js'
+import { avroMetadata, avroRead, avroWrite } from '../src/avro/index.js'
 
 /**
  * @import {AvroType} from '../src/types.js'

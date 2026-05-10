@@ -30,6 +30,10 @@
       "types": "./types/index.d.ts",
       "import": "./src/index.js"
     },
+    "./avro": {
+      "types": "./types/avro/index.d.ts",
+      "import": "./src/avro/index.js"
+    },
     "./src/*.js": {
       "types": "./types/*.d.ts",
       "import": "./src/*.js"
