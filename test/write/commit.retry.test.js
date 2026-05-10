@@ -72,6 +72,54 @@ describe('loadLatestFileCatalogMetadata', () => {
     await expect(loadLatestFileCatalogMetadata({ tableUrl, resolver, lister }))
       .rejects.toThrow(/no metadata files/)
   })
+
+  // Desired behavior: when a foreign writer (java/rust/python convention,
+  // `<NNNNN>-<uuid>.metadata.json`) has advanced the table since the last
+  // icebird `v<N>.metadata.json`, discovery must surface the higher
+  // foreign-named version. Today the linear probe-forward only follows
+  // `v<N>.metadata.json` and breaks at the first gap, so it misses the
+  // foreign file. `it.fails` runs the assertion and expects it to fail;
+  // when the bug is fixed this case will report as "should have failed
+  // but passed" and the developer can flip it to `it`.
+  it('discovers a foreign-named version past a v<N> gap', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/probe-foreign-gap'
+    const { resolver, files, lister } = memResolver()
+    const catalog = fileCatalog({ resolver, lister, conditionalCommits: true })
+
+    await icebergCreateTable({ catalog, tableUrl, schema })
+    const v1Bytes = files.get(`${tableUrl}/metadata/v1.metadata.json`)
+    if (!v1Bytes) throw new Error('v1 missing')
+    files.set(`${tableUrl}/metadata/00005-deadbeef-1111-2222-3333-444444444444.metadata.json`, v1Bytes)
+
+    const latest = await loadLatestFileCatalogMetadata({ tableUrl, resolver, lister })
+    expect(latest.version).toBe(5)
+  })
+
+  // Lister is required for the maxProbe-cap fallback path. With no lister
+  // and a hint that's >maxProbe versions stale, recovery would fail. The
+  // s3Lister default works for S3 URLs; non-S3 backends must supply one.
+  it('falls back to listing when probe walks past maxProbe', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/probe-cap-fallback'
+    const { resolver, files, lister } = memResolver()
+    const catalog = fileCatalog({ resolver, lister, conditionalCommits: true })
+
+    await icebergCreateTable({ catalog, tableUrl, schema })
+    const v1Bytes = files.get(`${tableUrl}/metadata/v1.metadata.json`)
+    if (!v1Bytes) throw new Error('v1 missing')
+    // Plant a contiguous run v2..v70 so probe hits the maxProbe cap (default 64).
+    for (let v = 2; v <= 70; v++) {
+      files.set(`${tableUrl}/metadata/v${v}.metadata.json`, v1Bytes)
+    }
+
+    const ok = await loadLatestFileCatalogMetadata({ tableUrl, resolver, lister })
+    expect(ok.version).toBe(70)
+
+    // Without a lister, the s3Lister default cannot list http:// URLs.
+    await expect(loadLatestFileCatalogMetadata({ tableUrl, resolver }))
+      .rejects.toThrow()
+  })
 })
 
 describe('icebergAppend retry under conditionalCommits', () => {

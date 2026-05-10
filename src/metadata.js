@@ -196,55 +196,39 @@ function findMetadataFile(files, metadataFileName) {
 
 /**
  * Authoritatively discover the highest committed metadata version for a file
- * catalog table on S3. `version-hint.text` is treated as a starting guess only:
+ * catalog table.
  *
- * 1. Try to read `version-hint.text`; if it parses, start from that version.
- * 2. Probe forward (`v<N+1>.metadata.json`, `v<N+2>.metadata.json`, …) until
- *    the next probe is missing. The loop terminates as soon as a gap appears.
- * 3. If the hint is missing or stale (its named version isn't readable), fall
- *    back to listing `metadata/` and picking the largest `vN.metadata.json`.
+ * Modern object stores (S3 since Dec 2020, GCS, Azure) provide strongly
+ * consistent listings, so `LIST metadata/` is the authoritative source of
+ * truth: it catches foreign-named files (`<NNNNN>-<uuid>.metadata.json` from
+ * java/rust/python writers) that a GET-only probe of `v<N>.metadata.json`
+ * cannot construct. In typical S3 latency it is also competitive with
+ * (often faster than) hint + probe-forward, which costs three GETs.
  *
- * The S3 correctness rule: the highest existing `vN.metadata.json` is the
- * current commit. Lower-numbered versions and `version-hint.text` are stale
- * caches.
+ * If listing fails (e.g. the caller lacks `s3:ListBucket`), fall back to
+ * `version-hint.text` plus a bounded forward probe of `v<N>.metadata.json`.
+ * This GET-only path cannot detect foreign-named files and is best-effort.
  *
  * @param {object} options
  * @param {string} options.tableUrl
  * @param {Resolver} [options.resolver]
  * @param {Lister} [options.lister]
- * @param {number} [options.maxProbe] - Hard cap on forward probes; defaults to 64. Above the cap the function falls back to `lister`.
+ * @param {number} [options.maxProbe] - Hard cap on the GET-only fallback's forward probe. Defaults to 64.
  * @returns {Promise<{ version: number, metadata: TableMetadata, metadataFileName: string, metadataLocation: string }>}
  */
 export async function loadLatestFileCatalogMetadata({ tableUrl, resolver, lister, maxProbe = 64 }) {
   resolver ??= urlResolver()
   lister ??= s3Lister()
 
-  /** @type {number | undefined} */
-  let hintVersion
+  /** @type {string[]} */
+  let files
   try {
-    const text = await resolveText(resolver, `${tableUrl}/metadata/version-hint.text`)
-    const parsed = parseInt(text)
-    if (!isNaN(parsed)) hintVersion = parsed
-  } catch { /* hint missing — that's fine */ }
-
-  if (hintVersion !== undefined && hintVersion >= 0) {
-    let lastFound = await tryReadVersion(resolver, tableUrl, hintVersion)
-    if (lastFound) {
-      let probe = hintVersion + 1
-      const limit = hintVersion + maxProbe
-      while (probe <= limit) {
-        const next = await tryReadVersion(resolver, tableUrl, probe)
-        if (!next) break
-        lastFound = next
-        probe++
-      }
-      if (probe <= limit) return lastFound
-      // hit the cap — fall through to list-based fallback for safety
-    }
+    files = await lister(`${tableUrl}/metadata`)
+  } catch (err) {
+    const fallback = await hintProbeFallback(resolver, tableUrl, maxProbe)
+    if (fallback) return fallback
+    throw err
   }
-
-  // Fallback: list `metadata/` and pick the highest vN we see.
-  const files = await lister(`${tableUrl}/metadata`)
   let highest = -1
   /** @type {string | undefined} */
   let highestFile
@@ -270,10 +254,47 @@ export async function loadLatestFileCatalogMetadata({ tableUrl, resolver, lister
 }
 
 /**
+ * GET-only discovery used when listing is unavailable. Reads `version-hint.text`
+ * to get a starting point, then probes `v<N+1>`, `v<N+2>`, ... until a gap or
+ * `maxProbe` is reached. Cannot detect foreign-named files past the highest
+ * sequential `v<N>` and is therefore unsafe against multi-writer scenarios
+ * where a non-icebird writer is involved — list permission is the proper fix.
+ *
+ * @param {Resolver} resolver
+ * @param {string} tableUrl
+ * @param {number} maxProbe
+ * @returns {Promise<{ version: number, metadata: TableMetadata, metadataFileName: string, metadataLocation: string } | undefined>}
+ */
+async function hintProbeFallback(resolver, tableUrl, maxProbe) {
+  /** @type {number | undefined} */
+  let hintVersion
+  try {
+    const text = await resolveText(resolver, `${tableUrl}/metadata/version-hint.text`)
+    const parsed = parseInt(text)
+    if (!isNaN(parsed)) hintVersion = parsed
+  } catch { /* hint missing */ }
+  if (hintVersion === undefined || hintVersion < 0) return undefined
+
+  let lastFound = await tryReadVersion(resolver, tableUrl, hintVersion)
+  if (!lastFound) return undefined
+  let probe = hintVersion + 1
+  const limit = hintVersion + maxProbe
+  while (probe <= limit) {
+    const next = await tryReadVersion(resolver, tableUrl, probe)
+    if (!next) break
+    lastFound = next
+    probe++
+  }
+  // Hit the cap without finding a gap: we likely don't have the true max.
+  // Without a list to confirm, returning a stale answer could cost a writer
+  // its data. Surface the original list failure instead.
+  if (probe > limit) return undefined
+  return lastFound
+}
+
+/**
  * Try reading `vN.metadata.json` for a specific version; returns undefined on
- * any read failure (treated as "version not present"). Probing stops at the
- * first gap, which mirrors how Iceberg writers always create sequentially
- * numbered metadata files.
+ * any read failure (treated as "version not present").
  *
  * @param {Resolver} resolver
  * @param {string} tableUrl
