@@ -1,14 +1,22 @@
 import { loadTable } from '../catalog/loadTable.js'
 import { restCatalogCreateTable, restCatalogDropTable, restCatalogUpdateTable } from '../catalog/rest.js'
 import { icebergCreate } from '../create.js'
+import { loadLatestFileCatalogMetadata } from '../metadata.js'
 import { applyUpdates, fileCatalogCommit } from './commit.js'
 import { icebergStageDeletionVector } from './stage-deletion-vector.js'
 import { icebergStagePositionDelete } from './stage-position-delete.js'
 import { icebergStageAppend, icebergStageExpireSnapshots, icebergStageSetRef } from './stage.js'
 
 /**
- * @import {Catalog, IcebergTransaction, Lister, PartitionSpec, Resolver, Schema, Snapshot, SortOrder, StagedUpdate, TableMetadata, TableRequirement, TableUpdate} from '../../src/types.js'
+ * @import {Catalog, CommitRetryOptions, IcebergTransaction, Lister, PartitionSpec, Resolver, Schema, Snapshot, SortOrder, StagedUpdate, TableMetadata, TableRequirement, TableUpdate} from '../../src/types.js'
  */
+
+const DEFAULT_RETRY = Object.freeze({
+  maxAttempts: 50,
+  initialMs: 50,
+  maxMs: 3000,
+  factor: 2,
+})
 
 /**
  * Append rows to a table in one call: load metadata, stage the parquet writes
@@ -25,14 +33,15 @@ import { icebergStageAppend, icebergStageExpireSnapshots, icebergStageSetRef } f
  */
 export async function icebergAppend({ catalog, namespace, table, tableUrl, resolver, records }) {
   const ctx = await loadTable({ catalog, namespace, table, tableUrl, resolver })
-  const writer = requireResolver(ctx.resolver, 'icebergAppend')
-  const staged = await icebergStageAppend({
-    tableUrl: ctx.tableUrl,
-    metadata: ctx.metadata,
-    records,
-    resolver: writer,
+  return await commitWithRetry({
+    catalog, target: { namespace, table }, ctx,
+    stage: workingCtx => icebergStageAppend({
+      tableUrl: workingCtx.tableUrl,
+      metadata: workingCtx.metadata,
+      records,
+      resolver: requireResolver(workingCtx.resolver, 'icebergAppend'),
+    }),
   })
-  return await commitStaged(catalog, { namespace, table }, ctx, staged)
 }
 
 /**
@@ -53,28 +62,31 @@ export async function icebergAppend({ catalog, namespace, table, tableUrl, resol
  */
 export async function icebergDelete({ catalog, namespace, table, tableUrl, resolver, deletes, mode }) {
   const ctx = await loadTable({ catalog, namespace, table, tableUrl, resolver })
-  const writer = requireResolver(ctx.resolver, 'icebergDelete')
-  const formatVersion = ctx.metadata['format-version']
-  const effective = mode ?? (formatVersion === 3 ? 'puffin' : 'parquet')
-  let staged
-  if (effective === 'puffin') {
-    staged = await icebergStageDeletionVector({
-      tableUrl: ctx.tableUrl,
-      metadata: ctx.metadata,
-      deletes,
-      resolver: writer,
-    })
-  } else if (effective === 'parquet') {
-    staged = await icebergStagePositionDelete({
-      tableUrl: ctx.tableUrl,
-      metadata: ctx.metadata,
-      deletes,
-      resolver: writer,
-    })
-  } else {
-    throw new Error(`unknown delete mode: ${effective}`)
-  }
-  return await commitStaged(catalog, { namespace, table }, ctx, staged)
+  return await commitWithRetry({
+    catalog, target: { namespace, table }, ctx,
+    stage: async workingCtx => {
+      const writer = requireResolver(workingCtx.resolver, 'icebergDelete')
+      const formatVersion = workingCtx.metadata['format-version']
+      const effective = mode ?? (formatVersion === 3 ? 'puffin' : 'parquet')
+      if (effective === 'puffin') {
+        return await icebergStageDeletionVector({
+          tableUrl: workingCtx.tableUrl,
+          metadata: workingCtx.metadata,
+          deletes,
+          resolver: writer,
+        })
+      }
+      if (effective === 'parquet') {
+        return await icebergStagePositionDelete({
+          tableUrl: workingCtx.tableUrl,
+          metadata: workingCtx.metadata,
+          deletes,
+          resolver: writer,
+        })
+      }
+      throw new Error(`unknown delete mode: ${effective}`)
+    },
+  })
 }
 
 /**
@@ -100,16 +112,18 @@ export async function icebergSetRef({
   ref, snapshotId, type, minSnapshotsToKeep, maxSnapshotAgeMs, maxRefAgeMs,
 }) {
   const ctx = await loadTable({ catalog, namespace, table, tableUrl, resolver })
-  const staged = icebergStageSetRef({
-    metadata: ctx.metadata,
-    ref,
-    snapshotId,
-    type,
-    minSnapshotsToKeep,
-    maxSnapshotAgeMs,
-    maxRefAgeMs,
+  return await commitWithRetry({
+    catalog, target: { namespace, table }, ctx,
+    stage: workingCtx => icebergStageSetRef({
+      metadata: workingCtx.metadata,
+      ref,
+      snapshotId,
+      type,
+      minSnapshotsToKeep,
+      maxSnapshotAgeMs,
+      maxRefAgeMs,
+    }),
   })
-  return await commitStaged(catalog, { namespace, table }, ctx, staged)
 }
 
 /**
@@ -127,8 +141,10 @@ export async function icebergSetRef({
  */
 export async function icebergExpireSnapshots({ catalog, namespace, table, tableUrl, resolver, snapshotIds }) {
   const ctx = await loadTable({ catalog, namespace, table, tableUrl, resolver })
-  const staged = icebergStageExpireSnapshots({ metadata: ctx.metadata, snapshotIds })
-  return await commitStaged(catalog, { namespace, table }, ctx, staged)
+  return await commitWithRetry({
+    catalog, target: { namespace, table }, ctx,
+    stage: workingCtx => icebergStageExpireSnapshots({ metadata: workingCtx.metadata, snapshotIds }),
+  })
 }
 
 /**
@@ -307,6 +323,7 @@ export async function icebergCreateTable({
     partitionSpec,
     sortOrder,
     properties,
+    conditionalCommits: catalog.conditionalCommits,
   })
 }
 
@@ -360,7 +377,7 @@ function requireResolver(resolver, caller) {
  *
  * @param {Catalog} catalog
  * @param {{namespace?: string | string[], table?: string}} target
- * @param {{metadata: TableMetadata, metadataFileName: string | undefined, tableUrl: string, resolver: Resolver | undefined}} ctx
+ * @param {{metadata: TableMetadata, metadataFileName: string | undefined, version?: number, tableUrl: string, resolver: Resolver | undefined}} ctx
  * @param {StagedUpdate} staged
  * @returns {Promise<TableMetadata>}
  */
@@ -379,7 +396,122 @@ async function commitStaged(catalog, target, ctx, staged) {
     tableUrl: ctx.tableUrl,
     metadata: ctx.metadata,
     metadataFileName: ctx.metadataFileName,
+    currentVersion: ctx.version,
     staged,
     resolver: ctx.resolver,
+    conditionalCommits: catalog.type === 'file' && catalog.conditionalCommits,
   })
+}
+
+/**
+ * Stage and commit, retrying on concurrent-commit conflicts when the catalog
+ * opts in via `conditionalCommits`. The `stage` callback is invoked once per
+ * attempt against the freshest loaded metadata, so each retry rebuilds the
+ * snapshot/manifest-list against the new parent (sequence number, parent
+ * snapshot id, ref pointer, etc., all advance correctly). Data and manifest
+ * files written by failed attempts may become orphans; cleanup is left to a
+ * separate maintenance pass.
+ *
+ * Between attempts, sleeps with full-jitter exponential back-off so that
+ * concurrent writers don't all stampede the same `vN+1.metadata.json` key.
+ * Policy comes from `catalog.commitRetry`; defaults are tuned for parallel
+ * S3 writers (50 attempts, 50ms→3s back-off).
+ *
+ * For non-file catalogs and file catalogs without `conditionalCommits`, the
+ * callback runs exactly once and any error from `commitStaged` is re-thrown.
+ *
+ * @param {object} options
+ * @param {Catalog} options.catalog
+ * @param {{namespace?: string | string[], table?: string}} options.target
+ * @param {{metadata: TableMetadata, metadataFileName: string | undefined, version?: number, tableUrl: string, resolver: Resolver | undefined}} options.ctx - The initial loaded ctx; refreshed on retry.
+ * @param {(workingCtx: {metadata: TableMetadata, metadataFileName: string | undefined, version?: number, tableUrl: string, resolver: Resolver | undefined}) => Promise<StagedUpdate> | StagedUpdate} options.stage
+ * @returns {Promise<TableMetadata>}
+ */
+async function commitWithRetry({ catalog, target, ctx, stage }) {
+  const conditional = catalog.type === 'file' && catalog.conditionalCommits === true
+  const policy = resolveRetryPolicy(catalog.type === 'file' ? catalog.commitRetry : undefined)
+  let workingCtx = ctx
+  for (let attempt = 1; attempt <= policy.maxAttempts; attempt++) {
+    const staged = await stage(workingCtx)
+    try {
+      return await commitStaged(catalog, target, workingCtx, staged)
+    } catch (err) {
+      if (!conditional || !isCommitConflict(err)) throw err
+      if (attempt === policy.maxAttempts) {
+        throw new Error(
+          `file catalog commit failed after ${policy.maxAttempts} attempts due to concurrent commits`
+        )
+      }
+      await sleep(jitteredBackoff(attempt, policy))
+      const lister = catalog.type === 'file' ? catalog.lister : undefined
+      if (!workingCtx.resolver) throw err
+      const fresh = await loadLatestFileCatalogMetadata({
+        tableUrl: workingCtx.tableUrl,
+        resolver: workingCtx.resolver,
+        lister,
+      })
+      workingCtx = {
+        metadata: fresh.metadata,
+        metadataFileName: fresh.metadataFileName,
+        version: fresh.version,
+        tableUrl: workingCtx.tableUrl,
+        resolver: workingCtx.resolver,
+      }
+    }
+  }
+  throw new Error('unreachable')
+}
+
+/**
+ * Merge user-supplied retry options with the defaults, validating positive
+ * numerics. A missing field falls back to the default; an explicit `0` for
+ * `initialMs`/`maxMs` is honored (tests use this to disable sleeping).
+ *
+ * @param {CommitRetryOptions | undefined} opts
+ * @returns {{maxAttempts: number, initialMs: number, maxMs: number, factor: number}}
+ */
+function resolveRetryPolicy(opts) {
+  const maxAttempts = opts?.maxAttempts ?? DEFAULT_RETRY.maxAttempts
+  if (!(maxAttempts >= 1)) throw new Error(`commitRetry.maxAttempts must be >= 1, got ${maxAttempts}`)
+  const initialMs = opts?.backoff?.initialMs ?? DEFAULT_RETRY.initialMs
+  const maxMs = opts?.backoff?.maxMs ?? DEFAULT_RETRY.maxMs
+  const factor = opts?.backoff?.factor ?? DEFAULT_RETRY.factor
+  if (initialMs < 0 || maxMs < 0 || factor < 1) {
+    throw new Error('commitRetry.backoff: initialMs/maxMs must be >= 0, factor >= 1')
+  }
+  return { maxAttempts, initialMs, maxMs, factor }
+}
+
+/**
+ * Full-jitter back-off: random in [0, base) where base is the exponentially
+ * growing ceiling capped at maxMs. (See "Exponential Backoff and Jitter",
+ * AWS Architecture Blog.) `attempt` is 1-based.
+ *
+ * @param {number} attempt
+ * @param {{initialMs: number, maxMs: number, factor: number}} policy
+ * @returns {number}
+ */
+function jitteredBackoff(attempt, policy) {
+  if (policy.initialMs === 0 || policy.maxMs === 0) return 0
+  const base = Math.min(policy.maxMs, policy.initialMs * policy.factor ** (attempt - 1))
+  return Math.floor(Math.random() * base)
+}
+
+/**
+ * @param {number} ms
+ * @returns {Promise<void>}
+ */
+function sleep(ms) {
+  if (ms <= 0) return Promise.resolve()
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+/**
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+function isCommitConflict(err) {
+  if (!err || typeof err !== 'object') return false
+  const { status } = /** @type {any} */ (err)
+  return status === 412 || status === 409
 }

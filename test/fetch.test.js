@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { urlResolver } from '../src/fetch.js'
+import { s3ParseUrl, urlResolver } from '../src/fetch.js'
 
 /**
  * @import {Resolver} from '../src/types.js'
@@ -115,5 +115,71 @@ describe('urlResolver.writer', () => {
     const w = requireWriter(urlResolver())('https://h/forbidden')
     w.appendBytes(new Uint8Array([0]))
     await expect(w.finish()).rejects.toThrow(/PUT .*: 403 Forbidden/)
+  })
+
+  it('sets If-None-Match: * when ifNoneMatch is "*"', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValue(fakeResponse({ ok: true, status: 200, statusText: 'OK' }))
+    const w = requireWriter(urlResolver())('https://h/key', { ifNoneMatch: '*' })
+    w.appendBytes(new Uint8Array([1]))
+    await w.finish()
+
+    const headers = /** @type {Record<string, string>} */ (fetchMock.mock.calls[0][1]?.headers)
+    expect(headers['If-None-Match']).toBe('*')
+  })
+
+  it('omits If-None-Match by default', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValue(fakeResponse({ ok: true, status: 200, statusText: 'OK' }))
+    const w = requireWriter(urlResolver())('https://h/key')
+    w.appendBytes(new Uint8Array([1]))
+    await w.finish()
+
+    const headers = /** @type {Record<string, string>} */ (fetchMock.mock.calls[0][1]?.headers)
+    expect(headers['If-None-Match']).toBeUndefined()
+  })
+
+  it('attaches HTTP status to the thrown error', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValue(fakeResponse({ ok: false, status: 412, statusText: 'Precondition Failed' }))
+    const w = requireWriter(urlResolver())('https://h/key', { ifNoneMatch: '*' })
+    w.appendBytes(new Uint8Array([1]))
+    await expect(w.finish()).rejects.toMatchObject({ status: 412 })
+  })
+})
+
+describe('s3ParseUrl', () => {
+  it('parses s3:// URLs', () => {
+    expect(s3ParseUrl('s3://hyperparam-iceberg/test/hypstack1/v1.metadata.json'))
+      .toEqual({ bucket: 'hyperparam-iceberg', prefix: 'test/hypstack1/v1.metadata.json' })
+  })
+
+  it('parses s3a:// URLs', () => {
+    expect(s3ParseUrl('s3a://my-bucket/k')).toEqual({ bucket: 'my-bucket', prefix: 'k' })
+  })
+
+  it('parses path-style HTTPS URLs', () => {
+    expect(s3ParseUrl('https://s3.amazonaws.com/my-bucket/path/file.parquet'))
+      .toEqual({ bucket: 'my-bucket', prefix: 'path/file.parquet' })
+  })
+
+  it('parses virtual-hosted global URLs with dashed bucket names', () => {
+    expect(s3ParseUrl('https://hyperparam-iceberg.s3.amazonaws.com/k/v.json'))
+      .toEqual({ bucket: 'hyperparam-iceberg', prefix: 'k/v.json' })
+  })
+
+  it('parses virtual-hosted regional URLs (s3.<region>)', () => {
+    expect(s3ParseUrl('https://hyperparam-iceberg.s3.us-east-1.amazonaws.com/k/v.json'))
+      .toEqual({ bucket: 'hyperparam-iceberg', prefix: 'k/v.json' })
+  })
+
+  it('parses legacy regional URLs (s3-<region>)', () => {
+    expect(s3ParseUrl('https://hyperparam-iceberg.s3-us-west-2.amazonaws.com/k/v.json'))
+      .toEqual({ bucket: 'hyperparam-iceberg', prefix: 'k/v.json' })
+  })
+
+  it('returns undefined for non-S3 URLs', () => {
+    expect(s3ParseUrl('https://example.com/foo')).toBeUndefined()
+    expect(s3ParseUrl('http://localhost:9000/bucket/key')).toBeUndefined()
   })
 })

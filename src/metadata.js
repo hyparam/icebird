@@ -1,7 +1,7 @@
 import { resolveText, s3Lister, urlResolver } from './fetch.js'
 
 /**
- * @import {Resolver, Lister} from '../src/types.js'
+ * @import {Lister, Resolver, TableMetadata} from '../src/types.js'
  */
 
 /**
@@ -122,7 +122,6 @@ export function icebergListVersions({ tableUrl, resolver, lister }) {
  * Fetches the iceberg table metadata.
  * If metadataFileName is not provided, uses icebergLatestVersion to get the version hint.
  *
- * @import {TableMetadata} from '../src/types.js'
  * @param {object} options
  * @param {string} options.tableUrl - Base URL of the table (e.g. "s3://my-bucket/path/to/table")
  * @param {string} [options.metadataFileName] - Name of the metadata JSON file
@@ -193,6 +192,103 @@ function findMetadataFile(files, metadataFileName) {
     .filter(f => metadataFileVersionNumber(f) === version)
     .sort((a, b) => metadataFilePreference(a, versionNum) - metadataFilePreference(b, versionNum))
   return matches[0]
+}
+
+/**
+ * Authoritatively discover the highest committed metadata version for a file
+ * catalog table on S3. `version-hint.text` is treated as a starting guess only:
+ *
+ * 1. Try to read `version-hint.text`; if it parses, start from that version.
+ * 2. Probe forward (`v<N+1>.metadata.json`, `v<N+2>.metadata.json`, …) until
+ *    the next probe is missing. The loop terminates as soon as a gap appears.
+ * 3. If the hint is missing or stale (its named version isn't readable), fall
+ *    back to listing `metadata/` and picking the largest `vN.metadata.json`.
+ *
+ * The S3 correctness rule: the highest existing `vN.metadata.json` is the
+ * current commit. Lower-numbered versions and `version-hint.text` are stale
+ * caches.
+ *
+ * @param {object} options
+ * @param {string} options.tableUrl
+ * @param {Resolver} [options.resolver]
+ * @param {Lister} [options.lister]
+ * @param {number} [options.maxProbe] - Hard cap on forward probes; defaults to 64. Above the cap the function falls back to `lister`.
+ * @returns {Promise<{ version: number, metadata: TableMetadata, metadataFileName: string, metadataLocation: string }>}
+ */
+export async function loadLatestFileCatalogMetadata({ tableUrl, resolver, lister, maxProbe = 64 }) {
+  resolver ??= urlResolver()
+  lister ??= s3Lister()
+
+  /** @type {number | undefined} */
+  let hintVersion
+  try {
+    const text = await resolveText(resolver, `${tableUrl}/metadata/version-hint.text`)
+    const parsed = parseInt(text)
+    if (!isNaN(parsed)) hintVersion = parsed
+  } catch { /* hint missing — that's fine */ }
+
+  if (hintVersion !== undefined && hintVersion >= 0) {
+    let lastFound = await tryReadVersion(resolver, tableUrl, hintVersion)
+    if (lastFound) {
+      let probe = hintVersion + 1
+      const limit = hintVersion + maxProbe
+      while (probe <= limit) {
+        const next = await tryReadVersion(resolver, tableUrl, probe)
+        if (!next) break
+        lastFound = next
+        probe++
+      }
+      if (probe <= limit) return lastFound
+      // hit the cap — fall through to list-based fallback for safety
+    }
+  }
+
+  // Fallback: list `metadata/` and pick the highest vN we see.
+  const files = await lister(`${tableUrl}/metadata`)
+  let highest = -1
+  /** @type {string | undefined} */
+  let highestFile
+  for (const file of files) {
+    const v = metadataFileVersionNumber(file)
+    if (v === undefined) continue
+    if (v > highest) {
+      highest = v
+      highestFile = file
+    }
+  }
+  if (highest < 0 || !highestFile) {
+    throw new Error(`no metadata files found at ${tableUrl}/metadata`)
+  }
+  const metadataLocation = `${tableUrl}/metadata/${highestFile}`
+  const text = await resolveText(resolver, metadataLocation)
+  return {
+    version: highest,
+    metadata: JSON.parse(text),
+    metadataFileName: highestFile,
+    metadataLocation,
+  }
+}
+
+/**
+ * Try reading `vN.metadata.json` for a specific version; returns undefined on
+ * any read failure (treated as "version not present"). Probing stops at the
+ * first gap, which mirrors how Iceberg writers always create sequentially
+ * numbered metadata files.
+ *
+ * @param {Resolver} resolver
+ * @param {string} tableUrl
+ * @param {number} version
+ * @returns {Promise<{ version: number, metadata: TableMetadata, metadataFileName: string, metadataLocation: string } | undefined>}
+ */
+async function tryReadVersion(resolver, tableUrl, version) {
+  const fileName = `v${version}.metadata.json`
+  const metadataLocation = `${tableUrl}/metadata/${fileName}`
+  try {
+    const text = await resolveText(resolver, metadataLocation)
+    return { version, metadata: JSON.parse(text), metadataFileName: fileName, metadataLocation }
+  } catch {
+    return undefined
+  }
 }
 
 /**

@@ -1,9 +1,20 @@
 import type { AsyncBuffer } from 'hyparquet'
 import type { Writer } from 'hyparquet-writer/src/types.js'
 
+export interface WriterOptions {
+  /**
+   * If `'*'`, the writer must create the object only if it does not already
+   * exist (S3 conditional write: `If-None-Match: *`). On collision the
+   * underlying `finish()` rejects with an error whose `status` is 412 (or 409
+   * on some providers). The HTTP/S3 `urlResolver` translates this to the
+   * `If-None-Match` header. Other resolvers may honor or ignore it.
+   */
+  ifNoneMatch?: '*'
+}
+
 export interface Resolver {
   reader: (path: string, byteLength?: number) => AsyncBuffer | Promise<AsyncBuffer>
-  writer?: (path: string) => Writer
+  writer?: (path: string, options?: WriterOptions) => Writer
   deleter?: (path: string) => Promise<void>
 }
 export type Lister = (path: string) => Promise<string[]>
@@ -22,6 +33,36 @@ export interface FileCatalog {
   type: 'file'
   resolver: Resolver
   lister?: Lister
+  /**
+   * Opt in to S3-safe metadata commits: every `vN.metadata.json` (the
+   * initial create and every subsequent commit) is written with
+   * `If-None-Match: *` and `version-hint.text` is best-effort. High-level
+   * write functions retry on 412/409 by reloading the latest metadata and
+   * re-staging. `icebergCreateTable` and `icebergTransaction` do not retry.
+   * Default false preserves backwards-compatible (overwrite) behavior.
+   */
+  conditionalCommits?: boolean
+  /**
+   * Retry policy for 412/409 conflicts under `conditionalCommits`. Ignored
+   * when `conditionalCommits` is false (no retry happens at all). Defaults
+   * tuned for parallel writers against S3: full-jitter exponential back-off
+   * from 50ms to 3s, up to 50 total attempts.
+   */
+  commitRetry?: CommitRetryOptions
+}
+
+export interface CommitRetryOptions {
+  /** Total attempts including the first. Default 50. */
+  maxAttempts?: number
+  /** Jittered exponential back-off between attempts. */
+  backoff?: {
+    /** First sleep, ms. Default 50. */
+    initialMs?: number
+    /** Cap, ms. Default 3000. */
+    maxMs?: number
+    /** Multiplier per attempt. Default 2. */
+    factor?: number
+  }
 }
 
 export type Catalog = RestCatalogContext | FileCatalog

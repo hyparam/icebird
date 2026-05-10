@@ -11,9 +11,15 @@ import { parseDecimalType } from './conversions.js'
  * against the current metadata, apply updates, and write the next
  * `vN.metadata.json` and `version-hint.text`.
  *
- * Note: this is not concurrency-safe. A second writer racing against this one
- * can clobber the metadata file. A safe-CAS variant (conditional PUT / rename)
- * is a future drop-in replacement.
+ * Without `conditionalCommits`, this overwrites — a second writer racing
+ * against this one can clobber the metadata file.
+ *
+ * With `conditionalCommits`, the new metadata file is created with
+ * `If-None-Match: *`. A second writer racing for the same `vN+1` sees a
+ * 412/409 from the resolver and the error surfaces to the caller (this
+ * slice does not yet retry). `version-hint.text` becomes a best-effort
+ * cache: it is still written after the metadata file, but a failed hint
+ * write does not invalidate the commit.
  *
  * @param {object} options
  * @param {string} options.tableUrl
@@ -22,11 +28,13 @@ import { parseDecimalType } from './conversions.js'
  *   was loaded from. Recorded verbatim in the `metadata-log` entry for the
  *   prior version so rollback / log walks land on a real file even when the
  *   prior writer used `NNNNN-<uuid>.metadata.json` instead of `vN.metadata.json`.
+ * @param {number} [options.currentVersion] - If known, the on-disk version of `metadata`. Bypasses deriving from `metadata-log`, which can be empty/stale on foreign-written tables.
  * @param {StagedUpdate} options.staged
  * @param {Resolver} options.resolver
+ * @param {boolean} [options.conditionalCommits] - When true, write the metadata file with `ifNoneMatch: '*'` and tolerate version-hint failures.
  * @returns {Promise<TableMetadata>} The new metadata, already persisted.
  */
-export async function fileCatalogCommit({ tableUrl, metadata, metadataFileName, staged, resolver }) {
+export async function fileCatalogCommit({ tableUrl, metadata, metadataFileName, currentVersion, staged, resolver, conditionalCommits }) {
   if (!tableUrl) throw new Error('tableUrl is required')
   if (!resolver?.writer) throw new Error('resolver.writer is required')
 
@@ -38,11 +46,11 @@ export async function fileCatalogCommit({ tableUrl, metadata, metadataFileName, 
   const updated = applyUpdates(baseMetadata, staged.updates)
 
   const priorMetadataLog = metadata['metadata-log'] ?? []
-  const currentVersion = deriveCurrentVersion(priorMetadataLog)
-  const newVersion = currentVersion + 1
+  const derivedVersion = currentVersion ?? deriveCurrentVersion(priorMetadataLog)
+  const newVersion = derivedVersion + 1
   const currentMetadataPath = metadataFileName
     ? `${tableUrl}/metadata/${metadataFileName}`
-    : `${tableUrl}/metadata/v${currentVersion}.metadata.json`
+    : `${tableUrl}/metadata/v${derivedVersion}.metadata.json`
   const newMetadataPath = `${tableUrl}/metadata/v${newVersion}.metadata.json`
 
   const appendedLog = [
@@ -61,14 +69,25 @@ export async function fileCatalogCommit({ tableUrl, metadata, metadataFileName, 
     'metadata-log': trimmedLog,
   }
 
-  const metaWriter = resolver.writer(translateS3Url(newMetadataPath))
+  // Metadata file creation is the commit point. With conditionalCommits on,
+  // a second writer racing for the same v<newVersion> sees a 412/409 from
+  // the resolver — this slice surfaces that error to the caller.
+  const metaWriter = conditionalCommits
+    ? resolver.writer(translateS3Url(newMetadataPath), { ifNoneMatch: '*' })
+    : resolver.writer(translateS3Url(newMetadataPath))
   metaWriter.appendBytes(new TextEncoder().encode(JSON.stringify(newMetadata, null, 2)))
   await metaWriter.finish()
 
-  // version-hint last so a partial write doesn't surface a torn commit
-  const hintWriter = resolver.writer(translateS3Url(`${tableUrl}/metadata/version-hint.text`))
-  hintWriter.appendBytes(new TextEncoder().encode(String(newVersion)))
-  await hintWriter.finish()
+  // version-hint last so a partial write doesn't surface a torn commit.
+  // With conditionalCommits, the hint is best-effort — a failed hint write
+  // does not invalidate the durable v<newVersion>.metadata.json above.
+  try {
+    const hintWriter = resolver.writer(translateS3Url(`${tableUrl}/metadata/version-hint.text`))
+    hintWriter.appendBytes(new TextEncoder().encode(String(newVersion)))
+    await hintWriter.finish()
+  } catch (err) {
+    if (!conditionalCommits) throw err
+  }
 
   // Best-effort cleanup of metadata files dropped from the log when the
   // table opts in via `write.metadata.delete-after-commit.enabled`. Failures
