@@ -120,7 +120,11 @@ function readType(reader, type) {
       const scale = type.scale || 0
       const factor = 10 ** -scale
       return parseDecimal(bytes) * factor
+    } else if (type.logicalType === 'uuid' && type.type === 'fixed' && type.size === 16) {
+      return bytesToUuid(readFixed(reader, 16))
     } else {
+      // remaining Avro logical types (local-timestamp-*, duration, big-decimal)
+      // aren't used by the Iceberg spec; fall through to the underlying type.
       console.warn(`unknown logical type: ${type.logicalType}`)
       return type.type === 'fixed'
         ? readFixed(reader, type.size)
@@ -170,4 +174,17 @@ function readFixed(reader, size) {
   const bytes = new Uint8Array(reader.view.buffer, reader.view.byteOffset + reader.offset, size)
   reader.offset += size
   return bytes
+}
+
+/**
+ * @param {Uint8Array} bytes
+ * @returns {string}
+ */
+function bytesToUuid(bytes) {
+  let hex = ''
+  for (let i = 0; i < 16; i++) {
+    hex += bytes[i].toString(16).padStart(2, '0')
+    if (i === 3 || i === 5 || i === 7 || i === 9) hex += '-'
+  }
+  return hex
 }

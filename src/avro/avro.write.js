@@ -87,7 +87,11 @@ function writeType(writer, schema, value) {
       if (tag === 'decimal') return typeof value === 'number' || typeof value === 'bigint'
       if (tag === 'record') return typeof value === 'object' && value !== null
       if (tag === 'array') return Array.isArray(value)
-      if (tag === 'fixed') return value instanceof Uint8Array
+      if (tag === 'fixed') {
+        if (value instanceof Uint8Array) return true
+        // uuid-annotated fixed[16] accepts a canonical uuid string too.
+        return typeof s === 'object' && 'logicalType' in s && s.logicalType === 'uuid' && typeof value === 'string'
+      }
       return false
     })
 
@@ -137,9 +141,12 @@ function writeType(writer, schema, value) {
     }
     writer.appendVarInt(0)
   } else if (schema.type === 'fixed') {
-    if (!(value instanceof Uint8Array)) throw new Error('expected Uint8Array value')
-    if (value.length !== schema.size) throw new Error(`expected fixed[${schema.size}] value`)
-    writer.appendBytes(value)
+    const bytes = schema.logicalType === 'uuid' && typeof value === 'string'
+      ? uuidStringToBytes(value)
+      : value
+    if (!(bytes instanceof Uint8Array)) throw new Error('expected Uint8Array value')
+    if (bytes.length !== schema.size) throw new Error(`expected fixed[${schema.size}] value`)
+    writer.appendBytes(bytes)
   } else if ('logicalType' in schema) {
     if (schema.logicalType === 'date') {
       appendZigZag(writer, value instanceof Date ? Math.floor(value.getTime() / 86400000) : value)
@@ -196,6 +203,19 @@ function appendZigZag(writer, v) {
  */
 function appendZigZag64(writer, v) {
   writer.appendVarBigInt(v << 1n ^ v >> 63n)
+}
+
+/**
+ * Parse a canonical uuid string into 16 bytes.
+ * @param {string} value
+ * @returns {Uint8Array}
+ */
+function uuidStringToBytes(value) {
+  const hex = value.toLowerCase().replace(/-/g, '')
+  if (!/^[0-9a-f]{32}$/.test(hex)) throw new Error('expected uuid string')
+  const bytes = new Uint8Array(16)
+  for (let i = 0; i < 16; i++) bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)
+  return bytes
 }
 
 /**

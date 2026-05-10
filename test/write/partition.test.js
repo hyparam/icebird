@@ -542,10 +542,7 @@ describe('write partition helpers', () => {
     const { metadata, syncMarker } = await avroMetadata(reader)
     const records = await avroRead({ reader, metadata, syncMarker })
 
-    expect(records[0].data_file.partition.uuid_col).toEqual(new Uint8Array([
-      0xf7, 0x9c, 0x3e, 0x09, 0x67, 0x7c, 0x4b, 0xbd,
-      0xa4, 0x79, 0x3f, 0x34, 0x9c, 0xb7, 0x85, 0xe7,
-    ]))
+    expect(records[0].data_file.partition.uuid_col).toBe('f79c3e09-677c-4bbd-a479-3f349cb785e7')
   })
 
   it('round-trips identity decimal partition values through a manifest', async () => {

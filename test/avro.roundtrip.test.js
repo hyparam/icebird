@@ -144,6 +144,56 @@ describe('Avro round-trip', () => {
     expect(got).toEqual(recs)
   })
 
+  it('logical uuid', () => {
+    /** @type {AvroType} */
+    const schema = {
+      type: 'record',
+      name: 'Account',
+      fields: [
+        {
+          name: 'id',
+          type: { type: 'fixed', name: 'uuid', size: 16, logicalType: 'uuid' },
+        },
+      ],
+    }
+
+    const bytes = new Uint8Array([
+      0xf7, 0x9c, 0x3e, 0x09, 0x67, 0x7c, 0x4b, 0xbd,
+      0xa4, 0x79, 0x3f, 0x34, 0x9c, 0xb7, 0x85, 0xe7,
+    ])
+    const writer = new ByteWriter()
+    avroWrite({ writer, schema, records: [{ id: bytes }] })
+
+    const reader = { view: writer.view, offset: 0 }
+    const { metadata, syncMarker } = avroMetadata(reader)
+    const got = avroRead({ reader, metadata, syncMarker })
+
+    expect(got).toEqual([{ id: 'f79c3e09-677c-4bbd-a479-3f349cb785e7' }])
+  })
+
+  it('logical uuid accepts string on write', () => {
+    /** @type {AvroType} */
+    const schema = {
+      type: 'record',
+      name: 'Account',
+      fields: [
+        {
+          name: 'id',
+          type: { type: 'fixed', name: 'uuid', size: 16, logicalType: 'uuid' },
+        },
+      ],
+    }
+
+    const writer = new ByteWriter()
+    avroWrite({ writer, schema, records: [{ id: 'f79c3e09-677c-4bbd-a479-3f349cb785e7' }] })
+
+    const reader = { view: writer.view, offset: 0 }
+    const { metadata, syncMarker } = avroMetadata(reader)
+    const got = avroRead({ reader, metadata, syncMarker })
+
+    expect(got).toEqual([{ id: 'f79c3e09-677c-4bbd-a479-3f349cb785e7' }])
+  })
+
   it('array + map round-trip', () => {
     /** @type {AvroType} */
     const schema = {
