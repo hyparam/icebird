@@ -1,5 +1,10 @@
 # Icebird Changelog
 
+## [0.6.0]
+ - Conditional commits via `If-None-Match` for the file catalog
+ - Retry concurrent commits under `conditionalCommits` with exponential backoff and jitter
+ - New `loadLatestFileCatalogMetadata` discovery primitive
+
 ## [0.5.2]
  - Variant type read support
  - Fix deletion vector issues; replace existing position delete files when writing a deletion vector
