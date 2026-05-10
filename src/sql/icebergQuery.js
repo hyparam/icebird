@@ -5,7 +5,7 @@ import { icebergDataSource } from './icebergDataSource.js'
 
 /**
  * @import {AsyncDataSource, QueryResults} from 'squirreling'
- * @import {Catalog, Resolver} from '../types.js'
+ * @import {Catalog, Resolver} from '../../src/types.js'
  */
 
 /**

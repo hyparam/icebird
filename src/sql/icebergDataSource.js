@@ -6,7 +6,7 @@ import { readDataFile } from '../read.js'
 
 /**
  * @import {AsyncDataSource} from 'squirreling'
- * @import {Lister, Resolver, TableMetadata} from '../types.js'
+ * @import {Lister, Resolver, TableMetadata} from '../../src/types.js'
  */
 
 /**

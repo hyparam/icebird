@@ -48,7 +48,7 @@ export async function icebergStageAppend({ tableUrl, metadata, records, resolver
   if (!schema) throw new Error('current schema not found in metadata')
   validateSchemaForVersion(schema, formatVersion)
 
-  const snapshotId = newSnapshotId()
+  const snapshotId = newSnapshotId(metadata)
   const sequenceNumber = BigInt(metadata['last-sequence-number'] ?? 0) + 1n
   const manifestUuid = uuid4()
   const timestampMs = Date.now()
@@ -316,13 +316,26 @@ export function resolveParquetCodec(value) {
 }
 
 /**
- * Generate a positive snapshot id that fits in a JS Number.
+ * Generate a positive snapshot id that fits in a JS Number. When `metadata`
+ * is supplied, re-roll until the id is not already present in
+ * `metadata.snapshots`. The 53-bit space gives a non-trivial birthday
+ * collision rate at logging scale, and a duplicate id silently corrupts
+ * ref resolution and read planning.
  *
+ * @param {TableMetadata} [metadata] - Current table metadata; ids in `snapshots` are skipped.
  * @returns {bigint}
  */
-export function newSnapshotId() {
+export function newSnapshotId(metadata) {
+  const used = new Set((metadata?.snapshots ?? []).map(s => BigInt(s['snapshot-id'])))
   const arr = new BigInt64Array(1)
-  globalThis.crypto.getRandomValues(arr)
-  const masked = arr[0] & 0x1fffffffffffffn // 53 bits
-  return masked === 0n ? 1n : masked
+  // Re-roll on collision. The cap prevents an infinite loop when the RNG is
+  // mocked to a constant (tests) or wedged: falling through to the throw
+  // makes the failure loud rather than silent.
+  for (let attempt = 0; attempt < 32; attempt++) {
+    globalThis.crypto.getRandomValues(arr)
+    const masked = arr[0] & 0x1fffffffffffffn // 53 bits
+    const id = masked === 0n ? 1n : masked
+    if (!used.has(id)) return id
+  }
+  throw new Error('newSnapshotId: failed to find an unused id after 32 attempts')
 }

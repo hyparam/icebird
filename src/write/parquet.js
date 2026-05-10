@@ -4,12 +4,9 @@ import { sanitize } from '../utils.js'
 import { decimalRequiredBytes, parseDecimalType } from './conversions.js'
 
 /**
- * @import {CompressionCodec} from 'hyparquet'
- * @import {Writer} from 'hyparquet-writer/src/types.js'
- * @import {ColumnSource} from 'hyparquet-writer/src/types.js'
- * @import {DecodedArray} from 'hyparquet'
+ * @import {CompressionCodec, DecodedArray, SchemaElement} from 'hyparquet'
+ * @import {ColumnSource, Writer} from 'hyparquet-writer'
  * @import {Field, IcebergType, Schema} from '../../src/types.js'
- * @import {SchemaElement} from 'hyparquet'
  */
 
 /**

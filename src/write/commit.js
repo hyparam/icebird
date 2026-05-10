@@ -208,9 +208,13 @@ export function applyUpdates(metadata, updates) {
   for (const up of updates) {
     if (up.action === 'add-snapshot') {
       const snap = up.snapshot
+      const priorSnapshots = next.snapshots ?? []
+      if (priorSnapshots.some(s => s['snapshot-id'] === snap['snapshot-id'])) {
+        throw new Error(`add-snapshot: snapshot-id ${snap['snapshot-id']} already exists`)
+      }
       next = {
         ...next,
-        snapshots: [...next.snapshots ?? [], snap],
+        snapshots: [...priorSnapshots, snap],
         'last-sequence-number': Math.max(next['last-sequence-number'] ?? 0, snap['sequence-number']),
         'last-updated-ms': snap['timestamp-ms'],
       }
