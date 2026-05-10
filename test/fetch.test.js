@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { urlResolver } from '../src/fetch.js'
+import { s3ParseUrl, urlResolver } from '../src/fetch.js'
 
 /**
  * @import {Resolver} from '../src/types.js'
@@ -145,5 +145,41 @@ describe('urlResolver.writer', () => {
     const w = requireWriter(urlResolver())('https://h/key', { ifNoneMatch: '*' })
     w.appendBytes(new Uint8Array([1]))
     await expect(w.finish()).rejects.toMatchObject({ status: 412 })
+  })
+})
+
+describe('s3ParseUrl', () => {
+  it('parses s3:// URLs', () => {
+    expect(s3ParseUrl('s3://hyperparam-iceberg/test/hypstack1/v1.metadata.json'))
+      .toEqual({ bucket: 'hyperparam-iceberg', prefix: 'test/hypstack1/v1.metadata.json' })
+  })
+
+  it('parses s3a:// URLs', () => {
+    expect(s3ParseUrl('s3a://my-bucket/k')).toEqual({ bucket: 'my-bucket', prefix: 'k' })
+  })
+
+  it('parses path-style HTTPS URLs', () => {
+    expect(s3ParseUrl('https://s3.amazonaws.com/my-bucket/path/file.parquet'))
+      .toEqual({ bucket: 'my-bucket', prefix: 'path/file.parquet' })
+  })
+
+  it('parses virtual-hosted global URLs with dashed bucket names', () => {
+    expect(s3ParseUrl('https://hyperparam-iceberg.s3.amazonaws.com/k/v.json'))
+      .toEqual({ bucket: 'hyperparam-iceberg', prefix: 'k/v.json' })
+  })
+
+  it('parses virtual-hosted regional URLs (s3.<region>)', () => {
+    expect(s3ParseUrl('https://hyperparam-iceberg.s3.us-east-1.amazonaws.com/k/v.json'))
+      .toEqual({ bucket: 'hyperparam-iceberg', prefix: 'k/v.json' })
+  })
+
+  it('parses legacy regional URLs (s3-<region>)', () => {
+    expect(s3ParseUrl('https://hyperparam-iceberg.s3-us-west-2.amazonaws.com/k/v.json'))
+      .toEqual({ bucket: 'hyperparam-iceberg', prefix: 'k/v.json' })
+  })
+
+  it('returns undefined for non-S3 URLs', () => {
+    expect(s3ParseUrl('https://example.com/foo')).toBeUndefined()
+    expect(s3ParseUrl('http://localhost:9000/bucket/key')).toBeUndefined()
   })
 })

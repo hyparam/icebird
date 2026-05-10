@@ -116,13 +116,18 @@ export function s3ParseUrl(url) {
   if (url.startsWith('s3://') || url.startsWith('s3a://')) {
     const parts = url.split('/')
     return { bucket: parts[2], prefix: parts.slice(3).join('/') }
-  } else if (url.startsWith('https://s3.amazonaws.com/')) {
+  }
+  // Path-style: https://s3.amazonaws.com/<bucket>/<key...>
+  if (url.startsWith('https://s3.amazonaws.com/')) {
     const parts = url.split('/')
     return { bucket: parts[3], prefix: parts.slice(4).join('/') }
-  } else if (url.match(/^https:\/\/\w+\.s3\.amazonaws\.com\//)) {
-    const parts = url.split('/')
-    return { bucket: parts[2].split('.')[0], prefix: parts.slice(3).join('/') }
   }
+  // Virtual-hosted: global, regional (`s3.<region>`), and legacy
+  // dash-separated (`s3-<region>`) forms. Bucket regex matches the
+  // DNS-compliant subset of S3 names (the only ones usable in
+  // virtual-hosted-style URLs anyway).
+  const m = url.match(/^https:\/\/([a-z0-9][a-z0-9-]*)\.s3(?:[.-][a-z0-9-]+)?\.amazonaws\.com\/(.*)$/)
+  if (m) return { bucket: m[1], prefix: m[2] }
 }
 
 /**

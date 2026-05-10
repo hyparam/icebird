@@ -225,7 +225,7 @@ describe('fileCatalogCommit conditional create', () => {
     // Now wrap the resolver: every conditional PUT against vN sees a planted
     // vN beat it. The planted bytes are a copy of v1, so the retry's
     // loadLatest can still parse and re-stage — but the next conditional PUT
-    // collides again. After maxRetries the loop bails with our message.
+    // collides again. After maxAttempts the loop bails with our message.
     /** @type {import('../../src/types.js').Resolver} */
     const alwaysConflicts = {
       ...resolver,
@@ -236,10 +236,17 @@ describe('fileCatalogCommit conditional create', () => {
         return realWriter(p, options)
       },
     }
-    const cat = fileCatalog({ resolver: alwaysConflicts, conditionalCommits: true })
+    // Pin a low cap and zero back-off — the default 50 attempts × 3s would
+    // dominate the test run. We're verifying the exhaustion path, not the
+    // policy.
+    const cat = fileCatalog({
+      resolver: alwaysConflicts,
+      conditionalCommits: true,
+      commitRetry: { maxAttempts: 6, backoff: { initialMs: 0, maxMs: 0 } },
+    })
 
     await expect(icebergAppend({
       catalog: cat, tableUrl, records: [{ id: 1n, name: 'a' }],
-    })).rejects.toThrow(/concurrent commits/)
+    })).rejects.toThrow(/6 attempts due to concurrent commits/)
   })
 })

@@ -116,4 +116,134 @@ describe('icebergAppend retry under conditionalCommits', () => {
     expect(files.has(`${tableUrl}/metadata/v2.metadata.json`)).toBe(true)
     expect(files.has(`${tableUrl}/metadata/v3.metadata.json`)).toBe(false)
   })
+
+  it('10 concurrent writers all commit with no app-level retry', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/ten-writers'
+    const { resolver, files } = memResolver()
+    // Default policy with zeroed back-off so the test stays fast — what we're
+    // verifying is that the retry budget alone (default 50 attempts) absorbs
+    // 10 racing writers without losing any.
+    const catalog = fileCatalog({
+      resolver, conditionalCommits: true,
+      commitRetry: { backoff: { initialMs: 0, maxMs: 0 } },
+    })
+    await icebergCreateTable({ catalog, tableUrl, schema })
+
+    const N = 10
+    const results = await Promise.all(
+      Array.from({ length: N }, (_, i) =>
+        icebergAppend({ catalog, tableUrl, records: [{ id: BigInt(i), name: `w${i}` }] })
+      )
+    )
+    expect(results).toHaveLength(N)
+    // Every writer added one snapshot; they serialized into v2..v(N+1).
+    for (let v = 2; v <= N + 1; v++) {
+      expect(files.has(`${tableUrl}/metadata/v${v}.metadata.json`)).toBe(true)
+    }
+    expect(files.has(`${tableUrl}/metadata/v${N + 2}.metadata.json`)).toBe(false)
+  })
+
+  it('respects a custom maxAttempts cap', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/custom-cap'
+    const { resolver, files } = memResolver()
+    const realWriter = resolver.writer
+    if (!realWriter) throw new Error('writer required')
+    await icebergCreateTable({
+      catalog: fileCatalog({ resolver, conditionalCommits: true }),
+      tableUrl, schema,
+    })
+    const v1 = files.get(`${tableUrl}/metadata/v1.metadata.json`)
+    if (!v1) throw new Error('v1 missing')
+
+    /** @type {import('../../src/types.js').Resolver} */
+    const alwaysConflicts = {
+      ...resolver,
+      writer(p, options) {
+        if (/\/metadata\/v\d+\.metadata\.json$/.test(p) && options?.ifNoneMatch === '*') {
+          files.set(p, v1)
+        }
+        return realWriter(p, options)
+      },
+    }
+    const catalog = fileCatalog({
+      resolver: alwaysConflicts,
+      conditionalCommits: true,
+      commitRetry: { maxAttempts: 3, backoff: { initialMs: 0, maxMs: 0 } },
+    })
+    await expect(icebergAppend({
+      catalog, tableUrl, records: [{ id: 1n, name: 'a' }],
+    })).rejects.toThrow(/3 attempts due to concurrent commits/)
+  })
+
+  it('grows backoff exponentially between attempts', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/backoff-growth'
+    const { resolver, files } = memResolver()
+    const realWriter = resolver.writer
+    if (!realWriter) throw new Error('writer required')
+    await icebergCreateTable({
+      catalog: fileCatalog({ resolver, conditionalCommits: true }),
+      tableUrl, schema,
+    })
+    const v1 = files.get(`${tableUrl}/metadata/v1.metadata.json`)
+    if (!v1) throw new Error('v1 missing')
+    /** @type {import('../../src/types.js').Resolver} */
+    const alwaysConflicts = {
+      ...resolver,
+      writer(p, options) {
+        if (/\/metadata\/v\d+\.metadata\.json$/.test(p) && options?.ifNoneMatch === '*') {
+          files.set(p, v1)
+        }
+        return realWriter(p, options)
+      },
+    }
+
+    // Spy on setTimeout to capture every back-off delay the retry loop
+    // requests. With Math.random pinned to 1, full-jitter degenerates to the
+    // raw exponential ceiling: initial * factor^(attempt-1).
+    /** @type {number[]} */
+    const sleeps = []
+    const realSetTimeout = globalThis.setTimeout
+    const stSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(
+      /** @type {any} */ ((/** @type {Function} */ fn, /** @type {number} */ ms) => {
+        sleeps.push(Number(ms))
+        return realSetTimeout(/** @type {any} */ (fn), 0)
+      })
+    )
+    // 1.0 keeps the captured sleep deterministic at the exponential ceiling.
+    // Subtracting epsilon would put it under the ceiling but Math.floor still
+    // matches; we just want the values to be predictable, not random.
+    const randSpy = vi.spyOn(Math, 'random').mockReturnValue(0.999_999)
+
+    try {
+      const catalog = fileCatalog({
+        resolver: alwaysConflicts,
+        conditionalCommits: true,
+        commitRetry: {
+          maxAttempts: 5,
+          backoff: { initialMs: 10, maxMs: 1000, factor: 3 },
+        },
+      })
+      await expect(icebergAppend({
+        catalog, tableUrl, records: [{ id: 1n, name: 'a' }],
+      })).rejects.toThrow(/5 attempts/)
+    } finally {
+      stSpy.mockRestore()
+      randSpy.mockRestore()
+    }
+
+    // 4 retries between 5 attempts → 4 sleeps. Bases: 10, 30, 90, 270; cap
+    // 1000 doesn't bind. Math.floor(0.999999 * base) trims by 1 in some
+    // cases — assert monotonic growth and rough magnitude rather than exact
+    // values, which keeps the test stable across jitter implementations.
+    expect(sleeps).toHaveLength(4)
+    expect(sleeps[0]).toBeGreaterThanOrEqual(9)
+    expect(sleeps[0]).toBeLessThanOrEqual(10)
+    expect(sleeps[1]).toBeGreaterThan(sleeps[0])
+    expect(sleeps[2]).toBeGreaterThan(sleeps[1])
+    expect(sleeps[3]).toBeGreaterThan(sleeps[2])
+    expect(sleeps[3]).toBeLessThanOrEqual(1000)
+  })
 })
