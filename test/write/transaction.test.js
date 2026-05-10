@@ -171,4 +171,32 @@ describe('icebergTransaction', () => {
 
     vi.unstubAllGlobals()
   })
+
+  // Transactions deliberately opt out of the conditional-commit retry loop:
+  // re-running the user's callback could repeat side effects. Two concurrent
+  // transactions therefore race for the same vN+1, and the loser surfaces
+  // the resolver's raw 412. Callers that want retry semantics around a
+  // transaction must implement it themselves and ensure callback idempotence.
+  it('does not retry on conflict under conditionalCommits (caller wraps)', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/tx-noretry'
+    const { resolver } = memResolver()
+    const catalog = fileCatalog({ resolver, conditionalCommits: true })
+
+    await icebergCreate({ tableUrl, resolver, schema })
+
+    const results = await Promise.allSettled([
+      icebergTransaction({ catalog, tableUrl }, async tx => {
+        await tx.append({ records: [{ id: 1n, name: 'a' }] })
+      }),
+      icebergTransaction({ catalog, tableUrl }, async tx => {
+        await tx.append({ records: [{ id: 2n, name: 'b' }] })
+      }),
+    ])
+    const failed = results.filter(r => r.status === 'rejected')
+    expect(failed).toHaveLength(1)
+    /** @type {any} */
+    const err = /** @type {PromiseRejectedResult} */ (failed[0]).reason
+    expect(err.status).toBe(412)
+  })
 })

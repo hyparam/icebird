@@ -33,6 +33,14 @@ import {
  * Pass the result to a commit function (`fileCatalogCommit`,
  * `restCatalogUpdateTable`).
  *
+ * NOTE: under `commitWithRetry`, the WHOLE bundle (parquet + manifest +
+ * manifest list) is re-staged on every conflict. Unlike append, the delete
+ * path's "prepare" phase has correctness dependencies on the freshest
+ * metadata (target-file lookup, partition-spec inheritance), so a clean
+ * prepare/stage split needs more care than just hoisting writes outside
+ * the loop. Heavy concurrent delete workloads will see the same O(N²)
+ * orphan blow-up that append used to have. Tracked as a follow-up.
+ *
  * @param {object} options
  * @param {string} options.tableUrl
  * @param {TableMetadata} options.metadata

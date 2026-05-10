@@ -347,6 +347,29 @@ export interface StagedUpdate {
   writtenFiles: string[]
 }
 
+/**
+ * Output of `prepareAppend`. Captures everything that does NOT depend on the
+ * eventually-committed snapshot's sequence number or parent: the data files,
+ * the manifest, and the assigned snapshot id. `stageSnapshotForAppend` consumes
+ * this against the freshest metadata to produce a `StagedUpdate` per attempt
+ * without re-writing data or manifest files.
+ */
+export interface PreparedAppend {
+  snapshotId: bigint
+  manifestUuid: string
+  formatVersion: 2 | 3
+  manifestPath: string
+  manifestLength: bigint
+  partitionSpecId: number
+  partitions: FieldSummary[]
+  addedDataFilesCount: number
+  addedRowCount: bigint
+  addedFilesSize: bigint
+  recordsCount: number
+  /** Data files + the manifest. Useful for orphan cleanup if the commit ultimately fails. */
+  writtenFiles: string[]
+}
+
 interface MetadataLog {
   'timestamp-ms': number
   'metadata-file': string

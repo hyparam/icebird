@@ -13,28 +13,39 @@ import { computeColumnStats } from './stats.js'
 
 /**
  * @import {CompressionCodec} from 'hyparquet'
- * @import {Manifest, Resolver, Snapshot, StagedUpdate, TableMetadata, TableRequirement, TableUpdate} from '../../src/types.js'
+ * @import {FieldSummary, Manifest, PreparedAppend, Resolver, Snapshot, StagedUpdate, TableMetadata, TableRequirement, TableUpdate} from '../../src/types.js'
  */
 
 /**
- * Build the data files, manifest, and manifest list for an append, then
- * return the catalog-agnostic `StagedUpdate` payload (snapshot plus the
- * requirements/updates a catalog must apply to commit it).
+ * Pre-stage an append: write the parquet data files and the data manifest,
+ * then return a `PreparedAppend` that `stageSnapshotForAppend` can use to
+ * build a snapshot per attempt without re-writing any of these bytes.
  *
- * No metadata.json or version-hint is written. Pass the result to a commit
- * function (`fileCatalogCommit`, or a future `restCatalogCommitTable`).
+ * The spec (v3 §"Manifest Inheritance") is explicit: data files and manifest
+ * files are written before sequence numbers are known so optimistic-commit
+ * retries don't require rewriting them. This function is the "phase 1" half
+ * of that pattern; the per-attempt manifest list / metadata.json work lives
+ * in `stageSnapshotForAppend`.
+ *
+ * Splitting the staging in two keeps the orphan blow-up under contention
+ * down to one extra manifest list per failed attempt instead of one extra
+ * parquet, manifest, AND manifest list — a meaningful S3 cost and PUT-rate
+ * win for high-fan-out append workloads.
  *
  * Only supports v2/v3 tables. Partitioning is supported with identity, void,
  * bucket[N], truncate[W], year, month, day, and hour transforms.
  *
  * @param {object} options
  * @param {string} options.tableUrl - Base URL of the table.
- * @param {TableMetadata} options.metadata - Current table metadata.
+ * @param {TableMetadata} options.metadata - Current table metadata. Used for
+ *   schema, partition spec, format version, and write properties; the
+ *   sequence number and parent snapshot are read from the freshest metadata
+ *   per attempt in `stageSnapshotForAppend`.
  * @param {Record<string, any>[]} options.records - Rows to append.
  * @param {Resolver} options.resolver - Resolver with a writer method.
- * @returns {Promise<StagedUpdate>}
+ * @returns {Promise<PreparedAppend>}
  */
-export async function icebergStageAppend({ tableUrl, metadata, records, resolver }) {
+export async function prepareAppend({ tableUrl, metadata, records, resolver }) {
   if (!tableUrl) throw new Error('tableUrl is required')
   if (!resolver?.writer) throw new Error('resolver.writer is required')
   const writerFn = resolver.writer
@@ -48,14 +59,16 @@ export async function icebergStageAppend({ tableUrl, metadata, records, resolver
   if (!schema) throw new Error('current schema not found in metadata')
   validateSchemaForVersion(schema, formatVersion)
 
+  // snapshotId is picked once and reused across retries. The metadata.json
+  // commit is what makes the snapshot id "claimed"; failed attempts never
+  // commit, so reusing the id across attempts cannot corrupt anything. The
+  // duplicate-snapshot-id check in applyUpdates (`commit.js`) guards against
+  // colliding with a snapshot that was already committed by some other writer.
   const snapshotId = newSnapshotId(metadata)
-  const sequenceNumber = BigInt(metadata['last-sequence-number'] ?? 0) + 1n
   const manifestUuid = uuid4()
-  const timestampMs = Date.now()
   checkWriteFormat(metadata.properties?.['write.format.default'])
   const codec = resolveParquetCodec(metadata.properties?.['write.parquet.compression-codec'])
 
-  // 1. Group records by partition tuple, then write one parquet per group in parallel.
   const groups = partitionSpec.fields.length
     ? groupByPartition(records, schema, partitionSpec)
     : [{ partition: {}, records }]
@@ -85,7 +98,6 @@ export async function icebergStageAppend({ tableUrl, metadata, records, resolver
     }
   }))
 
-  // 2. Write a single manifest covering every new data file
   const manifestPath = `${tableUrl}/metadata/${manifestUuid}-m0.avro`
   const manifestWriter = writerFn(translateS3Url(manifestPath))
   await writeDataManifest({
@@ -97,34 +109,71 @@ export async function icebergStageAppend({ tableUrl, metadata, records, resolver
     formatVersion,
   })
   const manifestLength = BigInt(manifestWriter.offset)
-  const totalAddedRows = writtenDataFiles.reduce((sum, f) => sum + BigInt(f.records.length), 0n)
-  const totalAddedSize = writtenDataFiles.reduce((sum, f) => sum + f.dataFile.file_size_in_bytes, 0n)
-
+  const addedRowCount = writtenDataFiles.reduce((sum, f) => sum + BigInt(f.records.length), 0n)
+  const addedFilesSize = writtenDataFiles.reduce((sum, f) => sum + f.dataFile.file_size_in_bytes, 0n)
   const partitions = buildPartitionSummaries(
     writtenDataFiles.map(f => f.dataFile.partition),
     schema,
     partitionSpec
   )
 
+  return {
+    snapshotId,
+    manifestUuid,
+    formatVersion,
+    manifestPath,
+    manifestLength,
+    partitionSpecId: partitionSpec['spec-id'],
+    partitions,
+    addedDataFilesCount: writtenDataFiles.length,
+    addedRowCount,
+    addedFilesSize,
+    recordsCount: records.length,
+    writtenFiles: [...writtenDataFiles.map(f => f.path), manifestPath],
+  }
+}
+
+/**
+ * Build the snapshot, manifest list, and `StagedUpdate` for a previously
+ * `prepareAppend`'d operation against the freshest table metadata. Safe to
+ * call repeatedly inside a retry loop: each call re-derives the sequence
+ * number and parent from `metadata`, writes a NEW manifest list (the only
+ * file that genuinely depends on which version we're committing under),
+ * and returns a fresh `StagedUpdate`. The data files and the manifest from
+ * the prepare phase are reused unchanged.
+ *
+ * @param {object} options
+ * @param {string} options.tableUrl
+ * @param {TableMetadata} options.metadata - The latest loaded metadata. Used
+ *   for sequence number, parent snapshot, prior manifests, and totals.
+ * @param {PreparedAppend} options.prepared
+ * @param {Resolver} options.resolver
+ * @returns {Promise<StagedUpdate>}
+ */
+export async function stageSnapshotForAppend({ tableUrl, metadata, prepared, resolver }) {
+  if (!tableUrl) throw new Error('tableUrl is required')
+  if (!resolver?.writer) throw new Error('resolver.writer is required')
+  const sequenceNumber = BigInt(metadata['last-sequence-number'] ?? 0) + 1n
+  const timestampMs = Date.now()
+
   /** @type {Manifest} */
   const newManifest = {
-    manifest_path: manifestPath,
-    manifest_length: manifestLength,
-    partition_spec_id: partitionSpec['spec-id'],
+    manifest_path: prepared.manifestPath,
+    manifest_length: prepared.manifestLength,
+    partition_spec_id: prepared.partitionSpecId,
     content: 0,
     sequence_number: sequenceNumber,
     min_sequence_number: sequenceNumber,
-    added_snapshot_id: snapshotId,
-    added_files_count: writtenDataFiles.length,
+    added_snapshot_id: prepared.snapshotId,
+    added_files_count: prepared.addedDataFilesCount,
     existing_files_count: 0,
     deleted_files_count: 0,
-    added_rows_count: totalAddedRows,
+    added_rows_count: prepared.addedRowCount,
     existing_rows_count: 0n,
     deleted_rows_count: 0n,
-    partitions,
+    partitions: prepared.partitions,
   }
 
-  // 3. Build the snapshot summary and assemble the StagedUpdate
   const prevSummary = currentSnapshot(metadata)?.summary
   const prevTotals = {
     records: BigInt(prevSummary?.['total-records'] ?? '0'),
@@ -134,24 +183,52 @@ export async function icebergStageAppend({ tableUrl, metadata, records, resolver
   /** @type {Snapshot['summary']} */
   const summary = {
     operation: 'append',
-    'added-data-files': String(writtenDataFiles.length),
-    'added-records': String(records.length),
-    'added-files-size': String(totalAddedSize),
-    'changed-partition-count': String(writtenDataFiles.length),
-    'total-records': String(prevTotals.records + BigInt(records.length)),
-    'total-files-size': String(prevTotals.size + totalAddedSize),
-    'total-data-files': String(prevTotals.files + BigInt(writtenDataFiles.length)),
+    'added-data-files': String(prepared.addedDataFilesCount),
+    'added-records': String(prepared.recordsCount),
+    'added-files-size': String(prepared.addedFilesSize),
+    'changed-partition-count': String(prepared.addedDataFilesCount),
+    'total-records': String(prevTotals.records + BigInt(prepared.recordsCount)),
+    'total-files-size': String(prevTotals.size + prepared.addedFilesSize),
+    'total-data-files': String(prevTotals.files + BigInt(prepared.addedDataFilesCount)),
     'total-delete-files': '0',
     'total-position-deletes': '0',
     'total-equality-deletes': '0',
   }
   return await buildSnapshotUpdate({
     tableUrl, metadata, resolver,
-    snapshotId, sequenceNumber, manifestUuid, timestampMs, formatVersion,
+    snapshotId: prepared.snapshotId,
+    sequenceNumber,
+    manifestUuid: prepared.manifestUuid,
+    timestampMs,
+    formatVersion: prepared.formatVersion,
     newManifests: [newManifest],
     summary,
-    writtenFiles: [...writtenDataFiles.map(f => f.path), manifestPath],
+    // Already accounted for by prepareAppend's writtenFiles. Only the new
+    // manifest list (added inside buildSnapshotUpdate) is added here.
+    writtenFiles: [],
   })
+}
+
+/**
+ * Bundled prepare + stage. Equivalent to the prior single-call API; left in
+ * place so callers that don't run inside a retry loop (e.g. `icebergTransaction`)
+ * can use one call. Inside `commitWithRetry`, prefer `prepareAppend` outside
+ * the loop and `stageSnapshotForAppend` inside, so retries don't re-write
+ * data and manifest files.
+ *
+ * @param {object} options
+ * @param {string} options.tableUrl
+ * @param {TableMetadata} options.metadata
+ * @param {Record<string, any>[]} options.records
+ * @param {Resolver} options.resolver
+ * @returns {Promise<StagedUpdate>}
+ */
+export async function icebergStageAppend({ tableUrl, metadata, records, resolver }) {
+  const prepared = await prepareAppend({ tableUrl, metadata, records, resolver })
+  const staged = await stageSnapshotForAppend({ tableUrl, metadata, prepared, resolver })
+  // Surface the prepare-phase writes alongside the manifest list so callers
+  // can clean up everything on commit failure.
+  return { ...staged, writtenFiles: [...prepared.writtenFiles, ...staged.writtenFiles] }
 }
 
 /**

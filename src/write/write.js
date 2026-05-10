@@ -5,7 +5,7 @@ import { loadLatestFileCatalogMetadata } from '../metadata.js'
 import { applyUpdates, fileCatalogCommit } from './commit.js'
 import { icebergStageDeletionVector } from './stage-deletion-vector.js'
 import { icebergStagePositionDelete } from './stage-position-delete.js'
-import { icebergStageAppend, icebergStageExpireSnapshots, icebergStageSetRef } from './stage.js'
+import { icebergStageAppend, icebergStageExpireSnapshots, icebergStageSetRef, prepareAppend, stageSnapshotForAppend } from './stage.js'
 
 /**
  * @import {Catalog, CommitRetryOptions, IcebergTransaction, Lister, PartitionSpec, Resolver, Schema, Snapshot, SortOrder, StagedUpdate, TableMetadata, TableRequirement, TableUpdate} from '../../src/types.js'
@@ -33,12 +33,23 @@ const DEFAULT_RETRY = Object.freeze({
  */
 export async function icebergAppend({ catalog, namespace, table, tableUrl, resolver, records }) {
   const ctx = await loadTable({ catalog, namespace, table, tableUrl, resolver })
+  // Spec v3 §"Manifest Inheritance": data and manifest files do NOT need to
+  // be rewritten on optimistic-commit retry. Prepare them once outside the
+  // retry loop; per attempt only the manifest list and metadata.json change.
+  // Without this, N concurrent writers each retrying would write O(N²)
+  // orphan parquets to S3.
+  const prepared = await prepareAppend({
+    tableUrl: ctx.tableUrl,
+    metadata: ctx.metadata,
+    records,
+    resolver: requireResolver(ctx.resolver, 'icebergAppend'),
+  })
   return await commitWithRetry({
     catalog, target: { namespace, table }, ctx,
-    stage: workingCtx => icebergStageAppend({
+    stage: workingCtx => stageSnapshotForAppend({
       tableUrl: workingCtx.tableUrl,
       metadata: workingCtx.metadata,
-      records,
+      prepared,
       resolver: requireResolver(workingCtx.resolver, 'icebergAppend'),
     }),
   })
