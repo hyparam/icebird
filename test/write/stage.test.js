@@ -307,7 +307,7 @@ describe('icebergStageAppend', () => {
       { id: 1n, name: 'alice' },
       { id: 2n, name: 'alex' }, // shares 'al' prefix with alice
       { id: 3n, name: 'bob' },
-      { id: 4n, name: 'bart' }, // shares 'ba' with bob? no — 'ba' vs 'bo'; distinct
+      { id: 4n, name: 'bart' }, // shares 'ba' with bob? no, 'ba' vs 'bo'; distinct
     ]
     const staged = await icebergStageAppend({ tableUrl, metadata: truncated, records, resolver })
 
@@ -528,7 +528,7 @@ describe('fileCatalogCommit', () => {
     })
     const after = await fileCatalogCommit({ tableUrl, metadata: created, staged: stagedB, resolver })
 
-    // writer A's commit must now fail — its requirement still asserts null parent
+    // writer A's commit must now fail; its requirement still asserts null parent
     await expect(fileCatalogCommit({
       tableUrl, metadata: after, staged: stagedA, resolver,
     })).rejects.toThrow(/ref main expected snapshot null/)
@@ -581,7 +581,11 @@ describe('fileCatalogCommit', () => {
     /** @type {Resolver} */
     const resolverWithDeleter = {
       ...resolver,
-      deleter: async path => { deleted.push(path); files.delete(path) },
+      deleter: path => {
+        deleted.push(path)
+        files.delete(path)
+        return Promise.resolve()
+      },
     }
 
     const created = await icebergCreate({ tableUrl, resolver: resolverWithDeleter, schema })
@@ -603,7 +607,7 @@ describe('fileCatalogCommit', () => {
       metadata = await fileCatalogCommit({ tableUrl, metadata, staged, resolver: resolverWithDeleter })
     }
 
-    // log capped at 2 — v1 and v2 should have been deleted, v3 and v4 retained
+    // log capped at 2; v1 and v2 should have been deleted, v3 and v4 retained
     expect(deleted).toEqual([
       `${tableUrl}/metadata/v1.metadata.json`,
       `${tableUrl}/metadata/v2.metadata.json`,
@@ -621,7 +625,10 @@ describe('fileCatalogCommit', () => {
     /** @type {Resolver} */
     const resolverWithDeleter = {
       ...resolver,
-      deleter: async path => { deleted.push(path) },
+      deleter: path => {
+        deleted.push(path)
+        return Promise.resolve()
+      },
     }
 
     const created = await icebergCreate({ tableUrl, resolver: resolverWithDeleter, schema })
@@ -650,7 +657,7 @@ describe('fileCatalogCommit', () => {
     /** @type {Resolver} */
     const resolverWithDeleter = {
       ...resolver,
-      deleter: async () => { throw new Error('boom') },
+      deleter: () => Promise.reject(new Error('boom')),
     }
 
     const created = await icebergCreate({ tableUrl, resolver: resolverWithDeleter, schema })
@@ -1057,7 +1064,7 @@ describe('icebergStageExpireSnapshots', () => {
     expect(after['snapshot-log']?.map(e => e['snapshot-id'])).toEqual([snap3])
     expect(after['current-snapshot-id']).toBe(snap3)
 
-    // Expiring history snapshots does not remove their data files — the tip
+    // Expiring history snapshots does not remove their data files; the tip
     // snapshot's manifest list still carries them forward, so a read of the
     // current snapshot returns the full table.
     const read = await icebergRead({ tableUrl, metadata: after, resolver })

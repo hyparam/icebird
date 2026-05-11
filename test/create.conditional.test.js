@@ -79,7 +79,7 @@ describe('icebergCreate({ conditionalCommits })', () => {
     const catalog = fileCatalog({ resolver })
 
     await icebergCreateTable({ catalog, tableUrl, schema })
-    // No flag — old behavior is to silently clobber. Verifies we did not
+    // No flag: old behavior is to silently clobber. Verifies we did not
     // change the default semantics.
     await expect(icebergCreateTable({ catalog, tableUrl, schema })).resolves.toBeDefined()
   })
@@ -116,7 +116,7 @@ describe('icebergCreate({ conditionalCommits })', () => {
     resolver.writer = (p, options) => {
       const w = realWriter(p, options)
       if (p.endsWith('/metadata/version-hint.text')) {
-        w.finish = async () => { throw new Error('hint blocked: 503') }
+        w.finish = () => Promise.reject(new Error('hint blocked: 503'))
       }
       return w
     }
@@ -138,7 +138,7 @@ describe('icebergCreate({ conditionalCommits })', () => {
     resolver.writer = (p, options) => {
       const w = realWriter(p, options)
       if (p.endsWith('/metadata/version-hint.text')) {
-        w.finish = async () => { throw new Error('hint blocked: 503') }
+        w.finish = () => Promise.reject(new Error('hint blocked: 503'))
       }
       return w
     }

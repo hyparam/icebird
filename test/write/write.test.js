@@ -77,7 +77,7 @@ describe('icebergCreateTable', () => {
     }
     /** @type {{url: string, init?: RequestInit}[]} */
     const calls = []
-    vi.stubGlobal('fetch', async (/** @type {string} */ url, /** @type {RequestInit | undefined} */ init) => {
+    vi.stubGlobal('fetch', (/** @type {string} */ url, /** @type {RequestInit | undefined} */ init) => {
       calls.push({ url, init })
       if (url === 'https://cat/v1/config') return new Response(JSON.stringify({}), { status: 200 })
       if (url === 'https://cat/v1/namespaces/db/tables') {
@@ -158,7 +158,7 @@ describe('icebergDropTable', () => {
   it('rest catalog: issues DELETE and forwards purgeRequested', async () => {
     /** @type {{url: string, init?: RequestInit}[]} */
     const calls = []
-    vi.stubGlobal('fetch', async (/** @type {string} */ url, /** @type {RequestInit | undefined} */ init) => {
+    vi.stubGlobal('fetch', (/** @type {string} */ url, /** @type {RequestInit | undefined} */ init) => {
       calls.push({ url, init })
       if (url === 'https://cat/v1/config') return new Response(JSON.stringify({}), { status: 200 })
       return new Response(null, { status: 204 })

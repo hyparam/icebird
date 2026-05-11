@@ -82,7 +82,7 @@ describe('fileCatalogCommit conditional create', () => {
     // Set up a second writer that staged against v1 (stale ctx). Easiest
     // simulation: roll the catalog back to v1 by capturing v1 metadata and
     // injecting a wrapper resolver that plants v3 right before the staged
-    // writer hits finish() on v3 — forcing a 412, then a retry against the
+    // writer hits finish() on v3, forcing a 412, then a retry against the
     // real latest (still v2).
     const realWriter = resolver.writer
     if (!realWriter) throw new Error('writer required')
@@ -148,7 +148,7 @@ describe('fileCatalogCommit conditional create', () => {
     resolver.writer = (p, options) => {
       const w = realWriter(p, options)
       if (p.endsWith('/metadata/version-hint.text')) {
-        w.finish = async () => { throw new Error('hint blocked: 503') }
+        w.finish = () => Promise.reject(new Error('hint blocked: 503'))
       }
       return w
     }
@@ -163,10 +163,10 @@ describe('fileCatalogCommit conditional create', () => {
     expect(hint && new TextDecoder().decode(hint)).toBe('1')
   })
 
-  it('hint failure still propagates without conditionalCommits', async () => {
+  it('hint failure does not fail the commit without conditionalCommits', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
     const tableUrl = 'http://test/cond-commit-hint-fail-default'
-    const { resolver } = memResolver()
+    const { resolver, files } = memResolver()
     const realWriter = resolver.writer
     if (!realWriter) throw new Error('writer required')
     const catalog = fileCatalog({ resolver })
@@ -176,14 +176,19 @@ describe('fileCatalogCommit conditional create', () => {
     resolver.writer = (p, options) => {
       const w = realWriter(p, options)
       if (p.endsWith('/metadata/version-hint.text')) {
-        w.finish = async () => { throw new Error('hint blocked: 503') }
+        w.finish = () => Promise.reject(new Error('hint blocked: 503'))
       }
       return w
     }
 
-    await expect(icebergAppend({
+    const committed = await icebergAppend({
       catalog, tableUrl, records: [{ id: 1n, name: 'a' }],
-    })).rejects.toThrow(/hint blocked/)
+    })
+
+    expect(committed.snapshots).toHaveLength(1)
+    expect(files.has(`${tableUrl}/metadata/v2.metadata.json`)).toBe(true)
+    const hint = files.get(`${tableUrl}/metadata/version-hint.text`)
+    expect(hint && new TextDecoder().decode(hint)).toBe('1')
   })
 
   it('concurrent appends: all eventually succeed via retry under conditionalCommits', async () => {
@@ -215,7 +220,7 @@ describe('fileCatalogCommit conditional create', () => {
     if (!realWriter) throw new Error('writer required')
 
     // Create v1 with the plain resolver so we have a valid metadata body.
-    // Pin a low retry cap and zero back-off via table properties — the
+    // Pin a low retry cap and zero back-off via table properties; the
     // default 50 attempts × 3s would dominate the test run. We're verifying
     // the exhaustion path, not the policy.
     await icebergCreateTable({
@@ -232,7 +237,7 @@ describe('fileCatalogCommit conditional create', () => {
 
     // Now wrap the resolver: every conditional PUT against vN sees a planted
     // vN beat it. The planted bytes are a copy of v1, so the retry's
-    // loadLatest can still parse and re-stage — but the next conditional PUT
+    // loadLatest can still parse and re-stage, but the next conditional PUT
     // collides again. After maxAttempts the loop bails with our message.
     /** @type {import('../../src/types.js').Resolver} */
     const alwaysConflicts = {

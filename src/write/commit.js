@@ -11,15 +11,15 @@ import { parseDecimalType } from './conversions.js'
  * against the current metadata, apply updates, and write the next
  * `vN.metadata.json` and `version-hint.text`.
  *
- * Without `conditionalCommits`, this overwrites — a second writer racing
- * against this one can clobber the metadata file.
+ * Without `conditionalCommits`, this overwrites.
+ * A second writer racing against this one can clobber the metadata file.
  *
  * With `conditionalCommits`, the new metadata file is created with
  * `If-None-Match: *`. A second writer racing for the same `vN+1` sees a
  * 412/409 from the resolver and the error surfaces to the caller (this
  * slice does not yet retry). `version-hint.text` becomes a best-effort
- * cache: it is still written after the metadata file, but a failed hint
- * write does not invalidate the commit.
+ * cache for all file-catalog commits: it is still written after the
+ * metadata file, but a failed hint write does not invalidate the commit.
  *
  * @param {object} options
  * @param {string} options.tableUrl
@@ -31,7 +31,7 @@ import { parseDecimalType } from './conversions.js'
  * @param {number} [options.currentVersion] - If known, the on-disk version of `metadata`. Bypasses deriving from `metadata-log`, which can be empty/stale on foreign-written tables.
  * @param {StagedUpdate} options.staged
  * @param {Resolver} options.resolver
- * @param {boolean} [options.conditionalCommits] - When true, write the metadata file with `ifNoneMatch: '*'` and tolerate version-hint failures.
+ * @param {boolean} [options.conditionalCommits] - When true, write the metadata file with `ifNoneMatch: '*'`.
  * @returns {Promise<TableMetadata>} The new metadata, already persisted.
  */
 export async function fileCatalogCommit({ tableUrl, metadata, metadataFileName, currentVersion, staged, resolver, conditionalCommits }) {
@@ -71,7 +71,7 @@ export async function fileCatalogCommit({ tableUrl, metadata, metadataFileName, 
 
   // Metadata file creation is the commit point. With conditionalCommits on,
   // a second writer racing for the same v<newVersion> sees a 412/409 from
-  // the resolver — this slice surfaces that error to the caller.
+  // the resolver; this slice surfaces that error to the caller.
   const metaWriter = conditionalCommits
     ? resolver.writer(translateS3Url(newMetadataPath), { ifNoneMatch: '*' })
     : resolver.writer(translateS3Url(newMetadataPath))
@@ -79,19 +79,17 @@ export async function fileCatalogCommit({ tableUrl, metadata, metadataFileName, 
   await metaWriter.finish()
 
   // version-hint last so a partial write doesn't surface a torn commit.
-  // With conditionalCommits, the hint is best-effort — a failed hint write
-  // does not invalidate the durable v<newVersion>.metadata.json above.
+  // The hint is a cache: a failed hint write does not invalidate the durable
+  // v<newVersion>.metadata.json above.
   try {
     const hintWriter = resolver.writer(translateS3Url(`${tableUrl}/metadata/version-hint.text`))
     hintWriter.appendBytes(new TextEncoder().encode(String(newVersion)))
     await hintWriter.finish()
-  } catch (err) {
-    if (!conditionalCommits) throw err
-  }
+  } catch { /* version-hint.text is best-effort. */ }
 
   // Best-effort cleanup of metadata files dropped from the log when the
   // table opts in via `write.metadata.delete-after-commit.enabled`. Failures
-  // (404, permission, etc.) must not surface — the commit itself succeeded.
+  // (404, permission, etc.) must not surface; the commit itself succeeded.
   const deleteEnabled = updated.properties?.['write.metadata.delete-after-commit.enabled'] === 'true'
   if (deleteEnabled && droppedLog.length > 0 && resolver.deleter) {
     const { deleter } = resolver
@@ -105,8 +103,8 @@ export async function fileCatalogCommit({ tableUrl, metadata, metadataFileName, 
  * Derive the version number of the metadata being committed by inspecting
  * the most recent `metadata-log` entry's filename. Two naming conventions
  * are accepted:
- * - `vN.metadata.json` — what Icebird itself writes; numbering starts at 1.
- * - `NNNNN-<uuid>.metadata.json` — iceberg-java / iceberg-rust / pyiceberg;
+ * - `vN.metadata.json`: what Icebird itself writes; numbering starts at 1.
+ * - `NNNNN-<uuid>.metadata.json`: iceberg-java / iceberg-rust / pyiceberg;
  *   numbering starts at 0.
  * Both shapes carry the prior version explicitly, so the new current version
  * is just `prior + 1`. Falls back to `length + 1` for unrecognized filenames
@@ -189,13 +187,13 @@ export function checkRequirements(metadata, requirements) {
 }
 
 /**
- * Apply updates to produce the next metadata. Pure — no I/O.
+ * Apply updates to produce the next metadata. Pure; no I/O.
  *
  * Setting `main` (a branch ref) also bumps `current-snapshot-id` and appends
  * to `snapshot-log`, matching server behaviour described in the spec.
  *
  * For `add-schema` / `set-current-schema` the spec sentinel `schema-id: -1`
- * is supported — `add-schema` assigns the next free id, and
+ * is supported; `add-schema` assigns the next free id, and
  * `set-current-schema` resolves to the most recently added schema.
  *
  * @param {TableMetadata} metadata
@@ -549,7 +547,7 @@ function idsListEquivalent(a, b) {
 
 /**
  * Highest field id at the top level of a schema. Mirrors `create.js` and is
- * intentionally non-recursive — nested-type ids are not yet supported on
+ * intentionally non-recursive; nested-type ids are not yet supported on
  * schema add.
  *
  * @param {Field[]} fields

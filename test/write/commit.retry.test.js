@@ -155,7 +155,7 @@ describe('icebergAppend retry under conditionalCommits', () => {
 
     await icebergCreateTable({ catalog, tableUrl, schema })
 
-    // Two parallel appends without the flag — last one wins by overwrite. We
+    // Two parallel appends without the flag: last one wins by overwrite. We
     // just verify both resolved and exactly v2 was written.
     await Promise.all([
       icebergAppend({ catalog, tableUrl, records: [{ id: 1n, name: 'a' }] }),
@@ -243,7 +243,7 @@ describe('icebergAppend retry under conditionalCommits', () => {
         'commit.retry.total-timeout-ms': 'NaN',
       },
     })
-    // Just verify the commit still works — garbage props are ignored and
+    // Just verify the commit still works: garbage props are ignored and
     // the library defaults apply.
     const catalog = fileCatalog({ resolver, conditionalCommits: true })
     await icebergAppend({ catalog, tableUrl, records: [{ id: 1n, name: 'a' }] })
@@ -347,7 +347,7 @@ describe('icebergAppend retry under conditionalCommits', () => {
 
     // 4 retries between 5 attempts → 4 sleeps. Bases (factor=2): 10, 20,
     // 40, 80; cap 1000 doesn't bind. Math.floor(0.999999 * base) trims by
-    // 1 in some cases — assert monotonic growth and rough magnitude rather
+    // 1 in some cases. Assert monotonic growth and rough magnitude rather
     // than exact values, which keeps the test stable across jitter
     // implementations.
     expect(sleeps).toHaveLength(4)
@@ -399,7 +399,7 @@ describe('REST catalog retry on 409 CommitFailedException', () => {
   it('retries icebergSetRef on a single 409 then succeeds', async () => {
     let commitCalls = 0
     const url = 'https://cat/v1/namespaces/db/tables/orders'
-    vi.stubGlobal('fetch', async (/** @type {string} */ u, /** @type {RequestInit} */ init) => {
+    vi.stubGlobal('fetch', (/** @type {string} */ u, /** @type {RequestInit} */ init) => {
       if (u === 'https://cat/v1/config') {
         return new Response(JSON.stringify({}), { status: 200 })
       }
@@ -439,7 +439,7 @@ describe('REST catalog retry on 409 CommitFailedException', () => {
   it('exhausts attempts when 409s persist, honoring commit.retry.num-retries', async () => {
     let commitCalls = 0
     const url = 'https://cat/v1/namespaces/db/tables/orders'
-    vi.stubGlobal('fetch', async (/** @type {string} */ u, /** @type {RequestInit} */ init) => {
+    vi.stubGlobal('fetch', (/** @type {string} */ u, /** @type {RequestInit} */ init) => {
       if (u === 'https://cat/v1/config') {
         return new Response(JSON.stringify({}), { status: 200 })
       }
@@ -478,7 +478,7 @@ describe('REST catalog retry on 409 CommitFailedException', () => {
   it('non-409 errors are not retried', async () => {
     let commitCalls = 0
     const url = 'https://cat/v1/namespaces/db/tables/orders'
-    vi.stubGlobal('fetch', async (/** @type {string} */ u, /** @type {RequestInit} */ init) => {
+    vi.stubGlobal('fetch', (/** @type {string} */ u, /** @type {RequestInit} */ init) => {
       if (u === 'https://cat/v1/config') {
         return new Response(JSON.stringify({}), { status: 200 })
       }

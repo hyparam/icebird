@@ -168,10 +168,29 @@ export async function icebergExpireSnapshots({ catalog, namespace, table, tableU
  * staged snapshots and refs; everything ships in one commit at the end.
  *
  * The CAS preconditions sent to the catalog are taken from the FIRST stage
- * that produces each (type, ref) pair — they reference the original loaded
+ * that produces each (type, ref) pair: they reference the original loaded
  * metadata, not the working copy. If the callback throws or stages nothing,
- * no commit is sent (already-written data/manifest files become orphans;
- * cleanup is the caller's responsibility, same as other write paths).
+ * no commit is sent. Files written by the callback before it threw are
+ * left in place (the caller may still want them); failed-commit orphans
+ * are cleaned up best-effort (see below).
+ *
+ * Failure semantics:
+ * - Atomicity: a transaction either commits in full or has no visible
+ *   effect on the table.
+ * - On a concurrent-commit conflict (catalog returns 412 or 409), this
+ *   function throws `IcebergTransactionConflictError`. The transaction
+ *   does NOT auto-retry, because the user callback may have side effects
+ *   or non-deterministic outputs and cannot be safely re-invoked. Callers
+ *   that need retry must wrap this call themselves and ensure the
+ *   callback is idempotent.
+ * - On commit failure (any reason before the metadata file is durably
+ *   committed), the data, manifest, and manifest-list files written during
+ *   staging are deleted best-effort via the effective `resolver.deleter`.
+ *   Cleanup errors are suppressed so the original commit error surfaces
+ *   unchanged. If the resolver has no `deleter`, files remain as orphans.
+ *
+ * For concurrent append-only workloads, prefer `icebergAppend`: it retries
+ * internally on 412/409 without re-uploading data or manifest files.
  *
  * @param {object} options
  * @param {Catalog} options.catalog
@@ -181,9 +200,11 @@ export async function icebergExpireSnapshots({ catalog, namespace, table, tableU
  * @param {Resolver} [options.resolver]
  * @param {(tx: IcebergTransaction) => Promise<void> | void} callback
  * @returns {Promise<TableMetadata>}
+ * @throws {IcebergTransactionConflictError} on concurrent-commit conflict.
  */
 export async function icebergTransaction({ catalog, namespace, table, tableUrl, resolver }, callback) {
   const ctx = await loadTable({ catalog, namespace, table, tableUrl, resolver })
+  const deleter = ctx.resolver?.deleter
   let workingMetadata = ctx.metadata
 
   /** @type {TableRequirement[]} */
@@ -268,12 +289,60 @@ export async function icebergTransaction({ catalog, namespace, table, tableUrl, 
   if (allUpdates.length === 0) return ctx.metadata
   if (!lastSnapshot) throw new Error('icebergTransaction: no snapshot produced')
 
-  return await commitStaged(catalog, { namespace, table }, ctx, {
-    snapshot: lastSnapshot,
-    requirements: allRequirements,
-    updates: allUpdates,
-    writtenFiles: allWrittenFiles,
-  })
+  try {
+    return await commitStaged(catalog, { namespace, table }, ctx, {
+      snapshot: lastSnapshot,
+      requirements: allRequirements,
+      updates: allUpdates,
+      writtenFiles: allWrittenFiles,
+    })
+  } catch (err) {
+    // The commit failed, so the data and manifest files we wrote during
+    // staging are orphans. Best-effort cleanup so a contended workload
+    // doesn't accumulate unreachable parquets on S3. Suppress per-file
+    // failures (and the absence of a deleter) so the original commit error
+    // surfaces unchanged.
+    if (deleter && allWrittenFiles.length > 0) {
+      await Promise.allSettled(allWrittenFiles.map(p => deleter(p)))
+    }
+    if (isCommitConflict(err)) {
+      throw new IcebergTransactionConflictError(err)
+    }
+    throw err
+  }
+}
+
+/**
+ * Thrown when an `icebergTransaction` commit fails because another writer
+ * advanced the table between the load and the commit. `icebergTransaction`
+ * does not retry on conflict because the user-supplied callback may have
+ * side effects, non-deterministic outputs, or external mutations that
+ * cannot be safely re-invoked. Callers that need retry semantics should
+ * wrap the whole `icebergTransaction(...)` call in their own loop and
+ * ensure the callback is safe to re-run.
+ *
+ * For plain append workloads under contention, prefer `icebergAppend`:
+ * it retries on 412/409 internally without re-uploading data or manifest
+ * files (only the per-attempt manifest list and metadata.json are rewritten).
+ */
+export class IcebergTransactionConflictError extends Error {
+  /**
+   * @param {unknown} cause - The underlying error from the catalog commit (carries `.status`).
+   */
+  constructor(cause) {
+    const status = /** @type {any} */ (cause)?.status
+    const detail = /** @type {any} */ (cause)?.message
+    super(
+      `icebergTransaction commit conflicted with a concurrent writer${status ? ` (status ${status})` : ''}. ` +
+      'The transaction was not applied and staged files were cleaned up. ' +
+      'Wrap the icebergTransaction call in your own retry loop if the callback is safe to re-run; ' +
+      'for append-only workloads prefer icebergAppend, which retries without re-uploading data.' +
+      (detail ? ` (cause: ${detail})` : '')
+    )
+    this.name = 'IcebergTransactionConflictError'
+    this.cause = cause
+    if (typeof status === 'number') this.status = status
+  }
 }
 
 /**
@@ -428,7 +497,7 @@ async function commitStaged(catalog, target, ctx, staged) {
  * Conflict detection: file catalogs see 412/409 on the conditional PUT
  * when `conditionalCommits` is true; REST catalogs see 409 from the
  * commit endpoint when the server-side `requirements` check fails. File
- * catalogs without `conditionalCommits` do not retry — the legacy
+ * catalogs without `conditionalCommits` do not retry: the legacy
  * overwrite path stays one-shot.
  *
  * Between attempts, sleeps with full-jitter exponential back-off so that

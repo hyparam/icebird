@@ -56,8 +56,8 @@ export function localResolver(baseDir) {
  * @returns {Lister}
  */
 export function localLister(baseDir) {
-  return async function list(url) {
-    return fs.readdirSync(localPath(baseDir, url))
+  return function list(url) {
+    return Promise.resolve(fs.readdirSync(localPath(baseDir, url)))
   }
 }
 
@@ -98,12 +98,13 @@ export function memResolver() {
       }
       return w
     },
-    async deleter(p) {
+    deleter(p) {
       files.delete(p)
+      return Promise.resolve()
     },
   }
   /** @type {Lister} */
-  async function lister(dir) {
+  function lister(dir) {
     const prefix = dir.endsWith('/') ? dir : `${dir}/`
     /** @type {string[]} */
     const out = []
@@ -113,7 +114,7 @@ export function memResolver() {
         if (!tail.includes('/')) out.push(tail)
       }
     }
-    return out
+    return Promise.resolve(out)
   }
   return { resolver, files, lister }
 }
