@@ -1,5 +1,14 @@
 # Icebird Changelog
 
+## [0.7.0]
+ - Breaking: Avro functions moved to `icebird/avro` subpackage and removed from the top-level export
+ - Configure commit retries via `commit.retry.*` table properties instead of write-call overrides
+ - Avro UUID type read and write support
+ - Validate field ids against the reserved range when creating tables
+ - List `metadata/` by default for file-catalog metadata discovery
+ - Clearer error message when a transaction commit fails
+ - Fix commit race conditions
+
 ## [0.6.0]
  - Conditional commits via `If-None-Match` for the file catalog
  - Retry concurrent commits under `conditionalCommits` with exponential backoff and jitter
