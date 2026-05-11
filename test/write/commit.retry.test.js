@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import { fileCatalog } from '../../src/catalog/file.js'
+import { restCatalogConnect } from '../../src/catalog/rest.js'
 import { loadLatestFileCatalogMetadata } from '../../src/metadata.js'
-import { icebergAppend, icebergCreateTable } from '../../src/write/write.js'
+import { icebergAppend, icebergCreateTable, icebergSetRef } from '../../src/write/write.js'
 import { memResolver } from '../helpers.js'
 
 /**
@@ -169,14 +170,14 @@ describe('icebergAppend retry under conditionalCommits', () => {
     vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
     const tableUrl = 'http://test/ten-writers'
     const { resolver, files } = memResolver()
-    // Default policy with zeroed back-off so the test stays fast — what we're
+    // Zeroed back-off via table properties keeps the test fast. What we're
     // verifying is that the retry budget alone (default 50 attempts) absorbs
     // 10 racing writers without losing any.
-    const catalog = fileCatalog({
-      resolver, conditionalCommits: true,
-      commitRetry: { backoff: { initialMs: 0, maxMs: 0 } },
+    const catalog = fileCatalog({ resolver, conditionalCommits: true })
+    await icebergCreateTable({
+      catalog, tableUrl, schema,
+      properties: { 'commit.retry.min-wait-ms': '0', 'commit.retry.max-wait-ms': '0' },
     })
-    await icebergCreateTable({ catalog, tableUrl, schema })
 
     const N = 10
     const results = await Promise.all(
@@ -192,15 +193,20 @@ describe('icebergAppend retry under conditionalCommits', () => {
     expect(files.has(`${tableUrl}/metadata/v${N + 2}.metadata.json`)).toBe(false)
   })
 
-  it('respects a custom maxAttempts cap', async () => {
+  it('reads commit.retry.num-retries from table properties', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
-    const tableUrl = 'http://test/custom-cap'
+    const tableUrl = 'http://test/prop-num-retries'
     const { resolver, files } = memResolver()
     const realWriter = resolver.writer
     if (!realWriter) throw new Error('writer required')
     await icebergCreateTable({
       catalog: fileCatalog({ resolver, conditionalCommits: true }),
       tableUrl, schema,
+      properties: {
+        'commit.retry.num-retries': '2',
+        'commit.retry.min-wait-ms': '0',
+        'commit.retry.max-wait-ms': '0',
+      },
     })
     const v1 = files.get(`${tableUrl}/metadata/v1.metadata.json`)
     if (!v1) throw new Error('v1 missing')
@@ -215,14 +221,73 @@ describe('icebergAppend retry under conditionalCommits', () => {
         return realWriter(p, options)
       },
     }
-    const catalog = fileCatalog({
-      resolver: alwaysConflicts,
-      conditionalCommits: true,
-      commitRetry: { maxAttempts: 3, backoff: { initialMs: 0, maxMs: 0 } },
-    })
+    // num-retries=2 → maxAttempts=3. The default 50 attempts would not
+    // raise this error.
+    const catalog = fileCatalog({ resolver: alwaysConflicts, conditionalCommits: true })
     await expect(icebergAppend({
       catalog, tableUrl, records: [{ id: 1n, name: 'a' }],
     })).rejects.toThrow(/3 attempts due to concurrent commits/)
+  })
+
+  it('garbage table properties fall through to defaults', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/garbage-props'
+    const { resolver, files } = memResolver()
+    await icebergCreateTable({
+      catalog: fileCatalog({ resolver, conditionalCommits: true }),
+      tableUrl, schema,
+      properties: {
+        'commit.retry.num-retries': 'not-a-number',
+        'commit.retry.min-wait-ms': '-5',
+        'commit.retry.max-wait-ms': '',
+        'commit.retry.total-timeout-ms': 'NaN',
+      },
+    })
+    // Just verify the commit still works — garbage props are ignored and
+    // the library defaults apply.
+    const catalog = fileCatalog({ resolver, conditionalCommits: true })
+    await icebergAppend({ catalog, tableUrl, records: [{ id: 1n, name: 'a' }] })
+    expect(files.has(`${tableUrl}/metadata/v2.metadata.json`)).toBe(true)
+  })
+
+  it('total-timeout-ms terminates the retry loop early', async () => {
+    let nowMs = 1700000000000
+    vi.spyOn(Date, 'now').mockImplementation(() => nowMs)
+    const tableUrl = 'http://test/timeout-budget'
+    const { resolver, files } = memResolver()
+    const realWriter = resolver.writer
+    if (!realWriter) throw new Error('writer required')
+    await icebergCreateTable({
+      catalog: fileCatalog({ resolver, conditionalCommits: true }),
+      tableUrl, schema,
+      properties: {
+        // Generous attempts so the timeout, not the attempt cap, ends the loop.
+        'commit.retry.num-retries': '99',
+        'commit.retry.min-wait-ms': '0',
+        'commit.retry.max-wait-ms': '0',
+        'commit.retry.total-timeout-ms': '500',
+      },
+    })
+    const v1 = files.get(`${tableUrl}/metadata/v1.metadata.json`)
+    if (!v1) throw new Error('v1 missing')
+
+    /** @type {import('../../src/types.js').Resolver} */
+    const alwaysConflicts = {
+      ...resolver,
+      writer(p, options) {
+        if (/\/metadata\/v\d+\.metadata\.json$/.test(p) && options?.ifNoneMatch === '*') {
+          // Advance clock 200ms per conflicting write so two failures push
+          // elapsed past the 500ms budget.
+          nowMs += 200
+          files.set(p, v1)
+        }
+        return realWriter(p, options)
+      },
+    }
+    const catalog = fileCatalog({ resolver: alwaysConflicts, conditionalCommits: true })
+    await expect(icebergAppend({
+      catalog, tableUrl, records: [{ id: 1n, name: 'a' }],
+    })).rejects.toThrow(/retry budget exhausted/)
   })
 
   it('grows backoff exponentially between attempts', async () => {
@@ -234,6 +299,11 @@ describe('icebergAppend retry under conditionalCommits', () => {
     await icebergCreateTable({
       catalog: fileCatalog({ resolver, conditionalCommits: true }),
       tableUrl, schema,
+      properties: {
+        'commit.retry.num-retries': '4',
+        'commit.retry.min-wait-ms': '10',
+        'commit.retry.max-wait-ms': '1000',
+      },
     })
     const v1 = files.get(`${tableUrl}/metadata/v1.metadata.json`)
     if (!v1) throw new Error('v1 missing')
@@ -266,14 +336,7 @@ describe('icebergAppend retry under conditionalCommits', () => {
     const randSpy = vi.spyOn(Math, 'random').mockReturnValue(0.999_999)
 
     try {
-      const catalog = fileCatalog({
-        resolver: alwaysConflicts,
-        conditionalCommits: true,
-        commitRetry: {
-          maxAttempts: 5,
-          backoff: { initialMs: 10, maxMs: 1000, factor: 3 },
-        },
-      })
+      const catalog = fileCatalog({ resolver: alwaysConflicts, conditionalCommits: true })
       await expect(icebergAppend({
         catalog, tableUrl, records: [{ id: 1n, name: 'a' }],
       })).rejects.toThrow(/5 attempts/)
@@ -282,10 +345,11 @@ describe('icebergAppend retry under conditionalCommits', () => {
       randSpy.mockRestore()
     }
 
-    // 4 retries between 5 attempts → 4 sleeps. Bases: 10, 30, 90, 270; cap
-    // 1000 doesn't bind. Math.floor(0.999999 * base) trims by 1 in some
-    // cases — assert monotonic growth and rough magnitude rather than exact
-    // values, which keeps the test stable across jitter implementations.
+    // 4 retries between 5 attempts → 4 sleeps. Bases (factor=2): 10, 20,
+    // 40, 80; cap 1000 doesn't bind. Math.floor(0.999999 * base) trims by
+    // 1 in some cases — assert monotonic growth and rough magnitude rather
+    // than exact values, which keeps the test stable across jitter
+    // implementations.
     expect(sleeps).toHaveLength(4)
     expect(sleeps[0]).toBeGreaterThanOrEqual(9)
     expect(sleeps[0]).toBeLessThanOrEqual(10)
@@ -293,5 +357,154 @@ describe('icebergAppend retry under conditionalCommits', () => {
     expect(sleeps[2]).toBeGreaterThan(sleeps[1])
     expect(sleeps[3]).toBeGreaterThan(sleeps[2])
     expect(sleeps[3]).toBeLessThanOrEqual(1000)
+  })
+})
+
+describe('REST catalog retry on 409 CommitFailedException', () => {
+  /**
+   * @param {number} snapshotId
+   * @param {Record<string, string>} [properties]
+   * @returns {object}
+   */
+  function makeMetadata(snapshotId, properties = {}) {
+    return {
+      'format-version': 2,
+      'table-uuid': 'tbl-uuid-1',
+      location: 's3://bucket/orders',
+      'last-sequence-number': 1,
+      'last-updated-ms': 1700000000000,
+      'last-column-id': 2,
+      schemas: [schema],
+      'current-schema-id': 0,
+      'partition-specs': [{ 'spec-id': 0, fields: [] }],
+      'default-spec-id': 0,
+      'sort-orders': [{ 'order-id': 0, fields: [] }],
+      'default-sort-order-id': 0,
+      snapshots: [{
+        'snapshot-id': snapshotId,
+        'sequence-number': 1,
+        'timestamp-ms': 1700000000000,
+        summary: { operation: 'append' },
+        'manifest-list': 's3://bucket/orders/metadata/snap-x.avro',
+        'schema-id': 0,
+      }],
+      refs: { main: { 'snapshot-id': snapshotId, type: 'branch' } },
+      'current-snapshot-id': snapshotId,
+      'snapshot-log': [],
+      'metadata-log': [],
+      properties,
+    }
+  }
+
+  it('retries icebergSetRef on a single 409 then succeeds', async () => {
+    let commitCalls = 0
+    const url = 'https://cat/v1/namespaces/db/tables/orders'
+    vi.stubGlobal('fetch', async (/** @type {string} */ u, /** @type {RequestInit} */ init) => {
+      if (u === 'https://cat/v1/config') {
+        return new Response(JSON.stringify({}), { status: 200 })
+      }
+      if (u === url && (!init || init.method === undefined || init.method === 'GET')) {
+        return new Response(JSON.stringify({
+          'metadata-location': 's3://bucket/orders/metadata/v1.metadata.json',
+          metadata: makeMetadata(111),
+        }), { status: 200 })
+      }
+      if (u === url && init?.method === 'POST') {
+        commitCalls++
+        if (commitCalls === 1) {
+          return new Response(JSON.stringify({
+            error: { code: 409, type: 'CommitFailedException', message: 'lost race' },
+          }), { status: 409 })
+        }
+        return new Response(JSON.stringify({
+          'metadata-location': 's3://bucket/orders/metadata/v2.metadata.json',
+          metadata: makeMetadata(111),
+        }), { status: 200 })
+      }
+      throw new Error(`unexpected url: ${u} ${init?.method}`)
+    })
+    try {
+      const ctx = await restCatalogConnect({ url: 'https://cat' })
+      const result = await icebergSetRef({
+        catalog: ctx, namespace: 'db', table: 'orders',
+        ref: 'main', snapshotId: 111,
+      })
+      expect(commitCalls).toBe(2)
+      expect(result['current-snapshot-id']).toBe(111)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('exhausts attempts when 409s persist, honoring commit.retry.num-retries', async () => {
+    let commitCalls = 0
+    const url = 'https://cat/v1/namespaces/db/tables/orders'
+    vi.stubGlobal('fetch', async (/** @type {string} */ u, /** @type {RequestInit} */ init) => {
+      if (u === 'https://cat/v1/config') {
+        return new Response(JSON.stringify({}), { status: 200 })
+      }
+      if (u === url && (!init || init.method === undefined || init.method === 'GET')) {
+        // Table properties cap retries at 3 (num-retries=2 → maxAttempts=3)
+        // with zeroed back-off so the test runs instantly.
+        return new Response(JSON.stringify({
+          'metadata-location': 's3://bucket/orders/metadata/v1.metadata.json',
+          metadata: makeMetadata(111, {
+            'commit.retry.num-retries': '2',
+            'commit.retry.min-wait-ms': '0',
+            'commit.retry.max-wait-ms': '0',
+          }),
+        }), { status: 200 })
+      }
+      if (u === url && init?.method === 'POST') {
+        commitCalls++
+        return new Response(JSON.stringify({
+          error: { code: 409, type: 'CommitFailedException', message: 'lost race' },
+        }), { status: 409 })
+      }
+      throw new Error(`unexpected url: ${u} ${init?.method}`)
+    })
+    try {
+      const ctx = await restCatalogConnect({ url: 'https://cat' })
+      await expect(icebergSetRef({
+        catalog: ctx, namespace: 'db', table: 'orders',
+        ref: 'main', snapshotId: 111,
+      })).rejects.toThrow(/rest catalog commit failed after 3 attempts/)
+      expect(commitCalls).toBe(3)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('non-409 errors are not retried', async () => {
+    let commitCalls = 0
+    const url = 'https://cat/v1/namespaces/db/tables/orders'
+    vi.stubGlobal('fetch', async (/** @type {string} */ u, /** @type {RequestInit} */ init) => {
+      if (u === 'https://cat/v1/config') {
+        return new Response(JSON.stringify({}), { status: 200 })
+      }
+      if (u === url && (!init || init.method === undefined || init.method === 'GET')) {
+        return new Response(JSON.stringify({
+          'metadata-location': 's3://bucket/orders/metadata/v1.metadata.json',
+          metadata: makeMetadata(111),
+        }), { status: 200 })
+      }
+      if (u === url && init?.method === 'POST') {
+        commitCalls++
+        return new Response(JSON.stringify({
+          error: { code: 500, type: 'ServiceUnavailable', message: 'oops' },
+        }), { status: 500 })
+      }
+      throw new Error(`unexpected url: ${u} ${init?.method}`)
+    })
+    try {
+      const ctx = await restCatalogConnect({ url: 'https://cat' })
+      await expect(icebergSetRef({
+        catalog: ctx, namespace: 'db', table: 'orders',
+        ref: 'main', snapshotId: 111,
+      })).rejects.toThrow(/500 ServiceUnavailable/)
+      expect(commitCalls).toBe(1)
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })

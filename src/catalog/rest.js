@@ -387,7 +387,10 @@ async function throwRestError(res) {
       detail = `${code ?? res.status} ${type ?? ''}: ${message ?? ''}`.trim()
     }
   } catch { /* not JSON */ }
-  throw new Error(detail || `${res.status} ${res.statusText}`)
+  /** @type {Error & { status?: number }} */
+  const err = new Error(detail || `${res.status} ${res.statusText}`)
+  err.status = res.status
+  throw err
 }
 
 /**

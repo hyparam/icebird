@@ -215,9 +215,17 @@ describe('fileCatalogCommit conditional create', () => {
     if (!realWriter) throw new Error('writer required')
 
     // Create v1 with the plain resolver so we have a valid metadata body.
+    // Pin a low retry cap and zero back-off via table properties — the
+    // default 50 attempts × 3s would dominate the test run. We're verifying
+    // the exhaustion path, not the policy.
     await icebergCreateTable({
       catalog: fileCatalog({ resolver, conditionalCommits: true }),
       tableUrl, schema,
+      properties: {
+        'commit.retry.num-retries': '5',
+        'commit.retry.min-wait-ms': '0',
+        'commit.retry.max-wait-ms': '0',
+      },
     })
     const v1 = files.get(`${tableUrl}/metadata/v1.metadata.json`)
     if (!v1) throw new Error('v1 missing')
@@ -236,14 +244,7 @@ describe('fileCatalogCommit conditional create', () => {
         return realWriter(p, options)
       },
     }
-    // Pin a low cap and zero back-off — the default 50 attempts × 3s would
-    // dominate the test run. We're verifying the exhaustion path, not the
-    // policy.
-    const cat = fileCatalog({
-      resolver: alwaysConflicts,
-      conditionalCommits: true,
-      commitRetry: { maxAttempts: 6, backoff: { initialMs: 0, maxMs: 0 } },
-    })
+    const cat = fileCatalog({ resolver: alwaysConflicts, conditionalCommits: true })
 
     await expect(icebergAppend({
       catalog: cat, tableUrl, records: [{ id: 1n, name: 'a' }],

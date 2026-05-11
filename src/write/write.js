@@ -1,5 +1,5 @@
 import { loadTable } from '../catalog/loadTable.js'
-import { restCatalogCreateTable, restCatalogDropTable, restCatalogUpdateTable } from '../catalog/rest.js'
+import { restCatalogCreateTable, restCatalogDropTable, restCatalogLoadTable, restCatalogUpdateTable } from '../catalog/rest.js'
 import { icebergCreate } from '../create.js'
 import { loadLatestFileCatalogMetadata } from '../metadata.js'
 import { applyUpdates, fileCatalogCommit } from './commit.js'
@@ -8,7 +8,7 @@ import { icebergStagePositionDelete } from './stage-position-delete.js'
 import { icebergStageAppend, icebergStageExpireSnapshots, icebergStageSetRef, prepareAppend, stageSnapshotForAppend } from './stage.js'
 
 /**
- * @import {Catalog, CommitRetryOptions, IcebergTransaction, Lister, PartitionSpec, Resolver, Schema, Snapshot, SortOrder, StagedUpdate, TableMetadata, TableRequirement, TableUpdate} from '../../src/types.js'
+ * @import {Catalog, IcebergTransaction, Lister, PartitionSpec, Resolver, Schema, Snapshot, SortOrder, StagedUpdate, TableMetadata, TableRequirement, TableUpdate} from '../../src/types.js'
  */
 
 const DEFAULT_RETRY = Object.freeze({
@@ -16,6 +16,7 @@ const DEFAULT_RETRY = Object.freeze({
   initialMs: 50,
   maxMs: 3000,
   factor: 2,
+  totalTimeoutMs: 30 * 60 * 1000,
 })
 
 /**
@@ -415,21 +416,28 @@ async function commitStaged(catalog, target, ctx, staged) {
 }
 
 /**
- * Stage and commit, retrying on concurrent-commit conflicts when the catalog
- * opts in via `conditionalCommits`. The `stage` callback is invoked once per
- * attempt against the freshest loaded metadata, so each retry rebuilds the
- * snapshot/manifest-list against the new parent (sequence number, parent
- * snapshot id, ref pointer, etc., all advance correctly). Data and manifest
- * files written by failed attempts may become orphans; cleanup is left to a
- * separate maintenance pass.
+ * Stage and commit, retrying on concurrent-commit conflicts. The `stage`
+ * callback is invoked once per attempt against the freshest loaded
+ * metadata, so each retry rebuilds the snapshot/manifest-list against the
+ * new parent (sequence number, parent snapshot id, ref pointer, etc., all
+ * advance correctly). Data and manifest files written by failed file
+ * catalog attempts may become orphans; cleanup is left to a separate
+ * maintenance pass. REST catalog retries don't leak orphans since the
+ * commit endpoint is atomic.
+ *
+ * Conflict detection: file catalogs see 412/409 on the conditional PUT
+ * when `conditionalCommits` is true; REST catalogs see 409 from the
+ * commit endpoint when the server-side `requirements` check fails. File
+ * catalogs without `conditionalCommits` do not retry — the legacy
+ * overwrite path stays one-shot.
  *
  * Between attempts, sleeps with full-jitter exponential back-off so that
- * concurrent writers don't all stampede the same `vN+1.metadata.json` key.
- * Policy comes from `catalog.commitRetry`; defaults are tuned for parallel
- * S3 writers (50 attempts, 50ms→3s back-off).
- *
- * For non-file catalogs and file catalogs without `conditionalCommits`, the
- * callback runs exactly once and any error from `commitStaged` is re-thrown.
+ * concurrent writers don't all stampede the catalog. Policy comes from
+ * the per-table `commit.retry.*` properties on `ctx.metadata` with the
+ * library defaults tuned for parallel writers (50 attempts, 50ms→3s
+ * back-off, 30 min total) as fallback. The wall-clock cap also bounds
+ * in-flight attempts: once the budget is exhausted the loop stops even
+ * if `maxAttempts` is not yet reached.
  *
  * @param {object} options
  * @param {Catalog} options.catalog
@@ -439,58 +447,111 @@ async function commitStaged(catalog, target, ctx, staged) {
  * @returns {Promise<TableMetadata>}
  */
 async function commitWithRetry({ catalog, target, ctx, stage }) {
-  const conditional = catalog.type === 'file' && catalog.conditionalCommits === true
-  const policy = resolveRetryPolicy(catalog.type === 'file' ? catalog.commitRetry : undefined)
+  const retryEnabled = catalog.type === 'rest'
+    || catalog.type === 'file' && catalog.conditionalCommits === true
+  const policy = resolveRetryPolicy(ctx.metadata)
+  const startedAt = Date.now()
   let workingCtx = ctx
   for (let attempt = 1; attempt <= policy.maxAttempts; attempt++) {
     const staged = await stage(workingCtx)
     try {
       return await commitStaged(catalog, target, workingCtx, staged)
     } catch (err) {
-      if (!conditional || !isCommitConflict(err)) throw err
+      if (!retryEnabled || !isCommitConflict(err)) throw err
       if (attempt === policy.maxAttempts) {
         throw new Error(
-          `file catalog commit failed after ${policy.maxAttempts} attempts due to concurrent commits`
+          `${catalog.type} catalog commit failed after ${policy.maxAttempts} attempts due to concurrent commits`
         )
       }
-      await sleep(jitteredBackoff(attempt, policy))
-      const lister = catalog.type === 'file' ? catalog.lister : undefined
-      if (!workingCtx.resolver) throw err
-      const fresh = await loadLatestFileCatalogMetadata({
-        tableUrl: workingCtx.tableUrl,
-        resolver: workingCtx.resolver,
-        lister,
-      })
-      workingCtx = {
-        metadata: fresh.metadata,
-        metadataFileName: fresh.metadataFileName,
-        version: fresh.version,
-        tableUrl: workingCtx.tableUrl,
-        resolver: workingCtx.resolver,
+      const elapsed = Date.now() - startedAt
+      if (elapsed >= policy.totalTimeoutMs) {
+        throw new Error(
+          `${catalog.type} catalog commit retry budget exhausted after ${attempt} attempts and ${elapsed}ms (limit ${policy.totalTimeoutMs}ms)`
+        )
       }
+      const remaining = policy.totalTimeoutMs - elapsed
+      const sleepMs = Math.min(jitteredBackoff(attempt, policy), remaining)
+      await sleep(sleepMs)
+      workingCtx = await reloadCtx(catalog, target, workingCtx, err)
     }
   }
   throw new Error('unreachable')
 }
 
 /**
- * Merge user-supplied retry options with the defaults, validating positive
- * numerics. A missing field falls back to the default; an explicit `0` for
- * `initialMs`/`maxMs` is honored (tests use this to disable sleeping).
+ * Refresh the working context between retry attempts. File catalogs reload
+ * by probing the metadata directory; REST catalogs reload by calling the
+ * catalog's load-table endpoint.
  *
- * @param {CommitRetryOptions | undefined} opts
- * @returns {{maxAttempts: number, initialMs: number, maxMs: number, factor: number}}
+ * @param {Catalog} catalog
+ * @param {{namespace?: string | string[], table?: string}} target
+ * @param {{metadata: TableMetadata, metadataFileName: string | undefined, version?: number, tableUrl: string, resolver: Resolver | undefined}} workingCtx
+ * @param {unknown} lastErr
+ * @returns {Promise<{metadata: TableMetadata, metadataFileName: string | undefined, version?: number, tableUrl: string, resolver: Resolver | undefined}>}
  */
-function resolveRetryPolicy(opts) {
-  const maxAttempts = opts?.maxAttempts ?? DEFAULT_RETRY.maxAttempts
-  if (!(maxAttempts >= 1)) throw new Error(`commitRetry.maxAttempts must be >= 1, got ${maxAttempts}`)
-  const initialMs = opts?.backoff?.initialMs ?? DEFAULT_RETRY.initialMs
-  const maxMs = opts?.backoff?.maxMs ?? DEFAULT_RETRY.maxMs
-  const factor = opts?.backoff?.factor ?? DEFAULT_RETRY.factor
-  if (initialMs < 0 || maxMs < 0 || factor < 1) {
-    throw new Error('commitRetry.backoff: initialMs/maxMs must be >= 0, factor >= 1')
+async function reloadCtx(catalog, target, workingCtx, lastErr) {
+  if (catalog.type === 'rest') {
+    if (!target.namespace || !target.table) throw lastErr
+    const { metadata } = await restCatalogLoadTable(catalog, {
+      namespace: target.namespace, table: target.table,
+    })
+    return {
+      metadata,
+      metadataFileName: workingCtx.metadataFileName,
+      version: workingCtx.version,
+      tableUrl: workingCtx.tableUrl,
+      resolver: workingCtx.resolver,
+    }
   }
-  return { maxAttempts, initialMs, maxMs, factor }
+  if (!workingCtx.resolver) throw lastErr
+  const fresh = await loadLatestFileCatalogMetadata({
+    tableUrl: workingCtx.tableUrl,
+    resolver: workingCtx.resolver,
+    lister: catalog.lister,
+  })
+  return {
+    metadata: fresh.metadata,
+    metadataFileName: fresh.metadataFileName,
+    version: fresh.version,
+    tableUrl: workingCtx.tableUrl,
+    resolver: workingCtx.resolver,
+  }
+}
+
+/**
+ * Resolve the retry policy from per-table `commit.retry.*` properties on
+ * `metadata`, falling back to the library defaults. Missing or malformed
+ * properties fall through to the default rather than throwing, so a bad
+ * property value never breaks commits. Resolved once at the start of
+ * `commitWithRetry`; property changes a writer makes mid-loop apply to
+ * subsequent commits, not the one currently in flight.
+ *
+ * @param {TableMetadata} metadata
+ * @returns {{maxAttempts: number, initialMs: number, maxMs: number, factor: number, totalTimeoutMs: number}}
+ */
+function resolveRetryPolicy(metadata) {
+  const props = metadata.properties ?? {}
+  const numRetries = parseTableProp(props['commit.retry.num-retries'])
+  const maxAttempts = numRetries === undefined ? DEFAULT_RETRY.maxAttempts : numRetries + 1
+  const initialMs = parseTableProp(props['commit.retry.min-wait-ms']) ?? DEFAULT_RETRY.initialMs
+  const maxMs = parseTableProp(props['commit.retry.max-wait-ms']) ?? DEFAULT_RETRY.maxMs
+  const totalTimeoutMs = parseTableProp(props['commit.retry.total-timeout-ms']) ?? DEFAULT_RETRY.totalTimeoutMs
+  return { maxAttempts, initialMs, maxMs, factor: DEFAULT_RETRY.factor, totalTimeoutMs }
+}
+
+/**
+ * Parse a `commit.retry.*` table property into a non-negative finite number.
+ * Returns undefined for missing or malformed values so the caller falls
+ * through to the default.
+ *
+ * @param {unknown} value
+ * @returns {number | undefined}
+ */
+function parseTableProp(value) {
+  if (value === undefined || value === null || value === '') return undefined
+  const n = Number(value)
+  if (!Number.isFinite(n) || n < 0) return undefined
+  return n
 }
 
 /**

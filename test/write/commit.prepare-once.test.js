@@ -31,11 +31,11 @@ describe('icebergAppend prepare-once', () => {
     vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
     const tableUrl = 'http://test/prepare-once-no-blowup'
     const { resolver, files } = memResolver()
-    const catalog = fileCatalog({
-      resolver, conditionalCommits: true,
-      commitRetry: { backoff: { initialMs: 0, maxMs: 0 } },
+    const catalog = fileCatalog({ resolver, conditionalCommits: true })
+    await icebergCreateTable({
+      catalog, tableUrl, schema,
+      properties: { 'commit.retry.min-wait-ms': '0', 'commit.retry.max-wait-ms': '0' },
     })
-    await icebergCreateTable({ catalog, tableUrl, schema })
 
     const N = 10
     await Promise.all(
@@ -65,11 +65,11 @@ describe('icebergAppend prepare-once', () => {
     const realWriter = resolver.writer
     if (!realWriter) throw new Error('writer required')
 
-    const catalog = fileCatalog({
-      resolver, conditionalCommits: true,
-      commitRetry: { backoff: { initialMs: 0, maxMs: 0 } },
+    const catalog = fileCatalog({ resolver, conditionalCommits: true })
+    await icebergCreateTable({
+      catalog, tableUrl, schema,
+      properties: { 'commit.retry.min-wait-ms': '0', 'commit.retry.max-wait-ms': '0' },
     })
-    await icebergCreateTable({ catalog, tableUrl, schema })
     const v1 = files.get(`${tableUrl}/metadata/v1.metadata.json`)
     if (!v1) throw new Error('v1 missing')
 
@@ -110,11 +110,11 @@ describe('icebergAppend prepare-once', () => {
     vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
     const tableUrl = 'http://test/prepare-once-roundtrip'
     const { resolver, files } = memResolver()
-    const catalog = fileCatalog({
-      resolver, conditionalCommits: true,
-      commitRetry: { backoff: { initialMs: 0, maxMs: 0 } },
+    const catalog = fileCatalog({ resolver, conditionalCommits: true })
+    await icebergCreateTable({
+      catalog, tableUrl, schema,
+      properties: { 'commit.retry.min-wait-ms': '0', 'commit.retry.max-wait-ms': '0' },
     })
-    await icebergCreateTable({ catalog, tableUrl, schema })
 
     // Race two appends so one of them definitely retries.
     await Promise.all([

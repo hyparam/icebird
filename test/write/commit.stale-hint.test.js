@@ -50,12 +50,12 @@ describe('icebergAppend with conditionalCommits tolerates a stale-forward hint',
     vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
     const tableUrl = 'http://test/stale-fwd-hint-race'
     const { resolver, files, lister } = memResolver()
-    const catalog = fileCatalog({
-      resolver, lister, conditionalCommits: true,
-      commitRetry: { backoff: { initialMs: 0, maxMs: 0 } },
-    })
+    const catalog = fileCatalog({ resolver, lister, conditionalCommits: true })
 
-    await icebergCreateTable({ catalog, tableUrl, schema })
+    await icebergCreateTable({
+      catalog, tableUrl, schema,
+      properties: { 'commit.retry.min-wait-ms': '0', 'commit.retry.max-wait-ms': '0' },
+    })
     files.set(`${tableUrl}/metadata/version-hint.text`, new TextEncoder().encode('999'))
 
     const results = await Promise.all([

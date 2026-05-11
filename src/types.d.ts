@@ -42,27 +42,6 @@ export interface FileCatalog {
    * Default false preserves backwards-compatible (overwrite) behavior.
    */
   conditionalCommits?: boolean
-  /**
-   * Retry policy for 412/409 conflicts under `conditionalCommits`. Ignored
-   * when `conditionalCommits` is false (no retry happens at all). Defaults
-   * tuned for parallel writers against S3: full-jitter exponential back-off
-   * from 50ms to 3s, up to 50 total attempts.
-   */
-  commitRetry?: CommitRetryOptions
-}
-
-export interface CommitRetryOptions {
-  /** Total attempts including the first. Default 50. */
-  maxAttempts?: number
-  /** Jittered exponential back-off between attempts. */
-  backoff?: {
-    /** First sleep, ms. Default 50. */
-    initialMs?: number
-    /** Cap, ms. Default 3000. */
-    maxMs?: number
-    /** Multiplier per attempt. Default 2. */
-    factor?: number
-  }
 }
 
 export type Catalog = RestCatalogContext | FileCatalog
