@@ -81,6 +81,7 @@ describe('icebergStageDeletionVector', () => {
     expect(staged.snapshot.summary?.['added-position-deletes']).toBe('1')
     expect(staged.snapshot.summary?.['total-delete-files']).toBe('1')
     expect(staged.snapshot.summary?.['total-position-deletes']).toBe('1')
+    expect(staged.snapshot.summary?.['total-records']).toBe('3') // deletes don't count
     expect(staged.writtenFiles).toHaveLength(3) // 1 puffin + 1 manifest + 1 manifest list
     const puffinPath = staged.writtenFiles[0]
     expect(puffinPath.endsWith('.puffin')).toBe(true)

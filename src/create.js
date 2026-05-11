@@ -15,7 +15,7 @@ import { uuid4 } from './utils.js'
  * @param {PartitionSpec} [options.partitionSpec] - Partition spec (default unpartitioned).
  * @param {SortOrder} [options.sortOrder] - Sort order (default unsorted).
  * @param {Record<string, string>} [options.properties] - Table properties.
- * @param {boolean} [options.conditionalCommits] - Create `v1.metadata.json` with `If-None-Match: *`. On collision (412/409) the resolver error surfaces — callers should treat that as "table already exists". `version-hint.text` is best-effort.
+ * @param {boolean} [options.conditionalCommits] - Create `v1.metadata.json` with `If-None-Match: *`. On collision (412/409) the resolver error surfaces, callers should treat that as "table already exists". `version-hint.text` is best-effort.
  * @returns {Promise<TableMetadata>} The Iceberg table metadata as a JSON object.
  */
 export async function icebergCreate({
@@ -71,7 +71,7 @@ export async function icebergCreate({
   if (!resolver.writer) throw new Error('resolver.writer is required')
 
   // Write initial metadata. With conditionalCommits, fail fast if v1
-  // already exists — that means another writer already created this table.
+  // already exists, that means another writer already created this table.
   const metadataWriter = conditionalCommits
     ? resolver.writer(metadataUrl, { ifNoneMatch: '*' })
     : resolver.writer(metadataUrl)
@@ -80,7 +80,7 @@ export async function icebergCreate({
   await metadataWriter.finish()
 
   // version-hint last so a partial write doesn't surface a torn create.
-  // With conditionalCommits the hint is best-effort — the durable
+  // With conditionalCommits the hint is best-effort, the durable
   // v1.metadata.json above is the actual commit point.
   const versionHintUrl = translateS3Url(`${tableUrl}/metadata/version-hint.text`)
   try {

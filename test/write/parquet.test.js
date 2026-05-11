@@ -141,6 +141,29 @@ describe('writeParquet', () => {
     expect(rows).toEqual(records)
   })
 
+  // A key whose value is `undefined` inside a variant object
+  // should be omitted on round-trip not returned with null value
+  it('omits undefined-valued keys from variant on round-trip', async () => {
+    const writer = new ByteWriter()
+    /** @type {Schema} */
+    const variantSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        { id: 2, name: 'attributes', required: false, type: 'variant', 'initial-default': null, 'write-default': null },
+      ],
+    }
+    const records = [
+      { id: 1n, attributes: { only_null: null, missing_key: undefined } },
+    ]
+    writeParquet({ writer, schema: variantSchema, records })
+    const file = writer.getBuffer()
+    const rows = await parquetReadObjects({ file, compressors })
+    expect(rows[0].attributes).toEqual({ only_null: null })
+    expect(Object.prototype.hasOwnProperty.call(rows[0].attributes, 'missing_key')).toBe(false)
+  })
+
   it('writes date and time logical types per spec', async () => {
     const writer = new ByteWriter()
     /** @type {Schema} */

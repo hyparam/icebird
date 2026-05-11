@@ -198,6 +198,22 @@ describe('createIceberg', () => {
       .rejects.toThrow(`type ${type} requires format-version 3`)
   })
 
+  // Spec: "Iceberg tables must not use field ids greater than 2147483447 (Integer.MAX_VALUE - 200)
+  it('rejects user-defined field ids in the reserved range (> 2147483447)', async () => {
+    const resolver = { reader: vi.fn(), writer: vi.fn() }
+    /** @type {Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'name', required: true, type: 'string' },
+        { id: 2147483540, name: 'user_row_id', required: false, type: 'long' },
+      ],
+    }
+    await expect(icebergCreate({ tableUrl, resolver, schema, formatVersion: 3 }))
+      .rejects.toThrow('field id 2147483540 is in the reserved range (> 2147483447) (field: user_row_id)')
+  })
+
   it('rejects v3-only type nested inside a v2 schema', async () => {
     const resolver = { reader: vi.fn(), writer: vi.fn() }
     /** @type {Schema} */

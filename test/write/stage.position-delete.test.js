@@ -51,7 +51,7 @@ describe('icebergStagePositionDelete', () => {
     expect(staged.snapshot.summary?.['total-data-files']).toBe('1')
     expect(staged.snapshot.summary?.['total-delete-files']).toBe('1')
     expect(staged.snapshot.summary?.['total-position-deletes']).toBe('1')
-    expect(staged.snapshot.summary?.['total-records']).toBe('3')
+    expect(staged.snapshot.summary?.['total-records']).toBe('3') // deletes don't count
     expect(staged.writtenFiles).toHaveLength(3)
 
     const afterDelete = await fileCatalogCommit({ tableUrl, metadata: afterAppend, staged, resolver })

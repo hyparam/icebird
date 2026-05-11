@@ -19,12 +19,28 @@ export function validateSchemaForVersion(schema, formatVersion) {
 }
 
 /**
+ * Spec v3 §"Reserved Field IDs": user schemas must not use field ids
+ * greater than 2147483447 (`Integer.MAX_VALUE - 200`). The reserved range
+ * holds engine-managed metadata columns (`_file`, `_pos`, `_deleted`,
+ * `_spec_id`, `_partition`, the position-delete `file_path`/`pos`/`row`
+ * fields, the changelog columns, and the v3 row-lineage `_row_id` and
+ * `_last_updated_sequence_number`). A user field at a reserved id silently
+ * shadows the corresponding engine column on read.
+ */
+const MAX_USER_FIELD_ID = 2147483447
+
+/**
  * @import {Field} from '../src/types.js'
  * @param {Field} field
  * @param {number} formatVersion
  * @param {string} path
  */
 function validateFieldForVersion(field, formatVersion, path) {
+  if (typeof field.id === 'number' && field.id > MAX_USER_FIELD_ID) {
+    throw new Error(
+      `field id ${field.id} is in the reserved range (> ${MAX_USER_FIELD_ID}) (field: ${path})`
+    )
+  }
   if (formatVersion < 3) {
     checkTypeForV2(field.type, path)
     if (field['initial-default'] !== undefined) {
@@ -91,10 +107,25 @@ function checkNestedFieldsForVersion(type, formatVersion, path) {
   if (type.type === 'struct') {
     for (const f of type.fields) validateFieldForVersion(f, formatVersion, `${path}.${f.name}`)
   } else if (type.type === 'list') {
+    checkReservedFieldId(type['element-id'], `${path}.element`)
     checkNestedFieldsForVersion(type.element, formatVersion, `${path}.element`)
   } else if (type.type === 'map') {
+    checkReservedFieldId(type['key-id'], `${path}.key`)
+    checkReservedFieldId(type['value-id'], `${path}.value`)
     checkNestedFieldsForVersion(type.key, formatVersion, `${path}.key`)
     checkNestedFieldsForVersion(type.value, formatVersion, `${path}.value`)
+  }
+}
+
+/**
+ * @param {number | undefined} id
+ * @param {string} path
+ */
+function checkReservedFieldId(id, path) {
+  if (typeof id === 'number' && id > MAX_USER_FIELD_ID) {
+    throw new Error(
+      `field id ${id} is in the reserved range (> ${MAX_USER_FIELD_ID}) (field: ${path})`
+    )
   }
 }
 
