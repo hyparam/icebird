@@ -21,7 +21,7 @@ describe('REST Catalog client — tables', () => {
 
   it('restCatalogListTables paginates and applies prefix', async () => {
     mock = makeFetch({
-      'https://cat/v1/config': { prefix: 'ws/main' },
+      'https://cat/v1/config': { overrides: { prefix: 'ws/main' } },
       'https://cat/v1/ws/main/namespaces/db/tables': {
         identifiers: [{ namespace: ['db'], name: 't1' }],
         'next-page-token': 'p2',
@@ -81,7 +81,7 @@ describe('REST Catalog client — tables', () => {
 
   it('restCatalogDropTable issues DELETE and applies prefix', async () => {
     mock = makeFetch({
-      'https://cat/v1/config': { prefix: 'ws/main' },
+      'https://cat/v1/config': { overrides: { prefix: 'ws/main' } },
       'https://cat/v1/ws/main/namespaces/db/tables/orders': () => new Response(null, { status: 204 }),
     })
     vi.stubGlobal('fetch', mock.fn)
@@ -142,7 +142,7 @@ describe('REST Catalog client — tables', () => {
     }
     const metadata = { 'format-version': 2, 'table-uuid': 'abc', location: 's3://bucket/orders', schemas: [schema] }
     mock = makeFetch({
-      'https://cat/v1/config': { prefix: 'ws/main' },
+      'https://cat/v1/config': { overrides: { prefix: 'ws/main' } },
       'https://cat/v1/ws/main/namespaces/db/tables': {
         'metadata-location': 's3://bucket/orders/metadata/v1.metadata.json',
         metadata,
@@ -230,7 +230,7 @@ describe('REST Catalog client — tables', () => {
   it('restCatalogRegisterTable POSTs name and metadata-location', async () => {
     const metadata = { 'format-version': 2, 'table-uuid': 'abc', location: 's3://bucket/orders', schemas: [] }
     mock = makeFetch({
-      'https://cat/v1/config': { prefix: 'ws/main' },
+      'https://cat/v1/config': { overrides: { prefix: 'ws/main' } },
       'https://cat/v1/ws/main/namespaces/db/register': {
         'metadata-location': 's3://bucket/orders/metadata/v1.metadata.json',
         metadata,
@@ -306,7 +306,7 @@ describe('REST Catalog client — tables', () => {
 
   it('restCatalogRenameTable POSTs source and destination', async () => {
     mock = makeFetch({
-      'https://cat/v1/config': { prefix: 'ws/main' },
+      'https://cat/v1/config': { overrides: { prefix: 'ws/main' } },
       'https://cat/v1/ws/main/tables/rename': () => new Response(null, { status: 204 }),
     })
     vi.stubGlobal('fetch', mock.fn)
@@ -344,7 +344,7 @@ describe('REST Catalog client — tables', () => {
   it('restCatalogUpdateTable POSTs requirements and updates, applies prefix', async () => {
     const metadata = { 'format-version': 2, 'table-uuid': 'abc', location: 's3://bucket/orders', schemas: [] }
     mock = makeFetch({
-      'https://cat/v1/config': { prefix: 'ws/main' },
+      'https://cat/v1/config': { overrides: { prefix: 'ws/main' } },
       'https://cat/v1/ws/main/namespaces/db/tables/orders': {
         'metadata-location': 's3://bucket/orders/metadata/v4.metadata.json',
         metadata,
@@ -420,7 +420,7 @@ describe('REST Catalog client — tables', () => {
 
   it('restCatalogLoadCredentials returns storage-credentials array', async () => {
     mock = makeFetch({
-      'https://cat/v1/config': { prefix: 'ws/main' },
+      'https://cat/v1/config': { overrides: { prefix: 'ws/main' } },
       'https://cat/v1/ws/main/namespaces/db/tables/orders/credentials': {
         'storage-credentials': [
           { prefix: 's3://bucket/orders/', config: { 's3.access-key-id': 'AK', 's3.secret-access-key': 'SK' } },

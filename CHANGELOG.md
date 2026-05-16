@@ -1,5 +1,8 @@
 # Icebird Changelog
 
+## Unreleased
+ - REST catalog: read routing prefix from `overrides.prefix` per the Iceberg REST spec; fixes Cloudflare R2 Data Catalog
+
 ## [0.7.0]
  - Breaking: Avro functions moved to `icebird/avro` subpackage and removed from the top-level export
  - Configure commit retries via `commit.retry.*` table properties instead of write-call overrides

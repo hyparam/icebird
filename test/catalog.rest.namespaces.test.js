@@ -16,7 +16,7 @@ describe('REST Catalog client — namespaces', () => {
 
   it('restCatalogListNamespaces single page', async () => {
     mock = makeFetch({
-      'https://cat/v1/config': { prefix: '' },
+      'https://cat/v1/config': {},
       'https://cat/v1/namespaces': { namespaces: [['db'], ['analytics']] },
     })
     vi.stubGlobal('fetch', mock.fn)
@@ -54,7 +54,7 @@ describe('REST Catalog client — namespaces', () => {
 
   it('restCatalogCreateNamespace POSTs body with namespace and properties', async () => {
     mock = makeFetch({
-      'https://cat/v1/config': { prefix: 'ws/main' },
+      'https://cat/v1/config': { overrides: { prefix: 'ws/main' } },
       'https://cat/v1/ws/main/namespaces': { namespace: ['db', 'sub'], properties: { owner: 'alice' } },
     })
     vi.stubGlobal('fetch', mock.fn)

@@ -28,12 +28,18 @@ export async function restCatalogConnect({ url, warehouse, requestInit }) {
   const res = await fetch(configUrl, requestInit)
   if (!res.ok) await throwRestError(res)
   const body = await res.json()
+  const defaults = body.defaults ?? {}
+  const overrides = body.overrides ?? {}
+  // Per the Iceberg REST spec the routing prefix is conveyed in the merged
+  // config — overrides wins over defaults. Cloudflare R2 Data Catalog returns
+  // it via `overrides.prefix`.
+  const prefix = overrides.prefix ?? defaults.prefix ?? ''
   return Object.freeze({
     type: 'rest',
     url: base,
-    prefix: typeof body.prefix === 'string' ? body.prefix : '',
-    defaults: body.defaults ?? {},
-    overrides: body.overrides ?? {},
+    prefix: typeof prefix === 'string' ? prefix : '',
+    defaults,
+    overrides,
     requestInit,
   })
 }
