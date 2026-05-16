@@ -59,6 +59,29 @@ describe.concurrent('icebergRead from spark iceberg table', () => {
     })
   })
 
+  it('time-travels to a prior snapshot via snapshotId', async () => {
+    // The first snapshot of spark/bunnies has 21 rows; the current snapshot
+    // (post-delete + add-column) has 20. The id is stored as a JS number in
+    // the parsed metadata.json (lossy past 2^53, but stable for `===` lookup).
+    const firstSnapshotId = 7505300640432049000
+    const data = await icebergRead({
+      tableUrl,
+      metadataFileName: 'v5.metadata.json',
+      resolver,
+      snapshotId: firstSnapshotId,
+    })
+    expect(data.length).toBe(21)
+  })
+
+  it('throws when snapshotId is not in metadata', async () => {
+    await expect(() => icebergRead({
+      tableUrl,
+      metadataFileName: 'v5.metadata.json',
+      resolver,
+      snapshotId: 1234,
+    })).rejects.toThrow('Snapshot 1234 not found in metadata')
+  })
+
   it('reads data v5 with added column', async () => {
     const data = await icebergRead({ tableUrl, metadataFileName: 'v5.metadata.json', resolver })
 

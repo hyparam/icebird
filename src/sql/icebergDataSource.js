@@ -47,7 +47,7 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
   const columns = schema.fields.map(f => f.name)
   const rowLineage = tableMetadata['format-version'] >= 3
 
-  const manifestList = await icebergManifests(tableMetadata, fetchResolver)
+  const manifestList = await icebergManifests({ metadata: tableMetadata, resolver: fetchResolver })
   const { dataEntries, deleteEntries } = splitManifestEntries(manifestList)
   const hasDeletes = deleteEntries.length > 0
 

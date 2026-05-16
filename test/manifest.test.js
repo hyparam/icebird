@@ -10,7 +10,7 @@ describe('Iceberg Manifests', () => {
   it('fetches iceberg manifests', async () => {
     const metadataFileName = 'v5.metadata.json'
     const metadata = await icebergMetadata({ tableUrl, metadataFileName, resolver })
-    const manifests = await icebergManifests(metadata, resolver)
+    const manifests = await icebergManifests({ metadata, resolver })
 
     expect(manifests.length).toBe(3)
     const { url, entries } = manifests[2]

@@ -1,23 +1,27 @@
 import { fetchAvroRecords, urlResolver } from './fetch.js'
 
 /**
- * Returns manifest entries for the current snapshot.
+ * Returns manifest entries for a snapshot. Defaults to the current snapshot;
+ * pass `snapshotId` to time-travel to a prior snapshot in the metadata's
+ * snapshot log.
  *
  * @import {Resolver, TableMetadata, Manifest, ManifestEntry} from '../src/types.js'
  * @typedef {{ url: string, entries: ManifestEntry[] }[]} ManifestList
- * @param {TableMetadata} metadata
- * @param {Resolver} [resolver]
+ * @param {object} options
+ * @param {TableMetadata} options.metadata
+ * @param {Resolver} [options.resolver]
+ * @param {number} [options.snapshotId] - Optional snapshot id; defaults to `current-snapshot-id`.
  * @returns {Promise<ManifestList>}
  */
-export async function icebergManifests(metadata, resolver) {
+export async function icebergManifests({ metadata, resolver, snapshotId }) {
   resolver ??= urlResolver()
-  const currentSnapshotId = metadata['current-snapshot-id']
-  if (!currentSnapshotId || currentSnapshotId < 0) {
+  const targetId = snapshotId ?? metadata['current-snapshot-id']
+  if (targetId == null || targetId < 0) {
     throw new Error('No current snapshot id found in table metadata')
   }
-  const snapshot = metadata.snapshots?.find(s => s['snapshot-id'] === currentSnapshotId)
+  const snapshot = metadata.snapshots?.find(s => s['snapshot-id'] === targetId)
   if (!snapshot) {
-    throw new Error(`Snapshot ${currentSnapshotId} not found in metadata`)
+    throw new Error(`Snapshot ${targetId} not found in metadata`)
   }
 
   // Get manifest URLs from snapshot
