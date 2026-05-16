@@ -43,6 +43,15 @@ describe('writeParquet', () => {
     ])
   })
 
+  it('stamps iceberg field_id on top-level parquet columns', () => {
+    const writer = new ByteWriter()
+    writeParquet({ writer, schema, records })
+    const meta = parquetMetadata(writer.getBuffer())
+    expect(meta.schema.find(s => s.name === 'id')?.field_id).toBe(1)
+    expect(meta.schema.find(s => s.name === 'Name')?.field_id).toBe(2)
+    expect(meta.schema.find(s => s.name === 'score')?.field_id).toBe(3)
+  })
+
   it('writes a fixed-len-byte-array DECIMAL with computed type_length', async () => {
     const writer = new ByteWriter()
     /** @type {Schema} */

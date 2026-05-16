@@ -31,6 +31,7 @@ function manifestFileSchema(formatVersion) {
       name: 'partitions',
       type: ['null', {
         type: 'array',
+        'element-id': 508,
         items: {
           type: 'record',
           name: 'r508',

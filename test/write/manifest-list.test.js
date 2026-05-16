@@ -180,6 +180,39 @@ describe('writeManifestList', () => {
     expect(records[0].partitions).toBeUndefined()
   })
 
+  it('carries element-id on the partitions array', async () => {
+    /** @type {Manifest} */
+    const manifest = {
+      manifest_path: 's3://bucket/table/metadata/m0.avro',
+      manifest_length: 1234n,
+      partition_spec_id: 0,
+      content: 0,
+      added_snapshot_id: 999n,
+      added_files_count: 1,
+      existing_files_count: 0,
+      deleted_files_count: 0,
+      added_rows_count: 3n,
+      existing_rows_count: 0n,
+      deleted_rows_count: 0n,
+    }
+    const writer = new ByteWriter()
+    writeManifestList({
+      writer,
+      snapshotId: 999n,
+      sequenceNumber: 1n,
+      manifests: [manifest],
+    })
+    const buffer = writer.getBuffer()
+
+    const reader = { view: new DataView(buffer), offset: 0 }
+    const { metadata } = await avroMetadata(reader)
+    const partitions = metadata['avro.schema'].fields.find(
+      (/** @type {{name: string}} */ f) => f.name === 'partitions'
+    )
+    const arrayType = partitions.type.find((/** @type {any} */ t) => typeof t === 'object')
+    expect(arrayType['element-id']).toBe(508)
+  })
+
   it('writes null first_row_id for v3 delete manifests', async () => {
     /** @type {Manifest} */
     const manifest = {

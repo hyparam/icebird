@@ -36,6 +36,11 @@ export function writeParquet({ writer, schema, records, codec }) {
       name,
       data: extractColumn(records, field),
     })
+    // Iceberg requires parquet columns to carry the iceberg `field-id` so
+    // readers (Spark, pyiceberg) can map by id instead of by name. The
+    // top-level element of each iceberg field gets the id; nested logical
+    // types (variant's metadata/value) inherit it via their parent.
+    fieldElements[0].field_id = field.id
     parquetFields.push(...fieldElements)
     rootChildren++
   }

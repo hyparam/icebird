@@ -5,6 +5,8 @@
  - `icebergRead` accepts `snapshotId` for time travel; defaults to the current snapshot
  - Snapshot ids exceeding `Number.MAX_SAFE_INTEGER` (2^53-1) are now preserved as `BigInt` instead of being truncated. Affected fields are typed `number | bigint` and comparisons coerce to `BigInt`
  - Pass raw `s3://` paths to custom resolvers on the write path instead of pre-translating to AWS hostnames; lets custom resolvers (R2, MinIO, etc.) handle their own URL translation. The default `urlResolver` still maps `s3://` to AWS S3 internally
+ - Manifest list `partitions` array now carries the required `element-id`
+ - Parquet column metadata now carries the iceberg `field_id`
  - Export `collect` so `icebergQuery` results can be materialized
  - Breaking: `icebergManifests` now takes a single options object `{ metadata, resolver, snapshotId }`
 
