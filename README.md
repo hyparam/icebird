@@ -106,8 +106,7 @@ const data = await icebergRead({ tableUrl: metadata.location, metadata })
 Icebird ships a SQL engine on top of [squirreling](https://github.com/hyparam/squirreling). `icebergQuery` runs a SQL query across one or more iceberg tables. Rows are streamed lazily. Multi-segment namespaces in the SQL `FROM` clause must be dot-separated and quoted: `FROM "analytics.orders"` resolves to namespace `analytics`, table `orders`.
 
 ```javascript
-import { icebergQuery, restCatalogConnect } from 'icebird'
-import { collect } from 'squirreling'
+import { collect, icebergQuery, restCatalogConnect } from 'icebird'
 
 const catalog = await restCatalogConnect({ url: 'https://catalog.example.com' })
 const result = await icebergQuery({
