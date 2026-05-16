@@ -10,18 +10,23 @@ import { fetchAvroRecords, urlResolver } from './fetch.js'
  * @param {object} options
  * @param {TableMetadata} options.metadata
  * @param {Resolver} [options.resolver]
- * @param {number} [options.snapshotId] - Optional snapshot id; defaults to `current-snapshot-id`.
+ * @param {number | bigint} [options.snapshotId] - Optional snapshot id; defaults to `current-snapshot-id`.
  * @returns {Promise<ManifestList>}
  */
 export async function icebergManifests({ metadata, resolver, snapshotId }) {
   resolver ??= urlResolver()
-  const targetId = snapshotId ?? metadata['current-snapshot-id']
-  if (targetId == null || targetId < 0) {
+  const rawTarget = snapshotId ?? metadata['current-snapshot-id']
+  if (rawTarget == null || rawTarget < 0) {
     throw new Error('No current snapshot id found in table metadata')
   }
-  const snapshot = metadata.snapshots?.find(s => s['snapshot-id'] === targetId)
+  // Snapshot ids can be either number (small) or BigInt (>2^53 from the
+  // lossless metadata parser, or supplied by the caller). Normalize to
+  // BigInt for the lookup so user-passed numbers match bigint metadata ids
+  // and vice versa.
+  const targetId = BigInt(rawTarget)
+  const snapshot = metadata.snapshots?.find(s => BigInt(s['snapshot-id']) === targetId)
   if (!snapshot) {
-    throw new Error(`Snapshot ${targetId} not found in metadata`)
+    throw new Error(`Snapshot ${rawTarget} not found in metadata`)
   }
 
   // Get manifest URLs from snapshot

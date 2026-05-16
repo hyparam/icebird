@@ -1,3 +1,5 @@
+import { parseIcebergJson } from '../json.js'
+
 /**
  * Iceberg REST Catalog client.
  *
@@ -27,7 +29,7 @@ export async function restCatalogConnect({ url, warehouse, requestInit }) {
     : `${base}/v1/config`
   const res = await fetch(configUrl, requestInit)
   if (!res.ok) await throwRestError(res)
-  const body = await res.json()
+  const body = parseIcebergJson(await res.text())
   const defaults = body.defaults ?? {}
   const overrides = body.overrides ?? {}
   // Per the Iceberg REST spec the routing prefix is conveyed in the merged
@@ -59,7 +61,7 @@ export function restCatalogListNamespaces(ctx, { parent } = {}) {
   if (parent !== undefined) params.parent = encodeNamespace(parent)
   return paginate(params, async query => {
     const res = await restFetch(ctx, `namespaces${query}`)
-    const body = await res.json()
+    const body = parseIcebergJson(await res.text())
     return { items: body.namespaces ?? [], nextPageToken: body['next-page-token'] }
   })
 }
@@ -77,7 +79,7 @@ export function restCatalogListTables(ctx, { namespace }) {
   const ns = encodeNamespace(namespace)
   return paginate({}, async query => {
     const res = await restFetch(ctx, `namespaces/${ns}/tables${query}`)
-    const body = await res.json()
+    const body = parseIcebergJson(await res.text())
     return { items: body.identifiers ?? [], nextPageToken: body['next-page-token'] }
   })
 }
@@ -99,7 +101,7 @@ export async function restCatalogLoadTable(ctx, { namespace, table }) {
   const ns = encodeNamespace(namespace)
   const tbl = encodeURIComponent(table)
   const res = await restFetch(ctx, `namespaces/${ns}/tables/${tbl}`)
-  const body = await res.json()
+  const body = parseIcebergJson(await res.text())
   return {
     metadataLocation: body['metadata-location'],
     metadata: /** @type {TableMetadata} */ (body.metadata),
@@ -122,7 +124,7 @@ export async function restCatalogLoadCredentials(ctx, { namespace, table }) {
   const ns = encodeNamespace(namespace)
   const tbl = encodeURIComponent(table)
   const res = await restFetch(ctx, `namespaces/${ns}/tables/${tbl}/credentials`)
-  const body = await res.json()
+  const body = parseIcebergJson(await res.text())
   return body['storage-credentials'] ?? []
 }
 
@@ -167,7 +169,7 @@ export async function restCatalogCreateTable(ctx, {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   })
-  const responseBody = await res.json()
+  const responseBody = parseIcebergJson(await res.text())
   return {
     metadataLocation: responseBody['metadata-location'],
     metadata: /** @type {TableMetadata} */ (responseBody.metadata),
@@ -199,7 +201,7 @@ export async function restCatalogRegisterTable(ctx, { namespace, table, metadata
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   })
-  const responseBody = await res.json()
+  const responseBody = parseIcebergJson(await res.text())
   return {
     metadataLocation: responseBody['metadata-location'],
     metadata: /** @type {TableMetadata} */ (responseBody.metadata),
@@ -230,7 +232,7 @@ export async function restCatalogUpdateTable(ctx, { namespace, table, requiremen
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ requirements, updates }),
   })
-  const responseBody = await res.json()
+  const responseBody = parseIcebergJson(await res.text())
   return {
     metadataLocation: responseBody['metadata-location'],
     metadata: /** @type {TableMetadata} */ (responseBody.metadata),
@@ -274,7 +276,7 @@ export async function restCatalogCreateNamespace(ctx, { namespace, properties })
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ namespace: ns, properties: properties ?? {} }),
   })
-  const body = await res.json()
+  const body = parseIcebergJson(await res.text())
   return {
     namespace: body.namespace ?? ns,
     properties: body.properties ?? {},
@@ -387,7 +389,7 @@ function headersToObject(h) {
 async function throwRestError(res) {
   let detail = ''
   try {
-    const body = await res.json()
+    const body = parseIcebergJson(await res.text())
     if (body?.error) {
       const { code, type, message } = body.error
       detail = `${code ?? res.status} ${type ?? ''}: ${message ?? ''}`.trim()

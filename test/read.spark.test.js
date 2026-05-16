@@ -61,14 +61,12 @@ describe.concurrent('icebergRead from spark iceberg table', () => {
 
   it('time-travels to a prior snapshot via snapshotId', async () => {
     // The first snapshot of spark/bunnies has 21 rows; the current snapshot
-    // (post-delete + add-column) has 20. The id is stored as a JS number in
-    // the parsed metadata.json (lossy past 2^53, but stable for `===` lookup).
-    const firstSnapshotId = 7505300640432049000
+    // (post-delete + add-column) has 20. Pass the exact 64-bit id.
     const data = await icebergRead({
       tableUrl,
       metadataFileName: 'v5.metadata.json',
       resolver,
-      snapshotId: firstSnapshotId,
+      snapshotId: 7505300640432048841n,
     })
     expect(data.length).toBe(21)
   })

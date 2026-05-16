@@ -244,7 +244,7 @@ export async function icebergStageAppend({ tableUrl, metadata, records, resolver
  * @param {object} options
  * @param {TableMetadata} options.metadata - Current table metadata.
  * @param {string} options.ref - Ref name (e.g. 'main', a tag name, a branch name).
- * @param {number} options.snapshotId - Target snapshot id; must already exist in `metadata.snapshots`.
+ * @param {number | bigint} options.snapshotId - Target snapshot id; must already exist in `metadata.snapshots`.
  * @param {'branch'|'tag'} [options.type] - Defaults to 'branch'.
  * @param {number} [options.minSnapshotsToKeep] - Branch retention; rejected for tags.
  * @param {number} [options.maxSnapshotAgeMs] - Branch retention; rejected for tags.
@@ -257,7 +257,8 @@ export function icebergStageSetRef({ metadata, ref, snapshotId, type = 'branch',
   if (type === 'tag' && (minSnapshotsToKeep !== undefined || maxSnapshotAgeMs !== undefined)) {
     throw new Error('tags do not support min-snapshots-to-keep or max-snapshot-age-ms')
   }
-  const snapshot = metadata.snapshots?.find(s => s['snapshot-id'] === snapshotId)
+  const targetId = BigInt(snapshotId)
+  const snapshot = metadata.snapshots?.find(s => BigInt(s['snapshot-id']) === targetId)
   if (!snapshot) throw new Error(`snapshot ${snapshotId} not found in metadata.snapshots`)
 
   // Existing ref value for the CAS check. Legacy tables may have set
@@ -308,30 +309,31 @@ export function icebergStageSetRef({ metadata, ref, snapshotId, type = 'branch',
  *
  * @param {object} options
  * @param {TableMetadata} options.metadata - Current table metadata.
- * @param {number[]} options.snapshotIds - Snapshot ids to expire.
+ * @param {(number | bigint)[]} options.snapshotIds - Snapshot ids to expire.
  * @returns {StagedUpdate}
  */
 export function icebergStageExpireSnapshots({ metadata, snapshotIds }) {
   if (!Array.isArray(snapshotIds) || snapshotIds.length === 0) {
     throw new Error('snapshotIds must be a non-empty array')
   }
-  const removeIds = new Set(snapshotIds)
+  // Normalize all ids to BigInt for set lookup so number/bigint mixes match.
+  const removeIds = new Set(snapshotIds.map(BigInt))
   const snapshots = metadata.snapshots ?? []
   for (const id of removeIds) {
-    if (!snapshots.some(s => s['snapshot-id'] === id)) {
+    if (!snapshots.some(s => BigInt(s['snapshot-id']) === id)) {
       throw new Error(`snapshot ${id} not found in metadata.snapshots`)
     }
   }
 
   const refs = metadata.refs ?? {}
   for (const [name, ref] of Object.entries(refs)) {
-    if (removeIds.has(ref['snapshot-id'])) {
+    if (removeIds.has(BigInt(ref['snapshot-id']))) {
       throw new Error(`snapshot ${ref['snapshot-id']} is referenced by ${ref.type} ${name}`)
     }
   }
   // Legacy tables may carry current-snapshot-id without a populated refs.main.
   const currentId = metadata['current-snapshot-id']
-  if (currentId !== undefined && currentId !== null && removeIds.has(currentId) && !refs.main) {
+  if (currentId !== undefined && currentId !== null && removeIds.has(BigInt(currentId)) && !refs.main) {
     throw new Error(`snapshot ${currentId} is the current snapshot`)
   }
 
@@ -342,7 +344,7 @@ export function icebergStageExpireSnapshots({ metadata, snapshotIds }) {
   ]
 
   /** @type {TableUpdate} */
-  const update = { action: 'remove-snapshots', 'snapshot-ids': [...removeIds] }
+  const update = { action: 'remove-snapshots', 'snapshot-ids': snapshotIds }
 
   // The snapshot field on StagedUpdate is non-optional; surface the current
   // snapshot so callers reading `staged.snapshot` after an expire still see

@@ -32,6 +32,18 @@ describe.concurrent('Iceberg Metadata', () => {
     })
   })
 
+  it('preserves snapshot-id bigints past Number.MAX_SAFE_INTEGER', async () => {
+    // The bunnies/v5 metadata has 64-bit snapshot ids that exceed 2^53-1
+    // (e.g. 7505300640432048841). Plain JSON.parse truncates these to doubles
+    // and loses the bottom digits; the lossless parser keeps them as BigInt.
+    const metadata = await icebergMetadata({ tableUrl, metadataFileName: 'v5.metadata.json', resolver, lister })
+    const ids = metadata.snapshots?.map(s => String(s['snapshot-id'])) ?? []
+    expect(ids).toContain('7505300640432048841')
+    expect(ids).toContain('469881615898633426')
+    expect(ids).toContain('2701171901096418979')
+    expect(String(metadata['current-snapshot-id'])).toBe('2701171901096418979')
+  })
+
   it('fetches previous iceberg metadata', async () => {
     const metadataFileName = 'v3.metadata.json'
     const metadata = await icebergMetadata({ tableUrl, metadataFileName, resolver, lister })

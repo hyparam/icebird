@@ -141,14 +141,17 @@ export function checkRequirements(metadata, requirements) {
       }
     } else if (req.type === 'assert-ref-snapshot-id') {
       const refs = metadata.refs ?? {}
-      /** @type {number | null} */
+      /** @type {number | bigint | null} */
       let current = refs[req.ref]?.['snapshot-id'] ?? null
       // legacy tables may have current-snapshot-id without a populated refs.main
       if (current === null && req.ref === 'main') {
         current = metadata['current-snapshot-id'] ?? null
       }
-      if (current !== req['snapshot-id']) {
-        throw new Error(`requirement failed: ref ${req.ref} expected snapshot ${req['snapshot-id']}, got ${current}`)
+      const expected = req['snapshot-id']
+      const matches = current === expected
+        || current != null && expected != null && BigInt(current) === BigInt(expected)
+      if (!matches) {
+        throw new Error(`requirement failed: ref ${req.ref} expected snapshot ${expected}, got ${current}`)
       }
     } else if (req.type === 'assert-next-row-id') {
       const current = Number(metadata['next-row-id'] ?? 0)

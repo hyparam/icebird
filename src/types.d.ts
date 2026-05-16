@@ -75,7 +75,7 @@ export interface TableMetadata {
   'partition-specs': PartitionSpec[] // optional in V1, required in V2+
   'last-partition-id': number // optional in V1, required in V2+
   properties?: Record<string, string>
-  'current-snapshot-id'?: number
+  'current-snapshot-id'?: number | bigint
   snapshots?: Snapshot[]
   'snapshot-log'?: SnapshotLog[]
   'metadata-log'?: MetadataLog[]
@@ -194,8 +194,8 @@ export interface NameMapping {
 }
 
 export interface Snapshot {
-  'snapshot-id': number
-  'parent-snapshot-id'?: number
+  'snapshot-id': number | bigint
+  'parent-snapshot-id'?: number | bigint
   'sequence-number': number
   'timestamp-ms': number
   'manifest-list': string
@@ -230,7 +230,7 @@ export interface Snapshot {
 }
 
 interface TableStatistics {
-  'snapshot-id': number
+  'snapshot-id': number | bigint
   'statistics-path': string
   'file-size-in-bytes': bigint
   'file-footer-size-in-bytes': bigint
@@ -238,11 +238,11 @@ interface TableStatistics {
 
 interface SnapshotLog {
   'timestamp-ms': number
-  'snapshot-id': number
+  'snapshot-id': number | bigint
 }
 
 export interface SnapshotRef {
-  'snapshot-id': number
+  'snapshot-id': number | bigint
   type: 'branch' | 'tag'
   'min-snapshots-to-keep'?: number
   'max-snapshot-age-ms'?: number
@@ -260,7 +260,7 @@ interface EncryptionKey {
 export type TableRequirement =
   | { type: 'assert-create' }
   | { type: 'assert-table-uuid', uuid: string }
-  | { type: 'assert-ref-snapshot-id', ref: string, 'snapshot-id': number | null }
+  | { type: 'assert-ref-snapshot-id', ref: string, 'snapshot-id': number | bigint | null }
   | { type: 'assert-next-row-id', 'next-row-id': number }
   | { type: 'assert-current-schema-id', 'current-schema-id': number }
   | { type: 'assert-last-assigned-field-id', 'last-assigned-field-id': number }
@@ -277,7 +277,7 @@ export type TableUpdate =
       action: 'set-snapshot-ref'
       'ref-name': string
       type: 'branch' | 'tag'
-      'snapshot-id': number
+      'snapshot-id': number | bigint
       'min-snapshots-to-keep'?: number
       'max-snapshot-age-ms'?: number
       'max-ref-age-ms'?: number
@@ -290,7 +290,7 @@ export type TableUpdate =
   | { action: 'set-default-sort-order', 'sort-order-id': number }
   | { action: 'add-spec', spec: PartitionSpec }
   | { action: 'set-default-spec', 'spec-id': number }
-  | { action: 'remove-snapshots', 'snapshot-ids': number[] }
+  | { action: 'remove-snapshots', 'snapshot-ids': (number | bigint)[] }
 
 /**
  * Argument passed to the `icebergTransaction` callback. Methods stage
@@ -305,13 +305,13 @@ export interface IcebergTransaction {
   }): Promise<void>
   setRef(options: {
     ref: string
-    snapshotId: number
+    snapshotId: number | bigint
     type?: 'branch' | 'tag'
     minSnapshotsToKeep?: number
     maxSnapshotAgeMs?: number
     maxRefAgeMs?: number
   }): void
-  expireSnapshots(options: { snapshotIds: number[] }): void
+  expireSnapshots(options: { snapshotIds: (number | bigint)[] }): void
 }
 
 /**

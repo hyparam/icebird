@@ -913,7 +913,7 @@ describe('icebergStageSetRef', () => {
   /**
    * Build a metadata object with two committed snapshots so set-ref tests can
    * roll forward, roll back, or move tags between them.
-   * @returns {Promise<{ resolver: Resolver, tableUrl: string, metadata: TableMetadata, snap1: number, snap2: number }>}
+   * @returns {Promise<{ resolver: Resolver, tableUrl: string, metadata: TableMetadata, snap1: number | bigint, snap2: number | bigint }>}
    */
   async function twoSnapshotTable() {
     const tableUrl = 'http://test/stage-setref'
@@ -1014,7 +1014,7 @@ describe('icebergStageExpireSnapshots', () => {
   /**
    * Build a table with three committed snapshots so expire tests can drop
    * one or more historical snapshots while leaving the tip intact.
-   * @returns {Promise<{ resolver: Resolver, tableUrl: string, metadata: TableMetadata, snap1: number, snap2: number, snap3: number }>}
+   * @returns {Promise<{ resolver: Resolver, tableUrl: string, metadata: TableMetadata, snap1: number | bigint, snap2: number | bigint, snap3: number | bigint }>}
    */
   async function threeSnapshotTable() {
     const tableUrl = 'http://test/stage-expire'

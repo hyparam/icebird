@@ -1,4 +1,5 @@
 import { resolveText, s3Lister, urlResolver } from './fetch.js'
+import { parseIcebergJson } from './json.js'
 
 /**
  * @import {Lister, Resolver, TableMetadata} from '../src/types.js'
@@ -157,7 +158,7 @@ export async function resolveMetadata({ tableUrl, metadataFileName, resolver, li
   const url = `${tableUrl}/metadata/${metadataFileName}`
   try {
     const text = await resolveText(resolver, url)
-    return { metadata: JSON.parse(text), metadataFileName }
+    return { metadata: parseIcebergJson(text), metadataFileName }
   } catch (err) {
     // v{N}.metadata.json failed, try listing to find the real filename
     try {
@@ -166,7 +167,7 @@ export async function resolveMetadata({ tableUrl, metadataFileName, resolver, li
       const match = findMetadataFile(files, metadataFileName)
       if (match) {
         const text = await resolveText(resolver, `${metadataDir}/${match}`)
-        return { metadata: JSON.parse(text), metadataFileName: match }
+        return { metadata: parseIcebergJson(text), metadataFileName: match }
       }
     } catch { /* lister failed, fall through */ }
     throw new Error(`failed to get iceberg metadata: ${/** @type {Error} */ (err).message}`)
@@ -247,7 +248,7 @@ export async function loadLatestFileCatalogMetadata({ tableUrl, resolver, lister
   const text = await resolveText(resolver, metadataLocation)
   return {
     version: highest,
-    metadata: JSON.parse(text),
+    metadata: parseIcebergJson(text),
     metadataFileName: highestFile,
     metadataLocation,
   }
@@ -306,7 +307,7 @@ async function tryReadVersion(resolver, tableUrl, version) {
   const metadataLocation = `${tableUrl}/metadata/${fileName}`
   try {
     const text = await resolveText(resolver, metadataLocation)
-    return { version, metadata: JSON.parse(text), metadataFileName: fileName, metadataLocation }
+    return { version, metadata: parseIcebergJson(text), metadataFileName: fileName, metadataLocation }
   } catch {
     return undefined
   }

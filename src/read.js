@@ -18,7 +18,7 @@ import { concat } from 'hyparquet/src/utils.js'
  * @param {number} [options.rowEnd] - The ending global row index to fetch (exclusive).
  * @param {string} [options.metadataFileName] - Name of the Iceberg metadata file.
  * @param {TableMetadata} [options.metadata] - Pre-fetched Iceberg metadata.
- * @param {number} [options.snapshotId] - Optional snapshot id for time travel; defaults to the current snapshot.
+ * @param {number | bigint} [options.snapshotId] - Optional snapshot id for time travel; defaults to the current snapshot.
  * @param {Resolver} [options.resolver] - Resolves a path to an AsyncBuffer.
  * @param {Lister} [options.lister] - Lists files in a directory.
  * @returns {Promise<Array<Record<string, any>>>} Array of data records.

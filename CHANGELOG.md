@@ -3,6 +3,7 @@
 ## Unreleased
  - REST catalog: read routing prefix from `overrides.prefix` per the Iceberg REST spec; fixes Cloudflare R2 Data Catalog
  - `icebergRead` accepts `snapshotId` for time travel; defaults to the current snapshot
+ - Lossless metadata parser: snapshot ids exceeding `Number.MAX_SAFE_INTEGER` (2^53-1) are now preserved as `BigInt` instead of being truncated. Affected fields are typed `number | bigint` and comparisons coerce to `BigInt`
  - Breaking: `icebergManifests` now takes a single options object `{ metadata, resolver, snapshotId }`
 
 ## [0.7.0]
