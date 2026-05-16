@@ -1,4 +1,3 @@
-import { translateS3Url } from '../fetch.js'
 import { validateSchemaForVersion } from '../schema.js'
 import { uuid4 } from '../utils.js'
 import { writeParquet } from './parquet.js'
@@ -74,7 +73,7 @@ export async function prepareAppend({ tableUrl, metadata, records, resolver }) {
     : [{ partition: {}, records }]
   const writtenDataFiles = await Promise.all(groups.map(async group => {
     const dataPath = `${tableUrl}/data/${uuid4()}.parquet`
-    const dataWriter = writerFn(translateS3Url(dataPath))
+    const dataWriter = writerFn(dataPath)
     await writeParquet({ writer: dataWriter, schema, records: group.records, codec })
     const stats = computeColumnStats(group.records, schema)
     return {
@@ -99,7 +98,7 @@ export async function prepareAppend({ tableUrl, metadata, records, resolver }) {
   }))
 
   const manifestPath = `${tableUrl}/metadata/${manifestUuid}-m0.avro`
-  const manifestWriter = writerFn(translateS3Url(manifestPath))
+  const manifestWriter = writerFn(manifestPath)
   await writeDataManifest({
     writer: manifestWriter,
     schema,

@@ -3,7 +3,8 @@
 ## Unreleased
  - REST catalog: read routing prefix from `overrides.prefix` per the Iceberg REST spec; fixes Cloudflare R2 Data Catalog
  - `icebergRead` accepts `snapshotId` for time travel; defaults to the current snapshot
- - Lossless metadata parser: snapshot ids exceeding `Number.MAX_SAFE_INTEGER` (2^53-1) are now preserved as `BigInt` instead of being truncated. Affected fields are typed `number | bigint` and comparisons coerce to `BigInt`
+ - Snapshot ids exceeding `Number.MAX_SAFE_INTEGER` (2^53-1) are now preserved as `BigInt` instead of being truncated. Affected fields are typed `number | bigint` and comparisons coerce to `BigInt`
+ - Pass raw `s3://` paths to custom resolvers on the write path instead of pre-translating to AWS hostnames; lets custom resolvers (R2, MinIO, etc.) handle their own URL translation. The default `urlResolver` still maps `s3://` to AWS S3 internally
  - Export `collect` so `icebergQuery` results can be materialized
  - Breaking: `icebergManifests` now takes a single options object `{ metadata, resolver, snapshotId }`
 

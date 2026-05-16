@@ -1,5 +1,5 @@
 import { deleteFileAppliesToDataEntry } from '../delete.js'
-import { fetchDeleteMaps, translateS3Url } from '../fetch.js'
+import { fetchDeleteMaps } from '../fetch.js'
 import { writeDeletionVector } from '../puffin/deletion-vector.js'
 import { writePuffinFile } from '../puffin/puffin.js'
 import { validateSchemaForVersion } from '../schema.js'
@@ -177,7 +177,7 @@ export async function icebergStageDeletionVector({ tableUrl, metadata, deletes, 
     const spec = metadata['partition-specs'].find(s => s['spec-id'] === manifest.partition_spec_id)
     if (!spec) throw new Error(`partition spec ${manifest.partition_spec_id} not found in metadata`)
     const manifestPath = `${tableUrl}/metadata/${manifestUuid}-r${replacementIndex}.avro`
-    const manifestWriter = writerFn(translateS3Url(manifestPath))
+    const manifestWriter = writerFn(manifestPath)
     await writeExistingDeleteManifest({
       writer: manifestWriter,
       schema,
@@ -227,7 +227,7 @@ export async function icebergStageDeletionVector({ tableUrl, metadata, deletes, 
         }],
       })
       const puffinPath = `${tableUrl}/data/${uuid4()}-deletes.puffin`
-      const puffinWriter = writerFn(translateS3Url(puffinPath))
+      const puffinWriter = writerFn(puffinPath)
       puffinWriter.appendBytes(puffin)
       await puffinWriter.finish()
       writtenPuffinPaths.push(puffinPath)
@@ -268,7 +268,7 @@ export async function icebergStageDeletionVector({ tableUrl, metadata, deletes, 
   let manifestIndex = 0
   for (const { spec, files, partitions } of bySpec.values()) {
     const manifestPath = `${tableUrl}/metadata/${manifestUuid}-m${manifestIndex}.avro`
-    const manifestWriter = writerFn(translateS3Url(manifestPath))
+    const manifestWriter = writerFn(manifestPath)
     await writeDeleteManifest({
       writer: manifestWriter,
       schema,

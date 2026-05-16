@@ -1,4 +1,3 @@
-import { translateS3Url } from './fetch.js'
 import { validateSchemaForVersion } from './schema.js'
 import { uuid4 } from './utils.js'
 
@@ -37,7 +36,7 @@ export async function icebergCreate({
     throw new Error(`unsupported format-version: ${formatVersion}`)
   }
   const metadataVersion = 1
-  const metadataUrl = translateS3Url(`${tableUrl}/metadata/v${metadataVersion}.metadata.json`)
+  const metadataUrl = `${tableUrl}/metadata/v${metadataVersion}.metadata.json`
 
   /** @type {Schema} */
   const initialSchema = schema ?? { type: 'struct', 'schema-id': 0, fields: [] } // default to no columns
@@ -82,7 +81,7 @@ export async function icebergCreate({
   // version-hint last so a partial write doesn't surface a torn create.
   // With conditionalCommits the hint is best-effort, the durable
   // v1.metadata.json above is the actual commit point.
-  const versionHintUrl = translateS3Url(`${tableUrl}/metadata/version-hint.text`)
+  const versionHintUrl = `${tableUrl}/metadata/version-hint.text`
   try {
     const versionHintWriter = resolver.writer(versionHintUrl)
     const versionHintBytes = new TextEncoder().encode(String(metadataVersion))

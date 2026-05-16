@@ -1,4 +1,4 @@
-import { fetchAvroRecords, translateS3Url } from '../fetch.js'
+import { fetchAvroRecords } from '../fetch.js'
 import { validateSchemaForVersion } from '../schema.js'
 import { bytesToHex, uuid4 } from '../utils.js'
 import { writePositionDeleteFile } from './delete-file.js'
@@ -97,7 +97,7 @@ export async function icebergStagePositionDelete({ tableUrl, metadata, deletes, 
     const uniqueTargets = new Set(group.deletes.map(d => d.file_path))
     const referencedDataFile = uniqueTargets.size === 1 ? group.deletes[0].file_path : undefined
     const deletePath = `${tableUrl}/data/${uuid4()}-deletes.parquet`
-    const deleteWriter = writerFn(translateS3Url(deletePath))
+    const deleteWriter = writerFn(deletePath)
     const stats = await writePositionDeleteFile({ writer: deleteWriter, deletes: group.deletes, codec })
     /** @type {DataFile} */
     const deleteFile = {
@@ -140,7 +140,7 @@ export async function icebergStagePositionDelete({ tableUrl, metadata, deletes, 
   let manifestIndex = 0
   for (const { spec, files, partitions } of bySpec.values()) {
     const manifestPath = `${tableUrl}/metadata/${manifestUuid}-m${manifestIndex}.avro`
-    const manifestWriter = writerFn(translateS3Url(manifestPath))
+    const manifestWriter = writerFn(manifestPath)
     await writeDeleteManifest({
       writer: manifestWriter,
       schema,

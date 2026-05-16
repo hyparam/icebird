@@ -1,4 +1,4 @@
-import { fetchAvroRecords, translateS3Url } from '../fetch.js'
+import { fetchAvroRecords } from '../fetch.js'
 import { writeManifestList } from './manifest-list.js'
 import { computeFieldSummary } from './stats.js'
 import { transformResultType } from './transform.js'
@@ -71,7 +71,7 @@ export async function buildSnapshotUpdate({
   const allManifests = [...priorManifests, ...newManifests]
   const addedRows = rowLineage ? assignFirstRowIds(allManifests, firstRowId) : 0n
   const manifestListPath = `${tableUrl}/metadata/snap-${snapshotId}-1-${manifestUuid}.avro`
-  const listWriter = writerFn(translateS3Url(manifestListPath))
+  const listWriter = writerFn(manifestListPath)
   await writeManifestList({ writer: listWriter, snapshotId, sequenceNumber, manifests: allManifests, formatVersion })
 
   /** @type {Snapshot} */

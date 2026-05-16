@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { icebergCreate } from '../src/create.js'
-import * as fetchModule from '../src/fetch.js'
 import { ByteWriter } from 'hyparquet-writer'
 
 /**
@@ -9,12 +8,8 @@ import { ByteWriter } from 'hyparquet-writer'
 
 describe('createIceberg', () => {
   const tableUrl = 's3://test-bucket/table-path'
-  const translatedTableUrl = 'https://test-bucket.s3.amazonaws.com/table-path'
 
   beforeEach(() => {
-    vi.spyOn(fetchModule, 'translateS3Url').mockImplementation(url => {
-      return url.replace('s3://', 'https://').replace('test-bucket/', 'test-bucket.s3.amazonaws.com/')
-    })
     vi.spyOn(crypto, 'randomUUID').mockReturnValue('test-uuid-1234-5678-90ab-cdef12345678')
     vi.spyOn(Date, 'now').mockReturnValue(1609459200000) // 2021-01-01T00:00:00.000Z
   })
@@ -53,10 +48,10 @@ describe('createIceberg', () => {
     })
 
     // Check that the writer was called correctly
-    expect(writer).toHaveBeenCalledWith(`${translatedTableUrl}/metadata/v1.metadata.json`)
-    expect(writer).toHaveBeenCalledWith(`${translatedTableUrl}/metadata/version-hint.text`)
-    expect(writers[`${translatedTableUrl}/metadata/v1.metadata.json`].offset).toBe(573)
-    expect(writers[`${translatedTableUrl}/metadata/version-hint.text`].offset).toBe(1)
+    expect(writer).toHaveBeenCalledWith(`${tableUrl}/metadata/v1.metadata.json`)
+    expect(writer).toHaveBeenCalledWith(`${tableUrl}/metadata/version-hint.text`)
+    expect(writers[`${tableUrl}/metadata/v1.metadata.json`].offset).toBe(573)
+    expect(writers[`${tableUrl}/metadata/version-hint.text`].offset).toBe(1)
 
   })
 

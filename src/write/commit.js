@@ -1,4 +1,3 @@
-import { translateS3Url } from '../fetch.js'
 import { validateSchemaForVersion } from '../schema.js'
 import { parseDecimalType } from './conversions.js'
 
@@ -73,8 +72,8 @@ export async function fileCatalogCommit({ tableUrl, metadata, metadataFileName, 
   // a second writer racing for the same v<newVersion> sees a 412/409 from
   // the resolver; this slice surfaces that error to the caller.
   const metaWriter = conditionalCommits
-    ? resolver.writer(translateS3Url(newMetadataPath), { ifNoneMatch: '*' })
-    : resolver.writer(translateS3Url(newMetadataPath))
+    ? resolver.writer(newMetadataPath, { ifNoneMatch: '*' })
+    : resolver.writer(newMetadataPath)
   metaWriter.appendBytes(new TextEncoder().encode(JSON.stringify(newMetadata, null, 2)))
   await metaWriter.finish()
 
@@ -82,7 +81,7 @@ export async function fileCatalogCommit({ tableUrl, metadata, metadataFileName, 
   // The hint is a cache: a failed hint write does not invalidate the durable
   // v<newVersion>.metadata.json above.
   try {
-    const hintWriter = resolver.writer(translateS3Url(`${tableUrl}/metadata/version-hint.text`))
+    const hintWriter = resolver.writer(`${tableUrl}/metadata/version-hint.text`)
     hintWriter.appendBytes(new TextEncoder().encode(String(newVersion)))
     await hintWriter.finish()
   } catch { /* version-hint.text is best-effort. */ }
