@@ -89,6 +89,19 @@ const data = await icebergRead({
 })
 ```
 
+For private S3-compatible buckets (AWS, Cloudflare R2, MinIO), use `s3SignedResolver` which signs SigV4 via Web Crypto so it works in browsers and Node:
+
+```javascript
+import { icebergRead, s3SignedResolver } from 'icebird'
+
+const resolver = s3SignedResolver({
+  accessKeyId, secretAccessKey, region: 'us-east-1',
+  // For R2/MinIO, set endpoint and pathStyle:
+  // endpoint: 'https://<acct>.r2.cloudflarestorage.com', pathStyle: true,
+})
+const data = await icebergRead({ tableUrl: 's3://my-bucket/warehouse/orders', resolver })
+```
+
 ## REST Catalog
 
 For tables behind an [Iceberg REST Catalog](https://iceberg.apache.org/rest-catalog-spec/), connect via `restCatalogConnect` and pass the loaded metadata into `icebergRead`. Multi-level namespaces are arrays.

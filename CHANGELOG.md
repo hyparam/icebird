@@ -7,6 +7,8 @@
  - Pass raw `s3://` paths to custom resolvers on the write path instead of pre-translating to AWS hostnames; lets custom resolvers (R2, MinIO, etc.) handle their own URL translation. The default `urlResolver` still maps `s3://` to AWS S3 internally
  - Manifest list `partitions` array now carries the required `element-id`
  - Parquet column metadata now carries the iceberg `field_id`
+ - Emit lower/upper bounds for `date` and `time` columns
+ - New `s3SignedResolver` for private S3-compatible buckets (AWS, R2, MinIO)
  - Export `collect` so `icebergQuery` results can be materialized
  - Breaking: `icebergManifests` now takes a single options object `{ metadata, resolver, snapshotId }`
 
