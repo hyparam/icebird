@@ -32,11 +32,12 @@ import { readDataFile } from '../read.js'
  * @param {string} options.tableUrl - Base URL or path of the table.
  * @param {string} [options.metadataFileName] - Specific metadata file to load.
  * @param {TableMetadata} [options.metadata] - Pre-fetched table metadata.
+ * @param {number | bigint} [options.snapshotId] - Optional snapshot id for time travel; defaults to the current snapshot.
  * @param {Resolver} [options.resolver] - I/O resolver (defaults to `urlResolver()`).
  * @param {Lister} [options.lister] - Directory lister, used to discover the latest metadata.
  * @returns {Promise<AsyncDataSource>}
  */
-export async function icebergDataSource({ tableUrl, metadataFileName, metadata, resolver, lister }) {
+export async function icebergDataSource({ tableUrl, metadataFileName, metadata, snapshotId, resolver, lister }) {
   if (!tableUrl) throw new Error('tableUrl is required')
   const fetchResolver = resolver ?? urlResolver()
   const tableMetadata = metadata ?? await icebergMetadata({ tableUrl, metadataFileName, resolver: fetchResolver, lister })
@@ -47,7 +48,7 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
   const columns = schema.fields.map(f => f.name)
   const rowLineage = tableMetadata['format-version'] >= 3
 
-  const manifestList = await icebergManifests({ metadata: tableMetadata, resolver: fetchResolver })
+  const manifestList = await icebergManifests({ metadata: tableMetadata, resolver: fetchResolver, snapshotId })
   const { dataEntries, deleteEntries } = splitManifestEntries(manifestList)
   const hasDeletes = deleteEntries.length > 0
 

@@ -12,7 +12,10 @@ import { icebergDataSource } from './icebergDataSource.js'
  * Run a SQL query across Iceberg tables. Tables can be supplied two ways:
  *
  * 1. `tables` — a map from SQL identifier (e.g. `"analytics.orders"`) to
- *    a tableUrl. Wins over the catalog when both define a ref.
+ *    either a tableUrl string or a pre-built `AsyncDataSource`. Pre-built
+ *    sources let callers pin a specific snapshot, metadata file, or resolver
+ *    via `icebergDataSource(...)` before handing it to `icebergQuery`. Wins
+ *    over the catalog when both define a ref.
  * 2. `catalog` — a REST or file catalog. SQL refs are split on `.` (last
  *    segment is the table, earlier segments are the namespace) and resolved
  *    via the catalog. Unquoted identifiers can't contain dots, so multi-segment
@@ -29,7 +32,7 @@ import { icebergDataSource } from './icebergDataSource.js'
  * @param {object} options
  * @param {Catalog} [options.catalog]
  * @param {string} options.query
- * @param {Record<string, string>} [options.tables] - Map from SQL identifier to tableUrl.
+ * @param {Record<string, string | AsyncDataSource>} [options.tables] - Map from SQL identifier to a tableUrl or a pre-built AsyncDataSource.
  * @param {Resolver} [options.resolver]
  * @param {AbortSignal} [options.signal]
  * @returns {Promise<QueryResults>}
@@ -44,9 +47,11 @@ export async function icebergQuery({ catalog, query, tables, resolver, signal })
 
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
   const loaded = await Promise.all(refs.map(async ref => {
-    const tableUrl = tables?.[ref]
-    if (tableUrl) {
-      const source = await icebergDataSource({ tableUrl, resolver: fetchResolver })
+    const entry = tables?.[ref]
+    if (entry !== undefined) {
+      const source = typeof entry === 'string'
+        ? await icebergDataSource({ tableUrl: entry, resolver: fetchResolver })
+        : entry
       return /** @type {const} */ ([ref, source])
     }
     if (!catalog) throw new Error(`no source for table "${ref}" — pass tables[${JSON.stringify(ref)}] or a catalog that resolves it`)

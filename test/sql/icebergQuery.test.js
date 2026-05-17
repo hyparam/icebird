@@ -2,6 +2,7 @@ import { collect } from 'squirreling'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fileCatalog } from '../../src/catalog/file.js'
 import { restCatalogConnect } from '../../src/catalog/rest.js'
+import { icebergDataSource } from '../../src/sql/icebergDataSource.js'
 import { icebergQuery } from '../../src/sql/icebergQuery.js'
 import { makeFetch } from '../catalog.rest.helpers.js'
 import { fileToJson, localResolver } from '../helpers.js'
@@ -261,6 +262,24 @@ describe('icebergQuery', () => {
       resolver: fullResolver,
     }))
     expect(fullOpened.size).toBeGreaterThan(lazyOpened.size)
+  })
+
+  it('accepts a pre-built AsyncDataSource in the tables map', async () => {
+    // Time-travel via a pre-built source: spark/bunnies has 21 rows at the
+    // first snapshot and 20 at the current snapshot of v5. Pinning the
+    // snapshot through the source carries through icebergQuery.
+    const source = await icebergDataSource({
+      tableUrl: 's3://hyperparam-iceberg/spark/bunnies',
+      resolver,
+      metadataFileName: 'v5.metadata.json',
+      snapshotId: 7505300640432048841n,
+    })
+    const result = await icebergQuery({
+      query: 'SELECT COUNT(*) AS n FROM bunnies',
+      tables: { bunnies: source },
+    })
+    const rows = await collect(result)
+    expect(rows).toEqual([{ n: 21 }])
   })
 
   it('runs without a catalog using a tables → tableUrl map', async () => {

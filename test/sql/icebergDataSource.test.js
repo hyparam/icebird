@@ -12,6 +12,9 @@ describe.concurrent('icebergDataSource', () => {
   const tableUrl = 's3://hyperparam-iceberg/java/bunnies'
   const resolver = localResolver('test/files')
 
+  // spark/bunnies has the snapshot history we need for time travel.
+  const sparkTableUrl = 's3://hyperparam-iceberg/spark/bunnies'
+
   it('throws for missing tableUrl', async () => {
     await expect(() => icebergDataSource({ tableUrl: '' }))
       .rejects.toThrow('tableUrl is required')
@@ -227,6 +230,22 @@ describe.concurrent('icebergDataSource', () => {
       expect(got).toEqual(all.slice(0, offset + limit))
       expect(got.slice(offset, offset + limit)).toEqual(all.slice(offset, offset + limit))
     }
+  })
+
+  it('time-travels to a prior snapshot via snapshotId', async () => {
+    // spark/bunnies v5 has 20 rows at the current snapshot but 21 at the
+    // first snapshot. Passing snapshotId pins the source to that earlier
+    // point in time.
+    const source = await icebergDataSource({
+      tableUrl: sparkTableUrl,
+      resolver,
+      metadataFileName: 'v5.metadata.json',
+      snapshotId: 7505300640432048841n,
+    })
+    expect(source.numRows).toBe(21)
+    const collected = []
+    for await (const row of source.scan({}).rows()) collected.push(row.resolved)
+    expect(collected).toHaveLength(21)
   })
 
   it('runs a SQL query through squirreling', async () => {
