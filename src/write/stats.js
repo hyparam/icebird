@@ -228,6 +228,21 @@ function serializeValue(value, type) {
     new DataView(buf).setFloat64(0, value, true)
     return new Uint8Array(buf)
   }
+  case 'date': {
+    // days since epoch, 4-byte little-endian int32
+    const days = value instanceof Date
+      ? Math.floor(value.getTime() / 86400000)
+      : Number(value)
+    const buf = new ArrayBuffer(4)
+    new DataView(buf).setInt32(0, days, true)
+    return new Uint8Array(buf)
+  }
+  case 'time': {
+    // microseconds since midnight, 8-byte little-endian int64
+    const buf = new ArrayBuffer(8)
+    new DataView(buf).setBigInt64(0, typeof value === 'bigint' ? value : BigInt(value), true)
+    return new Uint8Array(buf)
+  }
   case 'timestamp':
   case 'timestamptz': {
     // micros since epoch, 8-byte little-endian

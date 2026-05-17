@@ -236,6 +236,62 @@ describe('computeColumnStats', () => {
     expect(stats.upper_bounds[1].length).toBe(16)
   })
 
+  it('serializes date bounds as days since epoch (int32 LE)', () => {
+    /** @type {Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'd', required: false, type: 'date' },
+        { id: 2, name: 'd2', required: false, type: 'date' },
+      ],
+    }
+    const records = [
+      // 2024-01-01 = day 19723; 2024-01-10 = day 19732
+      { d: new Date('2024-01-10T00:00:00Z'), d2: 19723 },
+      { d: new Date('2024-01-01T00:00:00Z'), d2: 19732 },
+    ]
+
+    const stats = computeColumnStats(records, schema)
+
+    expect(stats.lower_bounds[1].length).toBe(4)
+    expect(stats.upper_bounds[1].length).toBe(4)
+    const lo1 = new DataView(stats.lower_bounds[1].buffer).getInt32(0, true)
+    const hi1 = new DataView(stats.upper_bounds[1].buffer).getInt32(0, true)
+    expect(lo1).toBe(19723)
+    expect(hi1).toBe(19732)
+
+    const lo2 = new DataView(stats.lower_bounds[2].buffer).getInt32(0, true)
+    const hi2 = new DataView(stats.upper_bounds[2].buffer).getInt32(0, true)
+    expect(lo2).toBe(19723)
+    expect(hi2).toBe(19732)
+  })
+
+  it('serializes time bounds as microseconds since midnight (int64 LE)', () => {
+    /** @type {Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 't', required: false, type: 'time' },
+      ],
+    }
+    // 01:00:00 = 3_600_000_000 micros; 02:00:00 = 7_200_000_000 micros
+    const records = [
+      { t: 7200000000n },
+      { t: 3600000000 },
+    ]
+
+    const stats = computeColumnStats(records, schema)
+
+    expect(stats.lower_bounds[1].length).toBe(8)
+    expect(stats.upper_bounds[1].length).toBe(8)
+    const lo = new DataView(stats.lower_bounds[1].buffer).getBigInt64(0, true)
+    const hi = new DataView(stats.upper_bounds[1].buffer).getBigInt64(0, true)
+    expect(lo).toBe(3600000000n)
+    expect(hi).toBe(7200000000n)
+  })
+
   it('substitutes write-default for missing values in stats', () => {
     /** @type {Schema} */
     const schema = {
