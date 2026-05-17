@@ -1,5 +1,8 @@
 # Icebird Changelog
 
+## [0.8.2]
+ - Use the schema from the pinned snapshot when reading via `snapshotId`, instead of the current schema
+
 ## [0.8.1]
  - `icebergDataSource` accepts `snapshotId` and forwards it to `icebergManifests`, so SQL sources can time-travel like `icebergRead`
  - `icebergQuery`'s `tables` map now accepts either a tableUrl string or a pre-built `AsyncDataSource`. Pre-built sources let callers pin a specific snapshot, metadata file, or resolver via `icebergDataSource(...)` before handing the source to `icebergQuery`
