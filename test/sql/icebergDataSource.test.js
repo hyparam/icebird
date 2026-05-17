@@ -248,6 +248,19 @@ describe.concurrent('icebergDataSource', () => {
     expect(collected).toHaveLength(21)
   })
 
+  it('uses the pinned snapshot schema, not current-schema-id', async () => {
+    // v5's current schema (id 1) adds a `breed_name_length` column; the
+    // pinned snapshot was written under schema 0 which did not have it.
+    const source = await icebergDataSource({
+      tableUrl: sparkTableUrl,
+      resolver,
+      metadataFileName: 'v5.metadata.json',
+      snapshotId: 7505300640432048841n,
+    })
+    expect(source.columns).not.toContain('breed_name_length')
+    expect(source.columns).toHaveLength(8)
+  })
+
   it('runs a SQL query through squirreling', async () => {
     const source = await icebergDataSource({
       tableUrl,

@@ -42,9 +42,15 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
   const fetchResolver = resolver ?? urlResolver()
   const tableMetadata = metadata ?? await icebergMetadata({ tableUrl, metadataFileName, resolver: fetchResolver, lister })
 
-  const currentSchemaId = tableMetadata['current-schema-id']
-  const schema = tableMetadata.schemas.find(s => s['schema-id'] === currentSchemaId)
-  if (!schema) throw new Error('current schema not found in metadata')
+  // When a snapshot is pinned, use that snapshot's schema (snapshots can
+  // reference older schemas after evolution). Fall back to the table's
+  // current-schema-id when the snapshot doesn't carry one or none is pinned.
+  const snapshot = snapshotId !== undefined
+    ? tableMetadata.snapshots?.find(s => BigInt(s['snapshot-id']) === BigInt(snapshotId))
+    : undefined
+  const schemaId = snapshot?.['schema-id'] ?? tableMetadata['current-schema-id']
+  const schema = tableMetadata.schemas.find(s => s['schema-id'] === schemaId)
+  if (!schema) throw new Error('schema not found in metadata')
   const columns = schema.fields.map(f => f.name)
   const rowLineage = tableMetadata['format-version'] >= 3
 
