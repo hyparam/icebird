@@ -1,6 +1,6 @@
 # Icebird Changelog
 
-## Unreleased
+## [0.8.0]
  - REST catalog: read routing prefix from `overrides.prefix` per the Iceberg REST spec; fixes Cloudflare R2 Data Catalog
  - `icebergRead` accepts `snapshotId` for time travel; defaults to the current snapshot
  - Snapshot ids exceeding `Number.MAX_SAFE_INTEGER` (2^53-1) are now preserved as `BigInt` instead of being truncated. Affected fields are typed `number | bigint` and comparisons coerce to `BigInt`
