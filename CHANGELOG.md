@@ -1,5 +1,9 @@
 # Icebird Changelog
 
+## [0.8.1]
+ - `icebergDataSource` accepts `snapshotId` and forwards it to `icebergManifests`, so SQL sources can time-travel like `icebergRead`
+ - `icebergQuery`'s `tables` map now accepts either a tableUrl string or a pre-built `AsyncDataSource`. Pre-built sources let callers pin a specific snapshot, metadata file, or resolver via `icebergDataSource(...)` before handing the source to `icebergQuery`
+
 ## [0.8.0]
  - REST catalog: read routing prefix from `overrides.prefix` per the Iceberg REST spec; fixes Cloudflare R2 Data Catalog
  - `icebergRead` accepts `snapshotId` for time travel; defaults to the current snapshot
