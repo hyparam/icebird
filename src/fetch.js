@@ -79,6 +79,89 @@ export function urlResolver({ requestInit } = {}) {
 }
 
 /**
+ * Wrap a `Resolver` so reads of the same path share one HTTP fetch and
+ * subsequent range reads share one in-memory buffer. Writes and deletes
+ * through the same resolver invalidate the cache entry for their path on
+ * success, so a commit pipeline (`icebergAppend` → reload metadata) sees the
+ * new bytes without manual invalidation.
+ *
+ * - `reader(path)` is memoized by path. The returned buffer is passed through
+ *   `cachedAsyncBuffer` so range reads within a single file are also deduped.
+ *   `byteLength` is a fetch hint and not part of the cache key — the bytes
+ *   are the same either way.
+ * - `writer(path).finish()` invalidates the cache entry only when the
+ *   underlying finish resolves; a rejected finish (e.g. an `If-None-Match: *`
+ *   collision returning 412/409) leaves the cached bytes intact, since the
+ *   server-side object hasn't changed.
+ * - `deleter(path)` invalidates the cache entry on success.
+ * - `writer` and `deleter` are omitted when the base resolver omits them, so
+ *   wrapping a read-only resolver still yields a read-only resolver.
+ *
+ * Iceberg writes are almost entirely create-new-path (data parquets, manifest
+ * avros, snapshot avros, vN.metadata.json all live at fresh paths per
+ * commit). Only `version-hint.text` and equivalent catalog-pointer files are
+ * truly mutated in place, so path-level invalidation is sufficient to keep
+ * single-process write-then-read pipelines consistent.
+ *
+ * Cross-process freshness is out of scope: a reader in process B does not
+ * see writes committed by process A through a different cache. Use a
+ * short-lived resolver, an external coordination layer, or wrap with TTL /
+ * conditional-GET revalidation if you need that.
+ *
+ * @param {Resolver} base
+ * @returns {Resolver}
+ */
+export function cachingResolver(base) {
+  /** @type {Map<string, Promise<import('hyparquet').AsyncBuffer>>} */
+  const cache = new Map()
+
+  /** @type {Resolver} */
+  const out = {
+    reader(path, byteLength) {
+      let buf = cache.get(path)
+      if (!buf) {
+        // Wrap in an async IIFE so a synchronously-thrown reader (and an
+        // async one) both surface as a rejected promise we can evict below.
+        buf = (async () => cachedAsyncBuffer(await base.reader(path, byteLength)))()
+        cache.set(path, buf)
+        // Don't cache rejections: a 404 on `v3.metadata.json` today should
+        // not block icebird's commit-retry from seeing the file after a
+        // concurrent writer creates it. Evict only if this exact promise is
+        // still the cached one — a later successful read may have replaced
+        // it.
+        buf.catch(() => {
+          if (cache.get(path) === buf) cache.delete(path)
+        })
+      }
+      return buf
+    },
+  }
+  if (base.writer) {
+    const baseWriter = base.writer
+    out.writer = (path, options) => {
+      const w = baseWriter(path, options)
+      const origFinish = w.finish.bind(w)
+      w.finish = async function() {
+        // Only invalidate on success: a rejected finish (e.g. 412 from a
+        // conditional commit collision) means the server-side object did
+        // NOT change, so the cached bytes are still authoritative.
+        await origFinish()
+        cache.delete(path)
+      }
+      return w
+    }
+  }
+  if (base.deleter) {
+    const baseDeleter = base.deleter
+    out.deleter = async path => {
+      await baseDeleter(path)
+      cache.delete(path)
+    }
+  }
+  return out
+}
+
+/**
  * Creates a lister that lists files in an S3 directory via the S3 XML API.
  * Accepts s3://, s3a://, and https://*.s3.amazonaws.com/ URLs.
  *
