@@ -1,5 +1,8 @@
 # Icebird Changelog
 
+## [0.8.3]
+ - New `cachingResolver` wraps a `Resolver` to dedupe reads of the same path and share an in-memory buffer across range reads; writes and deletes invalidate the cached entry on success
+
 ## [0.8.2]
  - Use the schema from the pinned snapshot when reading via `snapshotId`, instead of the current schema
 
