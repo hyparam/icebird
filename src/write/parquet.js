@@ -30,17 +30,12 @@ export function writeParquet({ writer, schema, records, codec }) {
 
   for (const field of schema.fields) {
     const name = sanitize(field.name)
-    const fieldElements = icebergTypeToParquetFields(name, field)
+    const fieldElements = icebergTypeToParquetFields(name, field.type, field.required, field.id)
     if (!fieldElements.length) continue
     columnData.push({
       name,
       data: extractColumn(records, field),
     })
-    // Iceberg requires parquet columns to carry the iceberg `field-id` so
-    // readers (Spark, pyiceberg) can map by id instead of by name. The
-    // top-level element of each iceberg field gets the id; nested logical
-    // types (variant's metadata/value) inherit it via their parent.
-    fieldElements[0].field_id = field.id
     parquetFields.push(...fieldElements)
     rootChildren++
   }
@@ -74,18 +69,47 @@ function extractColumn(records, field) {
 }
 
 /**
+ * Iceberg requires parquet columns to carry the iceberg `field-id` so readers
+ * (Spark, pyiceberg) can map by id instead of by name. The top-level element
+ * of each iceberg field gets the id; nested logical types (variant's
+ * metadata/value, list's repeated wrapper) inherit it via their parent.
+ *
  * @param {string} name
- * @param {Field} field
+ * @param {IcebergType} type
+ * @param {boolean} required
+ * @param {number} fieldId
  * @returns {SchemaElement[]}
  */
-function icebergTypeToParquetFields(name, field) {
-  const type = typeName(field.type)
-  const repetition_type = field.required ? 'REQUIRED' : 'OPTIONAL'
+function icebergTypeToParquetFields(name, type, required, fieldId) {
+  const repetition_type = required ? 'REQUIRED' : 'OPTIONAL'
+  if (typeof type === 'object') {
+    if (type.type === 'list') {
+      const elementFields = icebergTypeToParquetFields(
+        'element', type.element, type['element-required'], type['element-id']
+      )
+      if (!elementFields.length) {
+        throw new Error(`unsupported iceberg list element type: ${typeName(type.element)}`)
+      }
+      return [
+        {
+          name,
+          converted_type: 'LIST',
+          logical_type: { type: 'LIST' },
+          repetition_type,
+          num_children: 1,
+          field_id: fieldId,
+        },
+        { name: 'list', repetition_type: 'REPEATED', num_children: 1 },
+        ...elementFields,
+      ]
+    }
+    throw new Error(`unsupported iceberg type: ${type.type}`)
+  }
   if (type.startsWith('geometry')) {
-    return [{ name, type: 'BYTE_ARRAY', logical_type: { type: 'GEOMETRY' }, repetition_type }]
+    return [{ name, type: 'BYTE_ARRAY', logical_type: { type: 'GEOMETRY' }, repetition_type, field_id: fieldId }]
   }
   if (type.startsWith('geography')) {
-    return [{ name, type: 'BYTE_ARRAY', logical_type: { type: 'GEOGRAPHY' }, repetition_type }]
+    return [{ name, type: 'BYTE_ARRAY', logical_type: { type: 'GEOGRAPHY' }, repetition_type, field_id: fieldId }]
   }
   const decimal = parseDecimalType(type)
   if (decimal) {
@@ -99,33 +123,34 @@ function icebergTypeToParquetFields(name, field) {
       precision,
       scale,
       repetition_type,
+      field_id: fieldId,
     }]
   }
   const fixedLen = parseFixedType(type)
   if (fixedLen !== undefined) {
-    return [{ name, type: 'FIXED_LEN_BYTE_ARRAY', type_length: fixedLen, repetition_type }]
+    return [{ name, type: 'FIXED_LEN_BYTE_ARRAY', type_length: fixedLen, repetition_type, field_id: fieldId }]
   }
   switch (type) {
   case 'unknown':
-    if (field.required) throw new Error('unsupported required iceberg type: unknown')
+    if (required) throw new Error('unsupported required iceberg type: unknown')
     return []
   case 'variant':
     return [
-      { name, repetition_type, num_children: 2, logical_type: { type: 'VARIANT' } },
+      { name, repetition_type, num_children: 2, logical_type: { type: 'VARIANT' }, field_id: fieldId },
       { name: 'metadata', type: 'BYTE_ARRAY', repetition_type: 'REQUIRED' },
       { name: 'value', type: 'BYTE_ARRAY', repetition_type: 'OPTIONAL' },
     ]
-  case 'boolean': return [{ name, type: 'BOOLEAN', repetition_type }]
-  case 'int': return [{ name, type: 'INT32', repetition_type }]
-  case 'long': return [{ name, type: 'INT64', repetition_type }]
-  case 'float': return [{ name, type: 'FLOAT', repetition_type }]
-  case 'double': return [{ name, type: 'DOUBLE', repetition_type }]
-  case 'string': return [{ name, type: 'BYTE_ARRAY', converted_type: 'UTF8', repetition_type }]
-  case 'binary': return [{ name, type: 'BYTE_ARRAY', repetition_type }]
+  case 'boolean': return [{ name, type: 'BOOLEAN', repetition_type, field_id: fieldId }]
+  case 'int': return [{ name, type: 'INT32', repetition_type, field_id: fieldId }]
+  case 'long': return [{ name, type: 'INT64', repetition_type, field_id: fieldId }]
+  case 'float': return [{ name, type: 'FLOAT', repetition_type, field_id: fieldId }]
+  case 'double': return [{ name, type: 'DOUBLE', repetition_type, field_id: fieldId }]
+  case 'string': return [{ name, type: 'BYTE_ARRAY', converted_type: 'UTF8', repetition_type, field_id: fieldId }]
+  case 'binary': return [{ name, type: 'BYTE_ARRAY', repetition_type, field_id: fieldId }]
   case 'uuid':
-    return [{ name, type: 'FIXED_LEN_BYTE_ARRAY', type_length: 16, logical_type: { type: 'UUID' }, repetition_type }]
+    return [{ name, type: 'FIXED_LEN_BYTE_ARRAY', type_length: 16, logical_type: { type: 'UUID' }, repetition_type, field_id: fieldId }]
   case 'date':
-    return [{ name, type: 'INT32', converted_type: 'DATE', logical_type: { type: 'DATE' }, repetition_type }]
+    return [{ name, type: 'INT32', converted_type: 'DATE', logical_type: { type: 'DATE' }, repetition_type, field_id: fieldId }]
   case 'time':
     return [{
       name,
@@ -133,15 +158,16 @@ function icebergTypeToParquetFields(name, field) {
       converted_type: 'TIME_MICROS',
       logical_type: { type: 'TIME', isAdjustedToUTC: false, unit: 'MICROS' },
       repetition_type,
+      field_id: fieldId,
     }]
   case 'timestamp':
-    return [timestampField(name, repetition_type, false, 'MICROS')]
+    return [timestampField(name, repetition_type, false, 'MICROS', fieldId)]
   case 'timestamptz':
-    return [timestampField(name, repetition_type, true, 'MICROS')]
+    return [timestampField(name, repetition_type, true, 'MICROS', fieldId)]
   case 'timestamp_ns':
-    return [timestampField(name, repetition_type, false, 'NANOS')]
+    return [timestampField(name, repetition_type, false, 'NANOS', fieldId)]
   case 'timestamptz_ns':
-    return [timestampField(name, repetition_type, true, 'NANOS')]
+    return [timestampField(name, repetition_type, true, 'NANOS', fieldId)]
   default:
     throw new Error(`unsupported iceberg type: ${type}`)
   }
@@ -164,13 +190,15 @@ function parseFixedType(type) {
  * @param {'REQUIRED'|'OPTIONAL'|'REPEATED'} repetition_type
  * @param {boolean} isAdjustedToUTC
  * @param {'MICROS'|'NANOS'} unit
+ * @param {number} field_id
  * @returns {SchemaElement}
  */
-function timestampField(name, repetition_type, isAdjustedToUTC, unit) {
+function timestampField(name, repetition_type, isAdjustedToUTC, unit, field_id) {
   return {
     name,
     type: 'INT64',
     logical_type: { type: 'TIMESTAMP', isAdjustedToUTC, unit },
     repetition_type,
+    field_id,
   }
 }
