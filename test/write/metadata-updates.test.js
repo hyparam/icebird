@@ -97,6 +97,38 @@ describe('metadata schema updates', () => {
     expect(next['last-column-id']).toBe(3)
   })
 
+  it('rejects add-schema when a new field fills an id gap below nested last-column-id', () => {
+    /** @type {Schema} */
+    const listSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        {
+          id: 1,
+          name: 'tags',
+          required: false,
+          type: { type: 'list', 'element-id': 3, 'element-required': false, element: 'string' },
+        },
+      ],
+    }
+    /** @type {Schema} */
+    const nextSchema = {
+      type: 'struct',
+      'schema-id': -1,
+      fields: [
+        ...listSchema.fields,
+        { id: 2, name: 'tag', required: true, type: 'string' },
+      ],
+    }
+
+    expect(() => applyUpdates(tableMetadata({
+      'last-column-id': 3,
+      schemas: [listSchema],
+    }), [
+      { action: 'add-schema', schema: nextSchema },
+    ])).toThrow(/field tag uses unassigned id 2 \(last-column-id 3\)/)
+  })
+
   it('rejects add-schema with write-default on a v2 table', () => {
     /** @type {Schema} */
     const schemaWithDefault = {

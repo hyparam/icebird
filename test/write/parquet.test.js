@@ -444,6 +444,61 @@ describe('writeParquet', () => {
     expect(rows[3]).toEqual({ id: 4n, props: { only: 7 } })
   })
 
+  it('rejects unsupported map key types', () => {
+    const writer = new ByteWriter()
+    /** @type {Schema} */
+    const mapSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        {
+          id: 1,
+          name: 'm',
+          required: false,
+          type: {
+            type: 'map',
+            'key-id': 2,
+            key: 'long',
+            'value-id': 3,
+            'value-required': false,
+            value: 'string',
+          },
+        },
+      ],
+    }
+
+    expect(() => writeParquet({ writer, schema: mapSchema, records: [{ m: new Map([[1n, 'one']]) }] }))
+      .toThrow('unsupported iceberg map key type: long')
+  })
+
+  it('writes a map<int,string> column', async () => {
+    const writer = new ByteWriter()
+    /** @type {Schema} */
+    const mapSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        {
+          id: 1,
+          name: 'm',
+          required: false,
+          type: {
+            type: 'map',
+            'key-id': 2,
+            key: 'int',
+            'value-id': 3,
+            'value-required': false,
+            value: 'string',
+          },
+        },
+      ],
+    }
+
+    writeParquet({ writer, schema: mapSchema, records: [{ m: new Map([[1, 'one'], [2, 'two']]) }] })
+    const rows = await parquetReadObjects({ file: writer.getBuffer(), compressors })
+    expect(rows).toEqual([{ m: { 1: 'one', 2: 'two' } }])
+  })
+
   it('accepts ES Map and array-of-pairs inputs for map columns', async () => {
     const writer = new ByteWriter()
     /** @type {Schema} */

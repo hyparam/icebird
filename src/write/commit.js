@@ -240,17 +240,10 @@ export function applyUpdates(metadata, updates) {
       const newSchema = { ...up.schema, 'schema-id': schemaId }
       validateSchemaForVersion(newSchema, next['format-version'])
       const priorLastColumnId = next['last-column-id'] ?? 0
+      const priorAssignedIds = currentAssignedIdIndex(schemas, next['current-schema-id'])
+      validateAssignedFieldIds(newSchema, priorAssignedIds, priorLastColumnId)
       validateSchemaEvolution(schemas, newSchema, priorLastColumnId, next['format-version'])
-      for (const field of newSchema.fields) {
-        if (field.id > priorLastColumnId && field.required) {
-          if (field['initial-default'] == null) {
-            throw new Error(`add-schema: required field ${field.name} (id ${field.id}) needs a non-null initial-default`)
-          }
-          if (field['write-default'] == null) {
-            throw new Error(`add-schema: required field ${field.name} (id ${field.id}) needs a non-null write-default`)
-          }
-        }
-      }
+      validateNewRequiredFields(newSchema, priorLastColumnId)
       next = {
         ...next,
         schemas: [...schemas, newSchema],
@@ -345,6 +338,134 @@ export function applyUpdates(metadata, updates) {
     }
   }
   return next
+}
+
+/**
+ * @typedef {{ kind: string, path: string }} AssignedFieldId
+ */
+
+/**
+ * @param {Schema[]} schemas
+ * @param {number} currentSchemaId
+ * @returns {Map<number, AssignedFieldId>}
+ */
+function currentAssignedIdIndex(schemas, currentSchemaId) {
+  const currentSchema = schemas.find(s => s['schema-id'] === currentSchemaId) ?? schemas[schemas.length - 1]
+  const assignedIds = new Map()
+  if (currentSchema) indexAssignedFieldIds(currentSchema.fields, '', assignedIds)
+  return assignedIds
+}
+
+/**
+ * @param {Field[]} fields
+ * @param {string} prefix
+ * @param {Map<number, AssignedFieldId>} assignedIds
+ */
+function indexAssignedFieldIds(fields, prefix, assignedIds) {
+  for (const field of fields) {
+    const path = prefix ? `${prefix}.${field.name}` : field.name
+    assignedIds.set(field.id, { kind: 'field', path })
+    indexAssignedTypeIds(field.type, path, assignedIds)
+  }
+}
+
+/**
+ * @param {IcebergType} type
+ * @param {string} path
+ * @param {Map<number, AssignedFieldId>} assignedIds
+ */
+function indexAssignedTypeIds(type, path, assignedIds) {
+  if (typeof type === 'string') return
+  if (type.type === 'struct') {
+    indexAssignedFieldIds(type.fields, path, assignedIds)
+  } else if (type.type === 'list') {
+    assignedIds.set(type['element-id'], { kind: 'list element', path: `${path}.element` })
+    indexAssignedTypeIds(type.element, `${path}.element`, assignedIds)
+  } else if (type.type === 'map') {
+    assignedIds.set(type['key-id'], { kind: 'map key', path: `${path}.key` })
+    assignedIds.set(type['value-id'], { kind: 'map value', path: `${path}.value` })
+    indexAssignedTypeIds(type.key, `${path}.key`, assignedIds)
+    indexAssignedTypeIds(type.value, `${path}.value`, assignedIds)
+  }
+}
+
+/**
+ * @param {Schema} schema
+ * @param {Map<number, AssignedFieldId>} priorAssignedIds
+ * @param {number} priorLastColumnId
+ */
+function validateAssignedFieldIds(schema, priorAssignedIds, priorLastColumnId) {
+  validateAssignedFields(schema.fields, '', priorAssignedIds, priorLastColumnId)
+}
+
+/**
+ * @param {Field[]} fields
+ * @param {string} prefix
+ * @param {Map<number, AssignedFieldId>} priorAssignedIds
+ * @param {number} priorLastColumnId
+ */
+function validateAssignedFields(fields, prefix, priorAssignedIds, priorLastColumnId) {
+  for (const field of fields) {
+    const path = prefix ? `${prefix}.${field.name}` : field.name
+    validateAssignedId(field.id, 'field', path, priorAssignedIds, priorLastColumnId)
+    validateAssignedTypeIds(field.type, path, priorAssignedIds, priorLastColumnId)
+  }
+}
+
+/**
+ * @param {IcebergType} type
+ * @param {string} path
+ * @param {Map<number, AssignedFieldId>} priorAssignedIds
+ * @param {number} priorLastColumnId
+ */
+function validateAssignedTypeIds(type, path, priorAssignedIds, priorLastColumnId) {
+  if (typeof type === 'string') return
+  if (type.type === 'struct') {
+    validateAssignedFields(type.fields, path, priorAssignedIds, priorLastColumnId)
+  } else if (type.type === 'list') {
+    validateAssignedId(type['element-id'], 'list element', `${path}.element`, priorAssignedIds, priorLastColumnId)
+    validateAssignedTypeIds(type.element, `${path}.element`, priorAssignedIds, priorLastColumnId)
+  } else if (type.type === 'map') {
+    validateAssignedId(type['key-id'], 'map key', `${path}.key`, priorAssignedIds, priorLastColumnId)
+    validateAssignedId(type['value-id'], 'map value', `${path}.value`, priorAssignedIds, priorLastColumnId)
+    validateAssignedTypeIds(type.key, `${path}.key`, priorAssignedIds, priorLastColumnId)
+    validateAssignedTypeIds(type.value, `${path}.value`, priorAssignedIds, priorLastColumnId)
+  }
+}
+
+/**
+ * @param {number} id
+ * @param {string} kind
+ * @param {string} path
+ * @param {Map<number, AssignedFieldId>} priorAssignedIds
+ * @param {number} priorLastColumnId
+ */
+function validateAssignedId(id, kind, path, priorAssignedIds, priorLastColumnId) {
+  if (id > priorLastColumnId) return
+  const prior = priorAssignedIds.get(id)
+  if (!prior) {
+    throw new Error(`add-schema: ${kind} ${path} uses unassigned id ${id} (last-column-id ${priorLastColumnId})`)
+  }
+  if (prior.kind !== kind) {
+    throw new Error(`add-schema: ${kind} ${path} uses id ${id} previously assigned to ${prior.kind} ${prior.path}`)
+  }
+}
+
+/**
+ * @param {Schema} schema
+ * @param {number} priorLastColumnId
+ */
+function validateNewRequiredFields(schema, priorLastColumnId) {
+  for (const field of schema.fields) {
+    if (field.id > priorLastColumnId && field.required) {
+      if (field['initial-default'] == null) {
+        throw new Error(`add-schema: required field ${field.name} (id ${field.id}) needs a non-null initial-default`)
+      }
+      if (field['write-default'] == null) {
+        throw new Error(`add-schema: required field ${field.name} (id ${field.id}) needs a non-null write-default`)
+      }
+    }
+  }
 }
 
 /**

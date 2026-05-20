@@ -196,6 +196,9 @@ function icebergTypeToParquetFields(name, type, required, fieldId) {
       ]
     }
     if (type.type === 'map') {
+      if (type.key !== 'string' && type.key !== 'int') {
+        throw new Error(`unsupported iceberg map key type: ${typeName(type.key)}`)
+      }
       // Iceberg map keys are always required (no `key-required` in the spec).
       const keyFields = icebergTypeToParquetFields('key', type.key, true, type['key-id'])
       const valueFields = icebergTypeToParquetFields(
