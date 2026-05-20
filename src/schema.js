@@ -1,5 +1,5 @@
 /**
- * @import {IcebergType, Schema} from '../src/types.js'
+ * @import {Field, IcebergType, Schema} from '../src/types.js'
  */
 
 /**
@@ -19,6 +19,39 @@ export function validateSchemaForVersion(schema, formatVersion) {
 }
 
 /**
+ * @param {Field[]} fields
+ * @returns {number}
+ */
+export function maxFieldId(fields = []) {
+  let max = 0
+  for (const field of fields) {
+    if (max < field.id) max = field.id
+    const nested = maxNestedFieldId(field.type)
+    if (max < nested) max = nested
+  }
+  return max
+}
+
+/**
+ * @param {IcebergType} type
+ * @returns {number}
+ */
+function maxNestedFieldId(type) {
+  if (typeof type === 'string') return 0
+  if (type.type === 'list') {
+    const elementId = type['element-id'] ?? 0
+    return Math.max(elementId, maxNestedFieldId(type.element))
+  }
+  if (type.type === 'map') {
+    const keyId = type['key-id'] ?? 0
+    const valueId = type['value-id'] ?? 0
+    return Math.max(keyId, valueId, maxNestedFieldId(type.key), maxNestedFieldId(type.value))
+  }
+  if (type.type === 'struct') return maxFieldId(type.fields)
+  return 0
+}
+
+/**
  * Spec v3 §"Reserved Field IDs": user schemas must not use field ids
  * greater than 2147483447 (`Integer.MAX_VALUE - 200`). The reserved range
  * holds engine-managed metadata columns (`_file`, `_pos`, `_deleted`,
@@ -30,7 +63,6 @@ export function validateSchemaForVersion(schema, formatVersion) {
 const MAX_USER_FIELD_ID = 2147483447
 
 /**
- * @import {Field} from '../src/types.js'
  * @param {Field} field
  * @param {number} formatVersion
  * @param {string} path

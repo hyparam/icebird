@@ -1,4 +1,4 @@
-import { validateSchemaForVersion } from './schema.js'
+import { maxFieldId, validateSchemaForVersion } from './schema.js'
 import { uuid4 } from './utils.js'
 
 /**
@@ -95,19 +95,7 @@ export async function icebergCreate({
 }
 
 /**
- * @import {Field, PartitionField, PartitionSpec, Schema, SortOrder, TableMetadata} from '../src/types.js'
- * @param {Field[]} fields
- * @returns {number}
- */
-function maxFieldId (fields = []) {
-  let max = 0
-  for (const f of fields) {
-    if (max < f.id) max = f.id
-  }
-  return max
-}
-
-/**
+ * @import {PartitionField, PartitionSpec, Schema, SortOrder, TableMetadata} from '../src/types.js'
  * @param {PartitionField[]} partitionFields
  * @returns {number}
  */

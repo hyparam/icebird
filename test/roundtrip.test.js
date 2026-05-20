@@ -82,6 +82,133 @@ describe('icebergCreate + icebergStageAppend + icebergRead round-trip', () => {
     expect(read).toEqual(records)
   })
 
+  it('round-trips list columns through icebergCreate + icebergRead', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/list'
+    const { resolver } = memResolver()
+
+    /** @type {Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        {
+          id: 2,
+          name: 'tags',
+          required: false,
+          type: { type: 'list', 'element-id': 3, 'element-required': false, element: 'string' },
+        },
+        {
+          id: 4,
+          name: 'counts',
+          required: false,
+          type: { type: 'list', 'element-id': 5, 'element-required': true, element: 'int' },
+        },
+      ],
+    }
+
+    const created = await icebergCreate({ tableUrl, resolver, schema })
+    expect(created['last-column-id']).toBe(5)
+
+    const records = [
+      { id: 1n, tags: ['a', 'b'], counts: [1, 2, 3] },
+      { id: 2n, tags: [], counts: [] },
+      { id: 3n, tags: ['only'], counts: [42] },
+    ]
+
+    const staged = await icebergStageAppend({ tableUrl, metadata: created, records, resolver })
+    const committed = await fileCatalogCommit({ tableUrl, metadata: created, staged, resolver })
+
+    const read = await icebergRead({ tableUrl, metadata: committed, resolver })
+    expect(read).toEqual(records)
+  })
+
+  it('round-trips a map column through icebergCreate + icebergRead', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/map'
+    const { resolver } = memResolver()
+
+    /** @type {Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        {
+          id: 2,
+          name: 'attrs',
+          required: false,
+          type: {
+            type: 'map',
+            'key-id': 3,
+            key: 'string',
+            'value-id': 4,
+            'value-required': false,
+            value: 'string',
+          },
+        },
+      ],
+    }
+
+    const created = await icebergCreate({ tableUrl, resolver, schema })
+    expect(created['last-column-id']).toBe(4)
+
+    const records = [
+      { id: 1n, attrs: { color: 'red', size: 'L' } },
+      { id: 2n, attrs: {} },
+      { id: 3n, attrs: { only: 'one' } },
+    ]
+
+    const staged = await icebergStageAppend({ tableUrl, metadata: created, records, resolver })
+    const committed = await fileCatalogCommit({ tableUrl, metadata: created, staged, resolver })
+
+    const read = await icebergRead({ tableUrl, metadata: committed, resolver })
+    expect(read).toEqual(records)
+  })
+
+  it('round-trips a struct column through icebergCreate + icebergRead', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/struct'
+    const { resolver } = memResolver()
+
+    /** @type {Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        {
+          id: 2,
+          name: 'point',
+          required: false,
+          type: {
+            type: 'struct',
+            'schema-id': 0,
+            fields: [
+              { id: 3, name: 'x', required: true, type: 'double' },
+              { id: 4, name: 'y', required: true, type: 'double' },
+            ],
+          },
+        },
+      ],
+    }
+
+    const created = await icebergCreate({ tableUrl, resolver, schema })
+    expect(created['last-column-id']).toBe(4)
+
+    const records = [
+      { id: 1n, point: { x: 1.5, y: 2.5 } },
+      { id: 2n, point: { x: -1, y: 0 } },
+    ]
+
+    const staged = await icebergStageAppend({ tableUrl, metadata: created, records, resolver })
+    const committed = await fileCatalogCommit({ tableUrl, metadata: created, staged, resolver })
+
+    const read = await icebergRead({ tableUrl, metadata: committed, resolver })
+    expect(read).toEqual(records)
+  })
+
   it('partitions a decimal column by bucket and round-trips', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
     const tableUrl = 'http://test/decimal-bucket'

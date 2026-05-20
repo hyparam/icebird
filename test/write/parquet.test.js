@@ -267,6 +267,487 @@ describe('writeParquet', () => {
     ])
   })
 
+  it('writes a list<long> column with 3-level LIST structure and stamped element-id', async () => {
+    const writer = new ByteWriter()
+    /** @type {Schema} */
+    const listSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        {
+          id: 2,
+          name: 'scores',
+          required: false,
+          type: { type: 'list', 'element-id': 3, 'element-required': false, element: 'long' },
+        },
+      ],
+    }
+    const records = [
+      { id: 1n, scores: [10n, 20n] },
+      { id: 2n, scores: [] },
+      { id: 3n, scores: null },
+      { id: 4n, scores: [99n, null, 1n] },
+    ]
+    writeParquet({ writer, schema: listSchema, records })
+    const file = writer.getBuffer()
+    const meta = parquetMetadata(file)
+
+    const rows = await parquetReadObjects({ file, compressors })
+    expect(rows[0]).toEqual({ id: 1n, scores: [10n, 20n] })
+    expect(rows[1]).toEqual({ id: 2n, scores: [] })
+    expect(rows[2].scores ?? null).toBeNull()
+    expect(rows[3]).toEqual({ id: 4n, scores: [99n, null, 1n] })
+
+    const scores = meta.schema.find(s => s.name === 'scores')
+    expect(scores).toMatchObject({
+      converted_type: 'LIST',
+      logical_type: { type: 'LIST' },
+      repetition_type: 'OPTIONAL',
+      num_children: 1,
+      field_id: 2,
+    })
+    const repeated = meta.schema.find(s => s.name === 'list')
+    expect(repeated).toMatchObject({ repetition_type: 'REPEATED', num_children: 1 })
+    const element = meta.schema.find(s => s.name === 'element')
+    expect(element).toMatchObject({ type: 'INT64', repetition_type: 'OPTIONAL', field_id: 3 })
+  })
+
+  it('writes a required list<string> with required elements', async () => {
+    const writer = new ByteWriter()
+    /** @type {Schema} */
+    const listSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        {
+          id: 1,
+          name: 'tags',
+          required: true,
+          type: { type: 'list', 'element-id': 2, 'element-required': true, element: 'string' },
+        },
+      ],
+    }
+    const records = [
+      { tags: ['a', 'b'] },
+      { tags: ['c'] },
+    ]
+    writeParquet({ writer, schema: listSchema, records })
+    const file = writer.getBuffer()
+    const meta = parquetMetadata(file)
+
+    expect(meta.schema.find(s => s.name === 'tags')?.repetition_type).toBe('REQUIRED')
+    expect(meta.schema.find(s => s.name === 'element')).toMatchObject({
+      type: 'BYTE_ARRAY',
+      converted_type: 'UTF8',
+      repetition_type: 'REQUIRED',
+      field_id: 2,
+    })
+
+    const rows = await parquetReadObjects({ file, compressors })
+    expect(rows).toEqual(records)
+  })
+
+  it('writes nested list<list<int>>', async () => {
+    const writer = new ByteWriter()
+    /** @type {Schema} */
+    const listSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        {
+          id: 1,
+          name: 'matrix',
+          required: false,
+          type: {
+            type: 'list',
+            'element-id': 2,
+            'element-required': false,
+            element: { type: 'list', 'element-id': 3, 'element-required': false, element: 'int' },
+          },
+        },
+      ],
+    }
+    const records = [
+      { matrix: [[1, 2], [3]] },
+      { matrix: [] },
+      { matrix: null },
+    ]
+    writeParquet({ writer, schema: listSchema, records })
+    const file = writer.getBuffer()
+    const rows = await parquetReadObjects({ file, compressors })
+    expect(rows[0]).toEqual({ matrix: [[1, 2], [3]] })
+    expect(rows[1]).toEqual({ matrix: [] })
+    expect(rows[2].matrix ?? null).toBeNull()
+  })
+
+  it('writes a map<string,int> column with 3-level MAP structure', async () => {
+    const writer = new ByteWriter()
+    /** @type {Schema} */
+    const mapSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        {
+          id: 2,
+          name: 'props',
+          required: false,
+          type: {
+            type: 'map',
+            'key-id': 3,
+            key: 'string',
+            'value-id': 4,
+            'value-required': false,
+            value: 'int',
+          },
+        },
+      ],
+    }
+    const records = [
+      { id: 1n, props: { a: 1, b: 2 } },
+      { id: 2n, props: {} },
+      { id: 3n, props: null },
+      { id: 4n, props: { only: 7 } },
+    ]
+    writeParquet({ writer, schema: mapSchema, records })
+    const file = writer.getBuffer()
+    const meta = parquetMetadata(file)
+
+    expect(meta.schema.find(s => s.name === 'props')).toMatchObject({
+      converted_type: 'MAP',
+      logical_type: { type: 'MAP' },
+      repetition_type: 'OPTIONAL',
+      num_children: 1,
+      field_id: 2,
+    })
+    expect(meta.schema.find(s => s.name === 'key_value')).toMatchObject({
+      repetition_type: 'REPEATED',
+      num_children: 2,
+    })
+    expect(meta.schema.find(s => s.name === 'key')).toMatchObject({
+      type: 'BYTE_ARRAY',
+      converted_type: 'UTF8',
+      repetition_type: 'REQUIRED',
+      field_id: 3,
+    })
+    expect(meta.schema.find(s => s.name === 'value')).toMatchObject({
+      type: 'INT32',
+      repetition_type: 'OPTIONAL',
+      field_id: 4,
+    })
+
+    const rows = await parquetReadObjects({ file, compressors })
+    expect(rows[0]).toEqual({ id: 1n, props: { a: 1, b: 2 } })
+    expect(rows[1]).toEqual({ id: 2n, props: {} })
+    expect(rows[2].props ?? null).toBeNull()
+    expect(rows[3]).toEqual({ id: 4n, props: { only: 7 } })
+  })
+
+  it('rejects unsupported map key types', () => {
+    const writer = new ByteWriter()
+    /** @type {Schema} */
+    const mapSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        {
+          id: 1,
+          name: 'm',
+          required: false,
+          type: {
+            type: 'map',
+            'key-id': 2,
+            key: 'long',
+            'value-id': 3,
+            'value-required': false,
+            value: 'string',
+          },
+        },
+      ],
+    }
+
+    expect(() => writeParquet({ writer, schema: mapSchema, records: [{ m: new Map([[1n, 'one']]) }] }))
+      .toThrow('unsupported iceberg map key type: long')
+  })
+
+  it('writes a map<int,string> column', async () => {
+    const writer = new ByteWriter()
+    /** @type {Schema} */
+    const mapSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        {
+          id: 1,
+          name: 'm',
+          required: false,
+          type: {
+            type: 'map',
+            'key-id': 2,
+            key: 'int',
+            'value-id': 3,
+            'value-required': false,
+            value: 'string',
+          },
+        },
+      ],
+    }
+
+    writeParquet({ writer, schema: mapSchema, records: [{ m: new Map([[1, 'one'], [2, 'two']]) }] })
+    const rows = await parquetReadObjects({ file: writer.getBuffer(), compressors })
+    expect(rows).toEqual([{ m: { 1: 'one', 2: 'two' } }])
+  })
+
+  it('accepts ES Map and array-of-pairs inputs for map columns', async () => {
+    const writer = new ByteWriter()
+    /** @type {Schema} */
+    const mapSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        {
+          id: 1,
+          name: 'm',
+          required: true,
+          type: {
+            type: 'map',
+            'key-id': 2,
+            key: 'string',
+            'value-id': 3,
+            'value-required': true,
+            value: 'long',
+          },
+        },
+      ],
+    }
+    const records = [
+      { m: new Map([['x', 1n], ['y', 2n]]) },
+      { m: [['k1', 10n], ['k2', 20n]] },
+      { m: [{ key: 'k', value: 99n }] },
+    ]
+    writeParquet({ writer, schema: mapSchema, records })
+    const rows = await parquetReadObjects({ file: writer.getBuffer(), compressors })
+    expect(rows).toEqual([
+      { m: { x: 1n, y: 2n } },
+      { m: { k1: 10n, k2: 20n } },
+      { m: { k: 99n } },
+    ])
+  })
+
+  it('writes nested list<map<string,int>>', async () => {
+    const writer = new ByteWriter()
+    /** @type {Schema} */
+    const nestedSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        {
+          id: 1,
+          name: 'sessions',
+          required: false,
+          type: {
+            type: 'list',
+            'element-id': 2,
+            'element-required': false,
+            element: {
+              type: 'map',
+              'key-id': 3,
+              key: 'string',
+              'value-id': 4,
+              'value-required': false,
+              value: 'int',
+            },
+          },
+        },
+      ],
+    }
+    const records = [
+      { sessions: [{ a: 1 }, { b: 2, c: 3 }] },
+      { sessions: [] },
+    ]
+    writeParquet({ writer, schema: nestedSchema, records })
+    const rows = await parquetReadObjects({ file: writer.getBuffer(), compressors })
+    expect(rows).toEqual(records)
+  })
+
+  it('writes a struct column as a parquet group with stamped child field ids', async () => {
+    const writer = new ByteWriter()
+    /** @type {Schema} */
+    const structSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        {
+          id: 2,
+          name: 'point',
+          required: false,
+          type: {
+            type: 'struct',
+            'schema-id': 0,
+            fields: [
+              { id: 3, name: 'x', required: true, type: 'double' },
+              { id: 4, name: 'y', required: true, type: 'double' },
+            ],
+          },
+        },
+      ],
+    }
+    const records = [
+      { id: 1n, point: { x: 1.5, y: 2.5 } },
+      { id: 2n, point: null },
+      { id: 3n, point: { x: -1, y: 0 } },
+    ]
+    writeParquet({ writer, schema: structSchema, records })
+    const file = writer.getBuffer()
+    const meta = parquetMetadata(file)
+
+    expect(meta.schema.find(s => s.name === 'point')).toMatchObject({
+      repetition_type: 'OPTIONAL',
+      num_children: 2,
+      field_id: 2,
+    })
+    expect(meta.schema.find(s => s.name === 'x')).toMatchObject({
+      type: 'DOUBLE',
+      repetition_type: 'REQUIRED',
+      field_id: 3,
+    })
+    expect(meta.schema.find(s => s.name === 'y')).toMatchObject({
+      type: 'DOUBLE',
+      repetition_type: 'REQUIRED',
+      field_id: 4,
+    })
+
+    const rows = await parquetReadObjects({ file, compressors })
+    expect(rows[0]).toEqual({ id: 1n, point: { x: 1.5, y: 2.5 } })
+    expect(rows[1].point ?? null).toBeNull()
+    expect(rows[2]).toEqual({ id: 3n, point: { x: -1, y: 0 } })
+  })
+
+  it('materializes nested struct write-defaults', async () => {
+    const writer = new ByteWriter()
+    /** @type {Schema} */
+    const structSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        {
+          id: 2,
+          name: 'point',
+          required: false,
+          type: {
+            type: 'struct',
+            'schema-id': 0,
+            fields: [
+              { id: 3, name: 'x', required: true, type: 'double', 'write-default': 0 },
+              { id: 4, name: 'y', required: false, type: 'double', 'write-default': 0 },
+            ],
+          },
+        },
+      ],
+    }
+    const records = [
+      { id: 1n, point: { x: 1.5, y: 2.5 } },
+      { id: 2n, point: {} },
+      { id: 3n, point: { y: 4.5 } },
+      { id: 4n, point: null },
+    ]
+    writeParquet({ writer, schema: structSchema, records })
+
+    const rows = await parquetReadObjects({ file: writer.getBuffer(), compressors })
+    expect(rows[0]).toEqual({ id: 1n, point: { x: 1.5, y: 2.5 } })
+    expect(rows[1]).toEqual({ id: 2n, point: { x: 0, y: 0 } })
+    expect(rows[2]).toEqual({ id: 3n, point: { x: 0, y: 4.5 } })
+    expect(rows[3].point ?? null).toBeNull()
+  })
+
+  it('writes a struct containing list and map fields', async () => {
+    const writer = new ByteWriter()
+    /** @type {Schema} */
+    const nestedSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        {
+          id: 1,
+          name: 'profile',
+          required: true,
+          type: {
+            type: 'struct',
+            'schema-id': 0,
+            fields: [
+              { id: 2, name: 'name', required: true, type: 'string' },
+              {
+                id: 3,
+                name: 'roles',
+                required: false,
+                type: { type: 'list', 'element-id': 4, 'element-required': true, element: 'string' },
+              },
+              {
+                id: 5,
+                name: 'meta',
+                required: false,
+                type: {
+                  type: 'map',
+                  'key-id': 6,
+                  key: 'string',
+                  'value-id': 7,
+                  'value-required': true,
+                  value: 'int',
+                },
+              },
+            ],
+          },
+        },
+      ],
+    }
+    const records = [
+      { profile: { name: 'alice', roles: ['admin', 'editor'], meta: { age: 30 } } },
+      { profile: { name: 'bob', roles: [], meta: {} } },
+    ]
+    writeParquet({ writer, schema: nestedSchema, records })
+    const rows = await parquetReadObjects({ file: writer.getBuffer(), compressors })
+    expect(rows).toEqual(records)
+  })
+
+  it('writes a struct nested inside a list', async () => {
+    const writer = new ByteWriter()
+    /** @type {Schema} */
+    const nestedSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        {
+          id: 1,
+          name: 'points',
+          required: false,
+          type: {
+            type: 'list',
+            'element-id': 2,
+            'element-required': true,
+            element: {
+              type: 'struct',
+              'schema-id': 0,
+              fields: [
+                { id: 3, name: 'x', required: true, type: 'int' },
+                { id: 4, name: 'y', required: true, type: 'int' },
+              ],
+            },
+          },
+        },
+      ],
+    }
+    const records = [
+      { points: [{ x: 1, y: 2 }, { x: 3, y: 4 }] },
+      { points: [] },
+    ]
+    writeParquet({ writer, schema: nestedSchema, records })
+    const rows = await parquetReadObjects({ file: writer.getBuffer(), compressors })
+    expect(rows).toEqual(records)
+  })
+
   it('rejects required unknown columns', () => {
     const writer = new ByteWriter()
     /** @type {Schema} */

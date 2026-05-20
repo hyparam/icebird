@@ -46,6 +46,10 @@ export function computeColumnStats(records, schema) {
   for (const field of schema.fields) {
     const type = typeName(field.type)
     if (type === 'unknown') continue
+    // Iceberg metrics are reported per-leaf field id. Skip nested top-level
+    // fields entirely rather than emit value_counts keyed by the parent id
+    // (which Spark/pyiceberg never write).
+    if (type === 'list' || type === 'map' || type === 'struct') continue
 
     if (isGeoType(type)) {
       const { value_count, null_count, lower, upper } = computeGeoBounds(records, field)
