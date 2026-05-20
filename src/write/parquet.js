@@ -103,6 +103,32 @@ function icebergTypeToParquetFields(name, type, required, fieldId) {
         ...elementFields,
       ]
     }
+    if (type.type === 'map') {
+      // Iceberg map keys are always required (no `key-required` in the spec).
+      const keyFields = icebergTypeToParquetFields('key', type.key, true, type['key-id'])
+      const valueFields = icebergTypeToParquetFields(
+        'value', type.value, type['value-required'], type['value-id']
+      )
+      if (!keyFields.length) {
+        throw new Error(`unsupported iceberg map key type: ${typeName(type.key)}`)
+      }
+      if (!valueFields.length) {
+        throw new Error(`unsupported iceberg map value type: ${typeName(type.value)}`)
+      }
+      return [
+        {
+          name,
+          converted_type: 'MAP',
+          logical_type: { type: 'MAP' },
+          repetition_type,
+          num_children: 1,
+          field_id: fieldId,
+        },
+        { name: 'key_value', repetition_type: 'REPEATED', num_children: 2 },
+        ...keyFields,
+        ...valueFields,
+      ]
+    }
     throw new Error(`unsupported iceberg type: ${type.type}`)
   }
   if (type.startsWith('geometry')) {

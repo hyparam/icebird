@@ -381,6 +381,141 @@ describe('writeParquet', () => {
     expect(rows[2].matrix ?? null).toBeNull()
   })
 
+  it('writes a map<string,int> column with 3-level MAP structure', async () => {
+    const writer = new ByteWriter()
+    /** @type {Schema} */
+    const mapSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        {
+          id: 2,
+          name: 'props',
+          required: false,
+          type: {
+            type: 'map',
+            'key-id': 3,
+            key: 'string',
+            'value-id': 4,
+            'value-required': false,
+            value: 'int',
+          },
+        },
+      ],
+    }
+    const records = [
+      { id: 1n, props: { a: 1, b: 2 } },
+      { id: 2n, props: {} },
+      { id: 3n, props: null },
+      { id: 4n, props: { only: 7 } },
+    ]
+    writeParquet({ writer, schema: mapSchema, records })
+    const file = writer.getBuffer()
+    const meta = parquetMetadata(file)
+
+    expect(meta.schema.find(s => s.name === 'props')).toMatchObject({
+      converted_type: 'MAP',
+      logical_type: { type: 'MAP' },
+      repetition_type: 'OPTIONAL',
+      num_children: 1,
+      field_id: 2,
+    })
+    expect(meta.schema.find(s => s.name === 'key_value')).toMatchObject({
+      repetition_type: 'REPEATED',
+      num_children: 2,
+    })
+    expect(meta.schema.find(s => s.name === 'key')).toMatchObject({
+      type: 'BYTE_ARRAY',
+      converted_type: 'UTF8',
+      repetition_type: 'REQUIRED',
+      field_id: 3,
+    })
+    expect(meta.schema.find(s => s.name === 'value')).toMatchObject({
+      type: 'INT32',
+      repetition_type: 'OPTIONAL',
+      field_id: 4,
+    })
+
+    const rows = await parquetReadObjects({ file, compressors })
+    expect(rows[0]).toEqual({ id: 1n, props: { a: 1, b: 2 } })
+    expect(rows[1]).toEqual({ id: 2n, props: {} })
+    expect(rows[2].props ?? null).toBeNull()
+    expect(rows[3]).toEqual({ id: 4n, props: { only: 7 } })
+  })
+
+  it('accepts ES Map and array-of-pairs inputs for map columns', async () => {
+    const writer = new ByteWriter()
+    /** @type {Schema} */
+    const mapSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        {
+          id: 1,
+          name: 'm',
+          required: true,
+          type: {
+            type: 'map',
+            'key-id': 2,
+            key: 'string',
+            'value-id': 3,
+            'value-required': true,
+            value: 'long',
+          },
+        },
+      ],
+    }
+    const records = [
+      { m: new Map([['x', 1n], ['y', 2n]]) },
+      { m: [['k1', 10n], ['k2', 20n]] },
+      { m: [{ key: 'k', value: 99n }] },
+    ]
+    writeParquet({ writer, schema: mapSchema, records })
+    const rows = await parquetReadObjects({ file: writer.getBuffer(), compressors })
+    expect(rows).toEqual([
+      { m: { x: 1n, y: 2n } },
+      { m: { k1: 10n, k2: 20n } },
+      { m: { k: 99n } },
+    ])
+  })
+
+  it('writes nested list<map<string,int>>', async () => {
+    const writer = new ByteWriter()
+    /** @type {Schema} */
+    const nestedSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        {
+          id: 1,
+          name: 'sessions',
+          required: false,
+          type: {
+            type: 'list',
+            'element-id': 2,
+            'element-required': false,
+            element: {
+              type: 'map',
+              'key-id': 3,
+              key: 'string',
+              'value-id': 4,
+              'value-required': false,
+              value: 'int',
+            },
+          },
+        },
+      ],
+    }
+    const records = [
+      { sessions: [{ a: 1 }, { b: 2, c: 3 }] },
+      { sessions: [] },
+    ]
+    writeParquet({ writer, schema: nestedSchema, records })
+    const rows = await parquetReadObjects({ file: writer.getBuffer(), compressors })
+    expect(rows).toEqual(records)
+  })
+
   it('rejects required unknown columns', () => {
     const writer = new ByteWriter()
     /** @type {Schema} */
