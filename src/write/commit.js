@@ -1,4 +1,4 @@
-import { validateSchemaForVersion } from '../schema.js'
+import { maxFieldId, validateSchemaForVersion } from '../schema.js'
 import { parseDecimalType } from './conversions.js'
 
 /**
@@ -545,20 +545,4 @@ function idsListEquivalent(a, b) {
     if (a[i] !== b[i]) return false
   }
   return true
-}
-
-/**
- * Highest field id at the top level of a schema. Mirrors `create.js` and is
- * intentionally non-recursive; nested-type ids are not yet supported on
- * schema add.
- *
- * @param {Field[]} fields
- * @returns {number}
- */
-function maxFieldId(fields = []) {
-  let max = 0
-  for (const f of fields) {
-    if (f.id > max) max = f.id
-  }
-  return max
 }

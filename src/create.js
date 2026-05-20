@@ -1,4 +1,4 @@
-import { validateSchemaForVersion } from './schema.js'
+import { maxFieldId, validateSchemaForVersion } from './schema.js'
 import { uuid4 } from './utils.js'
 
 /**
@@ -95,40 +95,7 @@ export async function icebergCreate({
 }
 
 /**
- * @import {Field, IcebergType, PartitionField, PartitionSpec, Schema, SortOrder, TableMetadata} from '../src/types.js'
- * @param {Field[]} fields
- * @returns {number}
- */
-function maxFieldId (fields = []) {
-  let max = 0
-  for (const f of fields) {
-    if (max < f.id) max = f.id
-    const nested = maxNestedFieldId(f.type)
-    if (max < nested) max = nested
-  }
-  return max
-}
-
-/**
- * @param {IcebergType} type
- * @returns {number}
- */
-function maxNestedFieldId(type) {
-  if (typeof type === 'string') return 0
-  if (type.type === 'list') {
-    const eid = type['element-id'] ?? 0
-    return Math.max(eid, maxNestedFieldId(type.element))
-  }
-  if (type.type === 'map') {
-    const kid = type['key-id'] ?? 0
-    const vid = type['value-id'] ?? 0
-    return Math.max(kid, vid, maxNestedFieldId(type.key), maxNestedFieldId(type.value))
-  }
-  if (type.type === 'struct') return maxFieldId(type.fields)
-  return 0
-}
-
-/**
+ * @import {PartitionField, PartitionSpec, Schema, SortOrder, TableMetadata} from '../src/types.js'
  * @param {PartitionField[]} partitionFields
  * @returns {number}
  */
