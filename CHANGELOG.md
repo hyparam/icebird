@@ -1,5 +1,9 @@
 # Icebird Changelog
 
+## [0.8.4]
+ - Write support for Iceberg list, map, and struct types
+ - Validate field ids against the reserved range when adding columns to an existing table
+
 ## [0.8.3]
  - New `cachingResolver` wraps a `Resolver` to dedupe reads of the same path and share an in-memory buffer across range reads; writes and deletes invalidate the cached entry on success
 
