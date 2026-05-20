@@ -570,6 +570,44 @@ describe('writeParquet', () => {
     expect(rows[2]).toEqual({ id: 3n, point: { x: -1, y: 0 } })
   })
 
+  it('materializes nested struct write-defaults', async () => {
+    const writer = new ByteWriter()
+    /** @type {Schema} */
+    const structSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        {
+          id: 2,
+          name: 'point',
+          required: false,
+          type: {
+            type: 'struct',
+            'schema-id': 0,
+            fields: [
+              { id: 3, name: 'x', required: true, type: 'double', 'write-default': 0 },
+              { id: 4, name: 'y', required: false, type: 'double', 'write-default': 0 },
+            ],
+          },
+        },
+      ],
+    }
+    const records = [
+      { id: 1n, point: { x: 1.5, y: 2.5 } },
+      { id: 2n, point: {} },
+      { id: 3n, point: { y: 4.5 } },
+      { id: 4n, point: null },
+    ]
+    writeParquet({ writer, schema: structSchema, records })
+
+    const rows = await parquetReadObjects({ file: writer.getBuffer(), compressors })
+    expect(rows[0]).toEqual({ id: 1n, point: { x: 1.5, y: 2.5 } })
+    expect(rows[1]).toEqual({ id: 2n, point: { x: 0, y: 0 } })
+    expect(rows[2]).toEqual({ id: 3n, point: { x: 0, y: 4.5 } })
+    expect(rows[3].point ?? null).toBeNull()
+  })
+
   it('writes a struct containing list and map fields', async () => {
     const writer = new ByteWriter()
     /** @type {Schema} */

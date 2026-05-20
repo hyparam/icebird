@@ -56,16 +56,85 @@ export function writeParquet({ writer, schema, records, codec }) {
  */
 function extractColumn(records, field) {
   const out = new Array(records.length)
-  const writeDefault = field['write-default']
   for (let i = 0; i < records.length; i++) {
-    const v = records[i][field.name]
-    if (v !== undefined) {
-      out[i] = v
-    } else {
-      out[i] = writeDefault !== undefined ? writeDefault : null
-    }
+    out[i] = materializeFieldValue(records[i][field.name], field)
   }
   return out
+}
+
+/**
+ * @param {any} value
+ * @param {Field} field
+ * @returns {any}
+ */
+function materializeFieldValue(value, field) {
+  const writeDefault = field['write-default']
+  const v = value !== undefined ? value : writeDefault !== undefined ? writeDefault : null
+  return materializeNestedDefaults(v, field.type)
+}
+
+/**
+ * @param {any} value
+ * @param {IcebergType} type
+ * @returns {any}
+ */
+function materializeNestedDefaults(value, type) {
+  if (value === null || value === undefined || typeof type !== 'object') return value
+  if (type.type === 'struct') {
+    if (typeof value !== 'object' || Array.isArray(value)) return value
+    const out = { ...value }
+    for (const child of type.fields) {
+      out[child.name] = materializeFieldValue(value[child.name], child)
+    }
+    return out
+  }
+  if (type.type === 'list') {
+    if (!Array.isArray(value)) return value
+    return value.map(v => materializeNestedDefaults(v, type.element))
+  }
+  if (type.type === 'map') {
+    return materializeMapDefaults(value, type)
+  }
+  return value
+}
+
+/**
+ * @param {any} value
+ * @param {Extract<IcebergType, { type: 'map' }>} type
+ * @returns {any}
+ */
+function materializeMapDefaults(value, type) {
+  if (typeof type.key !== 'object' && typeof type.value !== 'object') return value
+  if (value instanceof Map) {
+    return Array.from(value.entries(), ([key, entryValue]) => ({
+      key: materializeNestedDefaults(key, type.key),
+      value: materializeNestedDefaults(entryValue, type.value),
+    }))
+  }
+  if (Array.isArray(value)) {
+    return value.map(entry => {
+      if (entry && typeof entry === 'object' && 'key' in entry && 'value' in entry) {
+        return {
+          key: materializeNestedDefaults(entry.key, type.key),
+          value: materializeNestedDefaults(entry.value, type.value),
+        }
+      }
+      if (Array.isArray(entry) && entry.length === 2) {
+        return {
+          key: materializeNestedDefaults(entry[0], type.key),
+          value: materializeNestedDefaults(entry[1], type.value),
+        }
+      }
+      return entry
+    })
+  }
+  if (typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, entryValue]) => [
+      key,
+      materializeNestedDefaults(entryValue, type.value),
+    ]))
+  }
+  return value
 }
 
 /**
