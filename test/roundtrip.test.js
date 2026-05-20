@@ -167,6 +167,48 @@ describe('icebergCreate + icebergStageAppend + icebergRead round-trip', () => {
     expect(read).toEqual(records)
   })
 
+  it('round-trips a struct column through icebergCreate + icebergRead', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/struct'
+    const { resolver } = memResolver()
+
+    /** @type {Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        {
+          id: 2,
+          name: 'point',
+          required: false,
+          type: {
+            type: 'struct',
+            'schema-id': 0,
+            fields: [
+              { id: 3, name: 'x', required: true, type: 'double' },
+              { id: 4, name: 'y', required: true, type: 'double' },
+            ],
+          },
+        },
+      ],
+    }
+
+    const created = await icebergCreate({ tableUrl, resolver, schema })
+    expect(created['last-column-id']).toBe(4)
+
+    const records = [
+      { id: 1n, point: { x: 1.5, y: 2.5 } },
+      { id: 2n, point: { x: -1, y: 0 } },
+    ]
+
+    const staged = await icebergStageAppend({ tableUrl, metadata: created, records, resolver })
+    const committed = await fileCatalogCommit({ tableUrl, metadata: created, staged, resolver })
+
+    const read = await icebergRead({ tableUrl, metadata: committed, resolver })
+    expect(read).toEqual(records)
+  })
+
   it('partitions a decimal column by bucket and round-trips', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
     const tableUrl = 'http://test/decimal-bucket'

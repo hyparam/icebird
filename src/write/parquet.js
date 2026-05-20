@@ -103,6 +103,29 @@ function icebergTypeToParquetFields(name, type, required, fieldId) {
         ...elementFields,
       ]
     }
+    if (type.type === 'struct') {
+      // Parquet group: <repetition> group <name> { children... }.
+      // Use child names verbatim (no `sanitize`) so hyparquet-writer's dremel
+      // can descend via `record[parent][child]` using the user's iceberg
+      // names. Nested fields with names that wouldn't survive Avro
+      // sanitization aren't supported here.
+      /** @type {SchemaElement[]} */
+      const allChildren = []
+      let directChildren = 0
+      for (const child of type.fields) {
+        const sub = icebergTypeToParquetFields(child.name, child.type, child.required, child.id)
+        if (!sub.length) continue
+        allChildren.push(...sub)
+        directChildren++
+      }
+      if (!directChildren) {
+        throw new Error(`struct ${name} has no writable children`)
+      }
+      return [
+        { name, repetition_type, num_children: directChildren, field_id: fieldId },
+        ...allChildren,
+      ]
+    }
     if (type.type === 'map') {
       // Iceberg map keys are always required (no `key-required` in the spec).
       const keyFields = icebergTypeToParquetFields('key', type.key, true, type['key-id'])
@@ -129,7 +152,7 @@ function icebergTypeToParquetFields(name, type, required, fieldId) {
         ...valueFields,
       ]
     }
-    throw new Error(`unsupported iceberg type: ${type.type}`)
+    throw new Error(`unsupported iceberg nested type: ${JSON.stringify(type)}`)
   }
   if (type.startsWith('geometry')) {
     return [{ name, type: 'BYTE_ARRAY', logical_type: { type: 'GEOMETRY' }, repetition_type, field_id: fieldId }]
