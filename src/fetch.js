@@ -403,10 +403,12 @@ async function decompressGzip(buf) {
  *
  * @param {string} url - The URL or path of the manifest file
  * @param {Resolver} resolver - Resolves a path to an AsyncBuffer
+ * @param {number} [byteLength] - Optional file size hint for resolvers that otherwise need a HEAD request.
  * @returns {Promise<Record<string, any>[]>} The decoded Avro records
  */
-export async function fetchAvroRecords(url, resolver) {
-  const ab = await resolver.reader(url)
+export async function fetchAvroRecords(url, resolver, byteLength) {
+  const lengthHint = byteLength !== undefined && Number.isFinite(byteLength) ? byteLength : undefined
+  const ab = await resolver.reader(url, lengthHint)
   const buffer = await ab.slice(0, ab.byteLength)
   const reader = { view: new DataView(buffer), offset: 0 }
   const { metadata, syncMarker } = await avroMetadata(reader)

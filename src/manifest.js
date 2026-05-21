@@ -56,7 +56,9 @@ async function fetchManifests(manifests, resolver) {
   // Fetch manifest entries in parallel
   return await Promise.all(manifests.map(async manifest => {
     const url = manifest.manifest_path
-    const entries = /** @type {ManifestEntry[]} */ (await fetchAvroRecords(url, resolver))
+    const entries = /** @type {ManifestEntry[]} */ (
+      await fetchAvroRecords(url, resolver, Number(manifest.manifest_length))
+    )
 
     // Inherit sequence number from manifest if not present in entry
     for (const entry of entries) {

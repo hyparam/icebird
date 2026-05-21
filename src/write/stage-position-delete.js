@@ -215,7 +215,9 @@ export async function icebergStagePositionDelete({ tableUrl, metadata, deletes, 
  * @returns {Promise<ManifestEntry[]>}
  */
 export async function loadManifestEntries(manifest, resolver) {
-  const entries = /** @type {ManifestEntry[]} */ (await fetchAvroRecords(manifest.manifest_path, resolver))
+  const entries = /** @type {ManifestEntry[]} */ (
+    await fetchAvroRecords(manifest.manifest_path, resolver, Number(manifest.manifest_length))
+  )
   for (const entry of entries) {
     entry.partition_spec_id = manifest.partition_spec_id ?? 0
     if (entry.sequence_number === undefined) {
