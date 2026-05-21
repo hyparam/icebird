@@ -7,6 +7,8 @@ import { deleteFileAppliesToDataEntry } from './delete.js'
 import { equalityMatch, sanitize } from './utils.js'
 import { concat } from 'hyparquet/src/utils.js'
 
+const DEFAULT_ROW_GROUP_CONCURRENCY = 4
+
 /**
  * Reads data from the Iceberg table with optional row-level delete processing.
  * Row indices are zero-based and rowEnd is exclusive.
@@ -21,6 +23,7 @@ import { concat } from 'hyparquet/src/utils.js'
  * @param {number | bigint} [options.snapshotId] - Optional snapshot id for time travel; defaults to the current snapshot.
  * @param {Resolver} [options.resolver] - Resolves a path to an AsyncBuffer.
  * @param {Lister} [options.lister] - Lists files in a directory.
+ * @param {number} [options.rowGroupConcurrency] - Per-file row-group read concurrency for materialized reads. Defaults to 4.
  * @returns {Promise<Array<Record<string, any>>>} Array of data records.
  */
 export async function icebergRead({
@@ -32,10 +35,12 @@ export async function icebergRead({
   snapshotId,
   resolver,
   lister,
+  rowGroupConcurrency = DEFAULT_ROW_GROUP_CONCURRENCY,
 }) {
   if (!tableUrl) throw new Error('tableUrl is required')
   if (rowStart > rowEnd) throw new Error('rowStart must be less than rowEnd')
   if (rowStart < 0) throw new Error('rowStart must be positive')
+  rowGroupConcurrency = normalizeRowGroupConcurrency(rowGroupConcurrency)
 
   resolver ??= urlResolver()
 
@@ -106,6 +111,7 @@ export async function icebergRead({
       rowLineage,
       positionDeletesMap,
       equalityDeleteGroups,
+      rowGroupConcurrency,
     })) {
       concat(rows, batch)
     }
@@ -139,6 +145,7 @@ export async function icebergRead({
  * @param {Map<string, Array<{deleteEntry: ManifestEntry, positions: Set<bigint>}>>} options.positionDeletesMap
  * @param {Array<{deleteEntry: ManifestEntry, rows: Record<string, any>[]}>} options.equalityDeleteGroups
  * @param {string[]} [options.wantedColumns] - iceberg field names to emit; if undefined, emit all current-schema fields
+ * @param {number} [options.rowGroupConcurrency] - Number of row groups to read concurrently while preserving yield order. Defaults to 1.
  * @param {AbortSignal} [options.signal]
  * @returns {AsyncGenerator<Array<Record<string, any>>>} batches of rows, one per parquet row group
  */
@@ -153,6 +160,7 @@ export async function* readDataFile({
   positionDeletesMap,
   equalityDeleteGroups,
   wantedColumns,
+  rowGroupConcurrency = 1,
   signal,
 }) {
   const { data_file, sequence_number, partition_spec_id } = dataEntry
@@ -160,6 +168,7 @@ export async function* readDataFile({
 
   // Check sequence numbers
   if (sequence_number === undefined) throw new Error('sequence number not found, check v2 inheritance logic')
+  const sequenceNumber = sequence_number
 
   // Use the spec the file was written under, not the table's current default
   // spec, since partition spec can evolve. Field names in `data_file.partition`
@@ -192,6 +201,7 @@ export async function* readDataFile({
   }
 
   // Determine which columns to read based on field ids
+  /** @type {(string | undefined)[]} */
   const parquetColumnNames = []
   for (const field of schema.fields) {
     const parquetField = parquetIcebergSchema.fields.find(f => f.id === field.id)
@@ -266,20 +276,11 @@ export async function* readDataFile({
     ? columns
     : parquetColumnNames.filter(n => n !== undefined)
 
-  // Stream row groups, intersecting each with [fileRowStart, fileRowEnd)
-  let groupStart = 0
-  for (const rowGroup of parquetMetadata.row_groups) {
-    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
-    const rowCount = Number(rowGroup.num_rows)
-    const groupEnd = groupStart + rowCount
-    if (groupEnd <= fileRowStart) {
-      groupStart = groupEnd
-      continue
-    }
-    if (groupStart >= fileRowEnd) break
-    const readStart = Math.max(groupStart, fileRowStart)
-    const readEnd = Math.min(groupEnd, fileRowEnd)
-
+  /**
+   * @param {{readStart: number, readEnd: number}} range
+   * @returns {Promise<Array<Record<string, any>>>}
+   */
+  async function readRowGroupRange({ readStart, readEnd }) {
     const rows = await parquetReadObjects({
       file: asyncBuffer,
       metadata: parquetMetadata,
@@ -357,7 +358,7 @@ export async function* readDataFile({
           row,
           pos,
           firstRowId: data_file.first_row_id,
-          sequenceNumber: sequence_number,
+          sequenceNumber,
           rowIdColumn: lineageColumns.rowId,
           lastUpdatedSequenceNumberColumn: lineageColumns.lastUpdatedSequenceNumber,
         })
@@ -366,10 +367,80 @@ export async function* readDataFile({
       }
       batch.push(mapped)
     }
-    if (batch.length > 0) yield batch
+    return batch
+  }
+
+  // Stream row groups, intersecting each with [fileRowStart, fileRowEnd)
+  /** @type {{readStart: number, readEnd: number}[]} */
+  const rowGroupRanges = []
+  let groupStart = 0
+  for (const rowGroup of parquetMetadata.row_groups) {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+    const rowCount = Number(rowGroup.num_rows)
+    const groupEnd = groupStart + rowCount
+    if (groupEnd <= fileRowStart) {
+      groupStart = groupEnd
+      continue
+    }
+    if (groupStart >= fileRowEnd) break
+    const readStart = Math.max(groupStart, fileRowStart)
+    const readEnd = Math.min(groupEnd, fileRowEnd)
+    rowGroupRanges.push({ readStart, readEnd })
 
     groupStart = groupEnd
   }
+
+  const concurrency = normalizeRowGroupConcurrency(rowGroupConcurrency)
+  if (concurrency === 1 || rowGroupRanges.length <= 1) {
+    for (const range of rowGroupRanges) {
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+      const batch = await readRowGroupRange(range)
+      if (batch.length > 0) yield batch
+    }
+    return
+  }
+
+  /** @type {Map<number, Promise<{batch?: Array<Record<string, any>>, error?: unknown}>>} */
+  const tasks = new Map()
+  let nextStart = 0
+  let nextYield = 0
+  /** @param {number} index */
+  function startTask(index) {
+    const task = readRowGroupRange(rowGroupRanges[index])
+      .then(batch => ({ batch }), error => ({ error }))
+    tasks.set(index, task)
+  }
+  while (nextStart < rowGroupRanges.length && tasks.size < concurrency) {
+    startTask(nextStart)
+    nextStart++
+  }
+  while (nextYield < rowGroupRanges.length) {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+    const task = tasks.get(nextYield)
+    if (!task) throw new Error('internal row group scheduling error')
+    const result = await task
+    tasks.delete(nextYield)
+    if (result.error) throw result.error
+    while (nextStart < rowGroupRanges.length && tasks.size < concurrency) {
+      startTask(nextStart)
+      nextStart++
+    }
+    if (result.batch && result.batch.length > 0) yield result.batch
+    nextYield++
+  }
+}
+
+/**
+ * @param {number} value
+ * @returns {number}
+ */
+function normalizeRowGroupConcurrency(value) {
+  if (value === Infinity) return Number.MAX_SAFE_INTEGER
+  const normalized = Math.floor(value)
+  if (!Number.isFinite(normalized) || normalized < 1) {
+    throw new Error('rowGroupConcurrency must be at least 1')
+  }
+  return normalized
 }
 
 /**
