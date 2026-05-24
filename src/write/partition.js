@@ -166,6 +166,7 @@ export function partitionToAvroRecord(partition, schema, partitionSpec) {
 function partitionKeyPart(value, type) {
   if (value === null || value === undefined) return '__null__'
   const name = typeof type === 'string' ? type : type.type
+  if (name === 'uuid') return `uuid:${bytesToHex(uuidToBytes(value, 'uuid partition value'))}`
   if (typeof value === 'number' && (name === 'float' || name === 'double')) {
     return `${name}:${floatPartitionKey(value, name)}`
   }

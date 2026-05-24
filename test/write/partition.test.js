@@ -94,6 +94,34 @@ describe('write partition helpers', () => {
     expect(groups[1].partition).toEqual({ id: 8n })
   })
 
+  it('canonicalizes uuid partition keys across string and byte values', () => {
+    /** @type {Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'uuid_col', required: false, type: 'uuid' },
+      ],
+    }
+    /** @type {PartitionSpec} */
+    const partitionSpec = {
+      'spec-id': 0,
+      fields: [{ 'source-id': 1, 'field-id': 1000, name: 'uuid_col', transform: 'identity' }],
+    }
+
+    const bytes = new Uint8Array([
+      0xf7, 0x9c, 0x3e, 0x09, 0x67, 0x7c, 0x4b, 0xbd,
+      0xa4, 0x79, 0x3f, 0x34, 0x9c, 0xb7, 0x85, 0xe7,
+    ])
+    const groups = groupByPartition([
+      { uuid_col: 'f79c3e09-677c-4bbd-a479-3f349cb785e7' },
+      { uuid_col: bytes },
+    ], schema, partitionSpec)
+
+    expect(groups).toHaveLength(1)
+    expect(groups[0].records).toHaveLength(2)
+  })
+
   it('canonicalizes non-scalar partition keys by value', () => {
     /** @type {Schema} */
     const schema = {
