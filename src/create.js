@@ -1,5 +1,6 @@
 import { maxFieldId, validateSchemaForVersion } from './schema.js'
 import { uuid4 } from './utils.js'
+import { validatePartitionSpecForWrite } from './write/partition.js'
 
 /**
  * @import {Resolver} from '../src/types.js'
@@ -44,6 +45,7 @@ export async function icebergCreate({
 
   /** @type {PartitionSpec} */
   const initialPartitionSpec = partitionSpec ?? { 'spec-id': 0, fields: [] }
+  validatePartitionSpecForWrite(initialSchema, initialPartitionSpec)
 
   /** @type {SortOrder} */
   const initialSortOrder = sortOrder ?? { 'order-id': 0, fields: [] }

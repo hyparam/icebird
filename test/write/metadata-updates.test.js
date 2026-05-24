@@ -324,6 +324,28 @@ describe('metadata partition spec updates', () => {
     ])).toThrow(/spec-id 0 already exists/)
   })
 
+  it('rejects add-spec with invalid partition transforms', () => {
+    expect(() => applyUpdates(tableMetadata(), [
+      {
+        action: 'add-spec',
+        spec: {
+          'spec-id': -1,
+          fields: [{ 'source-id': 1, 'field-id': 1000, name: 'id_bucket', transform: 'bucket[0]' }],
+        },
+      },
+    ])).toThrow(/add-spec: unsupported partition transform: bucket\[0\]/)
+
+    expect(() => applyUpdates(tableMetadata(), [
+      {
+        action: 'add-spec',
+        spec: {
+          'spec-id': -1,
+          fields: [{ 'source-id': 1, 'field-id': 1000, name: 'id_day', transform: 'day' }],
+        },
+      },
+    ])).toThrow(/day transform: unsupported source type long/)
+  })
+
   it('rejects add-spec when an equivalent partition spec already exists', () => {
     const identityCategorySpec = {
       'spec-id': 0,

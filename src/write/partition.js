@@ -68,6 +68,31 @@ export function groupByPartition(records, schema, partitionSpec) {
 }
 
 /**
+ * Validate that Icebird can write a partition spec for the given schema.
+ * Unknown transforms are allowed for reads, but writers must not create files
+ * with them. All currently supported transforms are single-source transforms.
+ *
+ * @param {Schema} schema
+ * @param {PartitionSpec} partitionSpec
+ * @param {string} [label]
+ * @returns {void}
+ */
+export function validatePartitionSpecForWrite(schema, partitionSpec, label = 'partition spec') {
+  for (const pf of partitionSpec.fields) {
+    const sourceId = pf['source-id']
+    if (sourceId === undefined) {
+      throw new Error(`${label}: partition field ${pf.name} is missing source-id`)
+    }
+    const sourceField = schema.fields.find(f => f.id === sourceId)
+    if (!sourceField) {
+      throw new Error(`${label}: partition source field id ${sourceId} not found in schema`)
+    }
+    const resultType = transformResultType(pf.transform, sourceField.type)
+    icebergTypeToAvro(resultType, pf['field-id'])
+  }
+}
+
+/**
  * Build the Avro record type for the manifest entry's `partition` field
  * (`r102`) from the table's partition spec. Each partition field is a
  * nullable Avro field tagged with the partition spec's `field-id`, typed

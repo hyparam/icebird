@@ -121,6 +121,30 @@ describe('createIceberg', () => {
     })
   })
 
+  it('rejects invalid file-catalog partition specs', async () => {
+    const writer = vi.fn(() => new ByteWriter())
+    const resolver = { reader: vi.fn(), writer }
+    /** @type {Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'd', required: false, type: 'date' },
+      ],
+    }
+
+    await expect(icebergCreate({
+      tableUrl,
+      resolver,
+      schema,
+      partitionSpec: {
+        'spec-id': 0,
+        fields: [{ 'source-id': 1, 'field-id': 1000, name: 'd_hour', transform: 'hour' }],
+      },
+    })).rejects.toThrow(/hour transform: unsupported source type date/)
+    expect(writer).not.toHaveBeenCalled()
+  })
+
   it('creates a v3 table with next-row-id', async () => {
     const writer = vi.fn(() => new ByteWriter())
     const resolver = { reader: vi.fn(), writer }

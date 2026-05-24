@@ -1,5 +1,6 @@
 import { maxFieldId, validateSchemaForVersion } from '../schema.js'
 import { parseDecimalType } from './conversions.js'
+import { validatePartitionSpecForWrite } from './partition.js'
 
 /**
  * @import {Field, IcebergType, PartitionSpec, Resolver, Schema, SnapshotRef, SortOrder, StagedUpdate, TableMetadata, TableRequirement, TableUpdate} from '../../src/types.js'
@@ -290,7 +291,8 @@ export function applyUpdates(metadata, updates) {
       }
       /** @type {PartitionSpec} */
       const newSpec = { ...up.spec, 'spec-id': specId }
-      validatePartitionSpecEvolution(specs, newSpec)
+      const currentSchema = currentSchemaForMetadata(next)
+      validatePartitionSpecEvolution(specs, newSpec, currentSchema)
       const priorLastPartitionId = next['last-partition-id'] ?? 0
       let nextLastPartitionId = priorLastPartitionId
       for (const f of newSpec.fields) {
@@ -577,9 +579,10 @@ function defaultsEqual(a, b) {
 /**
  * @param {PartitionSpec[]} specs
  * @param {PartitionSpec} newSpec
+ * @param {Schema} schema
  */
-function validatePartitionSpecEvolution(specs, newSpec) {
-  validateWritablePartitionSpec(newSpec)
+function validatePartitionSpecEvolution(specs, newSpec, schema) {
+  validateWritablePartitionSpec(newSpec, schema)
   if (specs.some(spec => partitionSpecsEquivalent(spec, newSpec))) {
     throw new Error('add-spec: equivalent partition spec already exists')
   }
@@ -593,28 +596,28 @@ function validatePartitionSpecEvolution(specs, newSpec) {
 
 /**
  * @param {PartitionSpec} spec
+ * @param {Schema} schema
  */
-function validateWritablePartitionSpec(spec) {
-  for (const field of spec.fields) {
-    if (!isKnownTransform(field.transform)) {
-      throw new Error(`add-spec: unsupported partition transform: ${field.transform}`)
+function validateWritablePartitionSpec(spec, schema) {
+  try {
+    validatePartitionSpecForWrite(schema, spec, 'add-spec')
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    if (message.startsWith('unsupported partition transform: ')) {
+      throw new Error(`add-spec: ${message}`)
     }
+    throw err
   }
 }
 
 /**
- * @param {string} transform
- * @returns {boolean}
+ * @param {TableMetadata} metadata
+ * @returns {Schema}
  */
-function isKnownTransform(transform) {
-  return transform === 'identity' ||
-    transform === 'void' ||
-    transform === 'year' ||
-    transform === 'month' ||
-    transform === 'day' ||
-    transform === 'hour' ||
-    /^bucket\[\d+\]$/.test(transform) ||
-    /^truncate\[\d+\]$/.test(transform)
+function currentSchemaForMetadata(metadata) {
+  const schema = metadata.schemas?.find(s => s['schema-id'] === metadata['current-schema-id'])
+  if (!schema) throw new Error('add-spec: current schema not found in metadata')
+  return schema
 }
 
 /**
