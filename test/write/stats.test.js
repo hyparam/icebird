@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { computeColumnStats } from '../../src/write/stats.js'
+import { computeColumnStats, computeFieldSummary } from '../../src/write/stats.js'
 
 /**
  * @import {Schema} from '../../src/types.js'
@@ -65,6 +65,36 @@ describe('computeColumnStats', () => {
     const hi = new DataView(stats.upper_bounds[7].buffer).getFloat64(0, true)
     expect(lo).toBe(-2.25)
     expect(hi).toBe(1.5)
+  })
+
+  it('preserves signed zero in floating bounds', () => {
+    /** @type {Schema} */
+    const schema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 7, name: 'score', required: false, type: 'double' },
+      ],
+    }
+    const stats = computeColumnStats([{ score: 0 }, { score: -0 }], schema)
+
+    const lo = new DataView(stats.lower_bounds[7].buffer).getFloat64(0, true)
+    const hi = new DataView(stats.upper_bounds[7].buffer).getFloat64(0, true)
+    expect(Object.is(lo, -0)).toBe(true)
+    expect(Object.is(hi, 0)).toBe(true)
+  })
+
+  it('preserves signed zero in floating field summaries', () => {
+    const summary = computeFieldSummary([0, -0], 'double')
+
+    expect(summary.lower_bound).toBeDefined()
+    expect(summary.upper_bound).toBeDefined()
+    const lower = /** @type {Uint8Array} */ (summary.lower_bound)
+    const upper = /** @type {Uint8Array} */ (summary.upper_bound)
+    const lo = new DataView(lower.buffer).getFloat64(0, true)
+    const hi = new DataView(upper.buffer).getFloat64(0, true)
+    expect(Object.is(lo, -0)).toBe(true)
+    expect(Object.is(hi, 0)).toBe(true)
   })
 
   it('omits bounds when all values are null', () => {

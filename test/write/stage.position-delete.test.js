@@ -4,7 +4,7 @@ import { fetchAvroRecords } from '../../src/fetch.js'
 import { fileCatalogCommit } from '../../src/write/commit.js'
 import { icebergCreate } from '../../src/create.js'
 import { icebergRead } from '../../src/read.js'
-import { icebergStagePositionDelete } from '../../src/write/stage-position-delete.js'
+import { icebergStagePositionDelete, partitionTupleKey } from '../../src/write/stage-position-delete.js'
 import { icebergStageAppend } from '../../src/write/stage.js'
 import { icebergDelete } from '../../src/write/write.js'
 import { memResolver } from '../helpers.js'
@@ -24,6 +24,13 @@ const schema = {
 }
 
 describe('icebergStagePositionDelete', () => {
+  it('keeps -0.0 and +0.0 distinct in partition tuple keys', () => {
+    expect(partitionTupleKey({ 1000: -0 }))
+      .not.toBe(partitionTupleKey({ 1000: 0 }))
+    expect(partitionTupleKey({ 1000: NaN }))
+      .toBe(partitionTupleKey({ 1000: Number.NaN }))
+  })
+
   it('round-trips: row 0 disappears after delete is committed', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
     const tableUrl = 'http://test/del-rt'

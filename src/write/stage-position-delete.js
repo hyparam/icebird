@@ -305,6 +305,11 @@ export function partitionTupleKey(partition) {
 function valueTag(v) {
   if (v === null || v === undefined) return 'null'
   if (typeof v === 'bigint') return `b:${v.toString()}`
+  if (typeof v === 'number') {
+    if (Number.isNaN(v)) return 'n:NaN'
+    if (Object.is(v, -0)) return 'n:-0'
+    return `n:${v}`
+  }
   if (v instanceof Date) return `d:${v.getTime()}`
   if (v instanceof Uint8Array) return `x:${bytesToHex(v)}`
   return `${typeof v}:${String(v)}`

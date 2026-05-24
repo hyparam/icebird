@@ -57,6 +57,18 @@ describe('deleteFileAppliesToDataEntry', () => {
     expect(deleteFileAppliesToDataEntry(data, otherPartition, metadata, 'position')).toBe(false)
     expect(deleteFileAppliesToDataEntry(data, olderDelete, metadata, 'position')).toBe(false)
   })
+
+  it('keeps -0.0 and +0.0 distinct for floating partition equality', () => {
+    const data = entry({ sequenceNumber: 1n, partitionSpecId: 1, partition: { 1000: -0 } })
+    const negativeZero = entry({ sequenceNumber: 2n, partitionSpecId: 1, content: 2, partition: { 1000: -0 } })
+    const positiveZero = entry({ sequenceNumber: 2n, partitionSpecId: 1, content: 2, partition: { 1000: 0 } })
+    const nan = entry({ sequenceNumber: 2n, partitionSpecId: 1, content: 2, partition: { 1000: NaN } })
+    const nanData = entry({ sequenceNumber: 1n, partitionSpecId: 1, partition: { 1000: NaN } })
+
+    expect(deleteFileAppliesToDataEntry(data, negativeZero, metadata, 'equality')).toBe(true)
+    expect(deleteFileAppliesToDataEntry(data, positiveZero, metadata, 'equality')).toBe(false)
+    expect(deleteFileAppliesToDataEntry(nanData, nan, metadata, 'equality')).toBe(true)
+  })
 })
 
 /**

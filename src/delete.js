@@ -62,7 +62,21 @@ function partitionsEqual(a, b) {
   if (aKeys.length !== bKeys.length) return false
   for (const key of aKeys) {
     if (!Object.hasOwn(b, key)) return false
-    if (!valuesEqual(a[key], b[key])) return false
+    if (!partitionValuesEqual(a[key], b[key])) return false
   }
   return true
+}
+
+/**
+ * Partition equality follows Iceberg's field-summary rules for floating
+ * values: NaNs compare equal after canonicalization, but -0.0 and +0.0 remain
+ * distinct.
+ *
+ * @param {unknown} a
+ * @param {unknown} b
+ * @returns {boolean}
+ */
+function partitionValuesEqual(a, b) {
+  if (typeof a === 'number' && typeof b === 'number') return Object.is(a, b)
+  return valuesEqual(a, b)
 }

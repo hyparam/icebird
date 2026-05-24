@@ -115,9 +115,10 @@ function compare(a, b, type) {
   case 'boolean':
     return (a ? 1 : 0) - (b ? 1 : 0)
   case 'int':
+    return a < b ? -1 : a > b ? 1 : 0
   case 'float':
   case 'double':
-    return a < b ? -1 : a > b ? 1 : 0
+    return compareFloating(a, b)
   case 'long': {
     const ai = typeof a === 'bigint' ? a : BigInt(a)
     const bi = typeof b === 'bigint' ? b : BigInt(b)
@@ -138,6 +139,20 @@ function compare(a, b, type) {
     if (typeName(type).startsWith('fixed[')) return compareBytes(a, b)
     return a < b ? -1 : a > b ? 1 : 0
   }
+}
+
+/**
+ * Floating bounds must preserve -0.0 and +0.0 distinctly, with -0.0 ordered
+ * below +0.0. NaNs are counted separately and not compared for bounds.
+ *
+ * @param {number} a
+ * @param {number} b
+ * @returns {number}
+ */
+function compareFloating(a, b) {
+  if (Object.is(a, b)) return 0
+  if (a === 0 && b === 0) return Object.is(a, -0) ? -1 : 1
+  return a < b ? -1 : a > b ? 1 : 0
 }
 
 /**
