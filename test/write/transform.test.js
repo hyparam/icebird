@@ -63,6 +63,8 @@ describe('applyTransform', () => {
     expect(applyTransform('bucket[100]', 34n, 'long')).toBe(79)
     // hashBytes("iceberg") = 1210000089
     expect(applyTransform('bucket[100]', 'iceberg', 'string')).toBe(89)
+    // hashBytes(big-endian UUID bytes) = 1488055340
+    expect(applyTransform('bucket[100]', 'f79c3e09-677c-4bbd-a479-3f349cb785e7', 'uuid')).toBe(40)
     // hashBytes(00 01 02 03) ends in 41
     expect(applyTransform('bucket[100]', new Uint8Array([0, 1, 2, 3]), 'binary')).toBe(41)
     // hashLong(17486) = -653330422 → bucket 26 (2017-11-16 = day 17486)

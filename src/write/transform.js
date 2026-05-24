@@ -1,4 +1,5 @@
 import { typeName } from '../schema.js'
+import { uuidToBytes } from './conversions.js'
 
 /**
  * Iceberg partition transform implementation. Given a source value and the
@@ -168,7 +169,10 @@ function bucketBytes(value, sourceType) {
   if (t.startsWith('decimal(')) {
     return decimalToUnscaledBytes(value, t)
   }
-  if (t.startsWith('fixed[') || t === 'binary' || t === 'fixed' || t === 'uuid') {
+  if (t === 'uuid') {
+    return uuidToBytes(value, 'uuid partition value')
+  }
+  if (t.startsWith('fixed[') || t === 'binary' || t === 'fixed') {
     return value instanceof Uint8Array ? value : new Uint8Array(value)
   }
   switch (t) {
