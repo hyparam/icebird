@@ -328,7 +328,8 @@ export async function* readDataFile({
 
           // Values for field ids which are not present in a data file must
           // be resolved according the following rules:
-          if (partitionField?.transform === 'identity') {
+          if (partitionField?.transform === 'identity' &&
+              Object.hasOwn(data_file.partition, partitionField.name)) {
             // 1. Return the value from partition metadata if an Identity Transform
             // exists for the field and the partition value is present in the
             // partition struct on data_file object in the manifest. This allows

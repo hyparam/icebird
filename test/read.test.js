@@ -2,6 +2,11 @@ import { describe, expect, it } from 'vitest'
 import { ByteWriter, parquetWrite } from 'hyparquet-writer'
 import { icebergRead, readDataFile } from '../src/read.js'
 
+/**
+ * @import {AsyncBuffer} from 'hyparquet'
+ * @import {ManifestEntry, Resolver, Schema, TableMetadata} from '../src/types.js'
+ */
+
 describe.concurrent('icebergRead', () => {
   it('throws for missing tableUrl', async () => {
     await expect(() => icebergRead({ tableUrl: '' }))
@@ -33,7 +38,7 @@ describe.concurrent('icebergRead', () => {
   })
 
   it('can read row groups concurrently while preserving row order', async () => {
-    /** @type {import('../src/types.js').Schema} */
+    /** @type {Schema} */
     const schema = {
       type: 'struct',
       'schema-id': 0,
@@ -72,7 +77,7 @@ describe.concurrent('icebergRead', () => {
     function releasePending() {
       for (const release of releases.splice(0)) release()
     }
-    /** @type {import('hyparquet').AsyncBuffer} */
+    /** @type {AsyncBuffer} */
     const asyncBuffer = {
       byteLength: bytes.byteLength,
       slice(start, end) {
@@ -90,7 +95,7 @@ describe.concurrent('icebergRead', () => {
         })
       },
     }
-    /** @type {import('../src/types.js').Resolver} */
+    /** @type {Resolver} */
     const resolver = {
       reader(path, byteLength) {
         expect(path).toBe('mem://data.parquet')
@@ -101,7 +106,7 @@ describe.concurrent('icebergRead', () => {
 
     /** @type {Record<string, any>[]} */
     const rows = []
-    /** @type {import('../src/types.js').ManifestEntry} */
+    /** @type {ManifestEntry} */
     const dataEntry = {
       status: 1,
       sequence_number: 0n,
@@ -115,7 +120,7 @@ describe.concurrent('icebergRead', () => {
         file_size_in_bytes: BigInt(bytes.byteLength),
       },
     }
-    /** @type {import('../src/types.js').TableMetadata} */
+    /** @type {TableMetadata} */
     const metadata = {
       'format-version': 2,
       'table-uuid': 'test',
@@ -149,5 +154,101 @@ describe.concurrent('icebergRead', () => {
     expect(observedParallel).toBe(true)
     expect(rows.map(row => row.payload[0])).toEqual(['a', 'b', 'c'])
     expect(rows.map(row => row.payload.length)).toEqual(values.map(value => value.length))
+  })
+
+  it('falls through when identity partition metadata is not present', async () => {
+    /** @type {Schema} */
+    const fileSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [{ id: 1, name: 'id', required: true, type: 'int' }],
+    }
+    /** @type {Schema} */
+    const currentSchema = {
+      type: 'struct',
+      'schema-id': 1,
+      fields: [
+        ...fileSchema.fields,
+        { id: 2, name: 'tag', required: false, type: 'string', 'initial-default': 'unknown' },
+      ],
+    }
+    const writer = new ByteWriter()
+    await parquetWrite({
+      writer,
+      columnData: [{ name: 'id', data: [1] }],
+      schema: [
+        { name: 'root', num_children: 1 },
+        { name: 'id', type: 'INT32', repetition_type: 'REQUIRED', field_id: 1 },
+      ],
+      kvMetadata: [{ key: 'iceberg.schema', value: JSON.stringify(fileSchema) }],
+      codec: 'UNCOMPRESSED',
+    })
+    const bytes = writer.getBytes()
+    /** @type {AsyncBuffer} */
+    const asyncBuffer = {
+      byteLength: bytes.byteLength,
+      slice(start, end = bytes.byteLength) {
+        const slice = bytes.subarray(start, end)
+        return slice.buffer.slice(slice.byteOffset, slice.byteOffset + slice.byteLength)
+      },
+    }
+    /** @type {Resolver} */
+    const resolver = {
+      reader() {
+        return asyncBuffer
+      },
+    }
+    /** @type {ManifestEntry} */
+    const dataEntry = {
+      status: 1,
+      sequence_number: 0n,
+      partition_spec_id: 1,
+      data_file: {
+        content: 0,
+        file_path: 'mem://missing-partition.parquet',
+        file_format: 'parquet',
+        partition: {},
+        record_count: 1n,
+        file_size_in_bytes: BigInt(bytes.byteLength),
+      },
+    }
+    /** @type {TableMetadata} */
+    const metadata = {
+      'format-version': 3,
+      'table-uuid': 'test',
+      location: 'mem://table',
+      'last-sequence-number': 0,
+      'last-updated-ms': 0,
+      'last-column-id': 2,
+      'current-schema-id': 1,
+      schemas: [fileSchema, currentSchema],
+      'default-spec-id': 1,
+      'partition-specs': [{
+        'spec-id': 1,
+        fields: [{ 'source-id': 2, 'field-id': 1000, name: 'tag', transform: 'identity' }],
+      }],
+      'last-partition-id': 1000,
+      'sort-orders': [{ 'order-id': 0, fields: [] }],
+      'default-sort-order-id': 0,
+      'next-row-id': 0,
+    }
+
+    /** @type {Record<string, any>[]} */
+    const rows = []
+    for await (const batch of readDataFile({
+      dataEntry,
+      fileRowStart: 0,
+      fileRowEnd: 1,
+      schema: currentSchema,
+      metadata,
+      resolver,
+      rowLineage: false,
+      positionDeletesMap: new Map(),
+      equalityDeleteGroups: [],
+    })) {
+      rows.push(...batch)
+    }
+
+    expect(rows).toEqual([{ id: 1, tag: 'unknown' }])
   })
 })
