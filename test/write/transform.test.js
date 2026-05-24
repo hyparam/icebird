@@ -19,6 +19,8 @@ describe('parseTransform', () => {
   it('throws on unknown transforms', () => {
     expect(() => parseTransform('weeknumber')).toThrow(/unsupported partition transform/)
     expect(() => parseTransform('bucket[]')).toThrow(/unsupported partition transform/)
+    expect(() => parseTransform('bucket[0]')).toThrow(/unsupported partition transform/)
+    expect(() => parseTransform('truncate[0]')).toThrow(/unsupported partition transform/)
   })
 })
 
@@ -35,6 +37,11 @@ describe('transformResultType', () => {
     expect(transformResultType('month', 'date')).toBe('int')
     expect(transformResultType('day', 'timestamp')).toBe('int')
     expect(transformResultType('hour', 'timestamp')).toBe('int')
+  })
+
+  it('throws when a transform is not valid for the source type', () => {
+    expect(() => transformResultType('hour', 'date'))
+      .toThrow(/hour transform: unsupported source type date/)
   })
 })
 
@@ -120,11 +127,6 @@ describe('applyTransform', () => {
     expect(b).toEqual(new Uint8Array([1, 2, 3]))
   })
 
-  it('truncates fixed[N] by leading bytes', () => {
-    const b = applyTransform('truncate[3]', new Uint8Array([1, 2, 3, 4, 5]), 'fixed[5]')
-    expect(b).toEqual(new Uint8Array([1, 2, 3]))
-  })
-
   it('buckets fixed[N] as raw bytes (matches binary)', () => {
     const v = new Uint8Array([0, 1, 2, 3])
     expect(applyTransform('bucket[100]', v, 'fixed[4]'))
@@ -174,7 +176,15 @@ describe('applyTransform', () => {
       .toThrow(/bucket transform: unsupported source type double/)
     expect(() => applyTransform('truncate[3]', 1.5, 'double'))
       .toThrow(/truncate transform: unsupported source type double/)
+    expect(() => applyTransform('truncate[3]', new Uint8Array([1, 2, 3, 4]), 'fixed[4]'))
+      .toThrow(/truncate transform: unsupported source type fixed\[4\]/)
+    expect(() => applyTransform('day', 81068000000n, 'time'))
+      .toThrow(/day transform: unsupported source type time/)
+    expect(() => applyTransform('hour', 17486, 'date'))
+      .toThrow(/hour transform: unsupported source type date/)
+    expect(() => applyTransform('hour', null, 'date'))
+      .toThrow(/hour transform: unsupported source type date/)
     expect(() => applyTransform('day', 'oops', 'string'))
-      .toThrow(/date\/time transform: unsupported source type string/)
+      .toThrow(/day transform: unsupported source type string/)
   })
 })

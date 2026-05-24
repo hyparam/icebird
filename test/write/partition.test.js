@@ -474,7 +474,7 @@ describe('write partition helpers', () => {
     }, {
       'spec-id': 0,
       fields: [{ 'source-id': 2, 'field-id': 1000, name: 'payload', transform: 'identity' }],
-    })).toThrow(/unsupported partition source type: variant/)
+    })).toThrow(/identity transform: unsupported source type variant/)
   })
 
   it('round-trips identity time partition values through a manifest', async () => {

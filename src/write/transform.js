@@ -22,9 +22,15 @@ export function parseTransform(transform) {
     return { kind: transform }
   }
   let m = /^bucket\[(\d+)\]$/.exec(transform)
-  if (m) return { kind: 'bucket', n: parseInt(m[1], 10) }
+  if (m) {
+    const n = parseInt(m[1], 10)
+    if (n > 0) return { kind: 'bucket', n }
+  }
   m = /^truncate\[(\d+)\]$/.exec(transform)
-  if (m) return { kind: 'truncate', w: parseInt(m[1], 10) }
+  if (m) {
+    const w = parseInt(m[1], 10)
+    if (w > 0) return { kind: 'truncate', w }
+  }
   throw new Error(`unsupported partition transform: ${transform}`)
 }
 
@@ -38,6 +44,7 @@ export function parseTransform(transform) {
  */
 export function transformResultType(transform, sourceType) {
   const parsed = parseTransform(transform)
+  validateTransformSource(parsed, sourceType)
   switch (parsed.kind) {
   case 'identity':
   case 'truncate':
@@ -62,8 +69,9 @@ export function transformResultType(transform, sourceType) {
  * @returns {any}
  */
 export function applyTransform(transform, value, sourceType) {
-  if (value == null) return null
   const parsed = parseTransform(transform)
+  validateTransformSource(parsed, sourceType)
+  if (value == null) return null
   switch (parsed.kind) {
   case 'identity': return value
   case 'void': return null
@@ -81,24 +89,16 @@ export function applyTransform(transform, value, sourceType) {
  *
  * @param {any} value
  * @param {IcebergType} sourceType
+ * @param {'year'|'month'|'day'|'hour'} transform
  * @returns {number}
  */
-function dateAsMillis(value, sourceType) {
+function dateAsMillis(value, sourceType, transform) {
   const t = typeName(sourceType)
-  switch (t) {
-  case 'date':
-  case 'time':
-  case 'timestamp':
-  case 'timestamptz':
-  case 'timestamp_ns':
-  case 'timestamptz_ns': break
-  default: throw new Error(`date/time transform: unsupported source type ${t}`)
-  }
+  validateTransformSource({ kind: transform }, sourceType)
   if (value instanceof Date) return value.getTime()
   const n = typeof value === 'bigint' ? value : BigInt(value)
   switch (t) {
   case 'date': return Number(n) * 86400000
-  case 'time': return Number(n / 1000n)
   case 'timestamp':
   case 'timestamptz': return Number(n / 1000n)
   default: return Number(n / 1000000n) // *_ns
@@ -111,7 +111,7 @@ function dateAsMillis(value, sourceType) {
  * @returns {number}
  */
 function yearTransform(v, t) {
-  return new Date(dateAsMillis(v, t)).getUTCFullYear() - 1970
+  return new Date(dateAsMillis(v, t, 'year')).getUTCFullYear() - 1970
 }
 
 /**
@@ -120,7 +120,7 @@ function yearTransform(v, t) {
  * @returns {number}
  */
 function monthTransform(v, t) {
-  const d = new Date(dateAsMillis(v, t))
+  const d = new Date(dateAsMillis(v, t, 'month'))
   return (d.getUTCFullYear() - 1970) * 12 + d.getUTCMonth()
 }
 
@@ -130,7 +130,7 @@ function monthTransform(v, t) {
  * @returns {number}
  */
 function dayTransform(v, t) {
-  return Math.floor(dateAsMillis(v, t) / 86400000)
+  return Math.floor(dateAsMillis(v, t, 'day') / 86400000)
 }
 
 /**
@@ -139,7 +139,7 @@ function dayTransform(v, t) {
  * @returns {number}
  */
 function hourTransform(v, t) {
-  return Math.floor(dateAsMillis(v, t) / 3600000)
+  return Math.floor(dateAsMillis(v, t, 'hour') / 3600000)
 }
 
 /**
@@ -256,7 +256,7 @@ function truncateTransform(value, sourceType, w) {
     // re-scale; result fits in JS number for typical precisions
     return Number(truncated) / Number(factor)
   }
-  if (t.startsWith('fixed[') || t === 'binary' || t === 'fixed') {
+  if (t === 'binary') {
     const b = value instanceof Uint8Array ? value : new Uint8Array(value)
     return b.slice(0, w)
   }
@@ -283,6 +283,54 @@ function truncateTransform(value, sourceType, w) {
   }
   default:
     throw new Error(`truncate transform: unsupported source type ${t}`)
+  }
+}
+
+/**
+ * @param {ParsedTransform} parsed
+ * @param {IcebergType} sourceType
+ */
+function validateTransformSource(parsed, sourceType) {
+  const t = typeName(sourceType)
+  switch (parsed.kind) {
+  case 'identity':
+    if (t === 'variant' || t === 'geometry' || t.startsWith('geometry(') ||
+        t === 'geography' || t.startsWith('geography(')) {
+      throw new Error(`identity transform: unsupported source type ${t}`)
+    }
+    return
+  case 'void':
+    return
+  case 'bucket':
+    if (t === 'int' || t === 'long' || t.startsWith('decimal(') ||
+        t === 'date' || t === 'time' ||
+        t === 'timestamp' || t === 'timestamptz' ||
+        t === 'timestamp_ns' || t === 'timestamptz_ns' ||
+        t === 'string' || t === 'uuid' ||
+        t.startsWith('fixed[') || t === 'binary' || t === 'fixed') {
+      return
+    }
+    throw new Error(`bucket transform: unsupported source type ${t}`)
+  case 'truncate':
+    if (t === 'int' || t === 'long' || t.startsWith('decimal(') ||
+        t === 'string' || t === 'binary') {
+      return
+    }
+    throw new Error(`truncate transform: unsupported source type ${t}`)
+  case 'year':
+  case 'month':
+  case 'day':
+    if (t === 'date' || t === 'timestamp' || t === 'timestamptz' ||
+        t === 'timestamp_ns' || t === 'timestamptz_ns') {
+      return
+    }
+    throw new Error(`${parsed.kind} transform: unsupported source type ${t}`)
+  case 'hour':
+    if (t === 'timestamp' || t === 'timestamptz' ||
+        t === 'timestamp_ns' || t === 'timestamptz_ns') {
+      return
+    }
+    throw new Error('hour transform: unsupported source type ' + t)
   }
 }
 
