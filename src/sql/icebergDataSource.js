@@ -3,6 +3,7 @@ import { fetchDeleteMaps, urlResolver } from '../fetch.js'
 import { icebergManifests, splitManifestEntries } from '../manifest.js'
 import { icebergMetadata } from '../metadata.js'
 import { readDataFile } from '../read.js'
+import { whereToParquetFilter } from './whereFilter.js'
 
 /**
  * @import {AsyncDataSource} from 'squirreling'
@@ -20,13 +21,17 @@ import { readDataFile } from '../read.js'
  * - Column projection (`columns`) is pushed into the parquet read so only the
  *   requested columns are decoded. Equality-delete predicate columns and row
  *   lineage columns are read regardless when needed.
- * - WHERE is not pushed down (the engine applies it after the scan), so when
- *   it is present we can't bound the scan by limit/offset.
- * - When there is no WHERE we always cap the scan at `offset + limit` rows so
- *   the source terminates early. OFFSET is also pushed into the parquet seek
- *   when there are no deletes; with deletes the engine still applies OFFSET
- *   itself (record_count is pre-delete, so seeking by record_count would
- *   miscount visible rows in any file with applicable deletes).
+ * - WHERE is pushed down to hyparquet (row-group pruning via statistics and
+ *   bloom filters, plus per-row matching) when the expression can be fully
+ *   converted to a parquet filter (comparisons, IN, AND/OR/NOT on identifier
+ *   vs literal). Unsupported nodes (LIKE, functions, arithmetic, identifier
+ *   vs identifier) leave WHERE for the engine to apply.
+ * - When WHERE is resolved at scan time (either absent or fully pushed) we
+ *   cap the scan at `offset + limit` rows so the source terminates early.
+ *   OFFSET is also pushed into the parquet seek when there are no deletes;
+ *   with deletes the engine still applies OFFSET itself (record_count is
+ *   pre-delete, so seeking by record_count would miscount visible rows in
+ *   any file with applicable deletes).
  *
  * @param {object} options
  * @param {string} options.tableUrl - Base URL or path of the table.
@@ -78,22 +83,31 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
     columns,
     scan({ columns: scanColumns, where, limit, offset, signal }) {
       const rowColumns = scanColumns ?? columns
+      // Convert the WHERE AST to a hyparquet filter; undefined means the
+      // expression has parts we can't push down (LIKE, functions, etc.) and
+      // the engine must re-apply it.
+      const filter = whereToParquetFilter(where)
+      const appliedWhere = where !== undefined && filter !== undefined
+      // Treat a fully-pushed-down WHERE the same as "no WHERE" for the
+      // purpose of LIMIT/OFFSET pushdown.
+      const whereResolved = !where || appliedWhere
       // OFFSET pushdown (seeking past rows in the parquet file) is only safe
-      // when no WHERE is in play and the table has no deletes - record_count
-      // is pre-delete, so seeking by it would skip the wrong visible rows.
-      const canPushOffset = !where && !hasDeletes
+      // when the WHERE is fully resolved at scan time AND the table has no
+      // deletes: record_count is pre-delete, so seeking by it would skip the
+      // wrong visible rows.
+      const canPushOffset = whereResolved && !hasDeletes
       const skip = canPushOffset ? offset ?? 0 : 0
-      // LIMIT pushdown (early termination) is safe whenever there is no
-      // WHERE: with deletes we yield offset+limit rows and let the engine
+      // LIMIT pushdown (early termination) is safe whenever WHERE is
+      // resolved: with deletes we yield offset+limit rows and let the engine
       // apply the slice, which still saves reading later files.
       let take = Infinity
-      if (!where && limit !== undefined) {
+      if (whereResolved && limit !== undefined) {
         take = canPushOffset ? limit : (offset ?? 0) + limit
       }
       const appliedLimitOffset = canPushOffset
 
       return {
-        appliedWhere: false,
+        appliedWhere,
         appliedLimitOffset,
         async *rows() {
           if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
@@ -136,6 +150,7 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
               positionDeletesMap,
               equalityDeleteGroups,
               wantedColumns: scanColumns,
+              filter,
               signal,
             })) {
               for (const row of batch) {

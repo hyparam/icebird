@@ -13,6 +13,7 @@ const DEFAULT_ROW_GROUP_CONCURRENCY = 4
  * Reads data from the Iceberg table with optional row-level delete processing.
  * Row indices are zero-based and rowEnd is exclusive.
  *
+ * @import {ParquetQueryFilter} from 'hyparquet'
  * @import {Field, Lister, NameMapping, Resolver, Schema, TableMetadata} from '../src/types.js'
  * @param {object} options
  * @param {string} options.tableUrl - Base URL or path of the table.
@@ -146,6 +147,7 @@ export async function icebergRead({
  * @param {Array<{deleteEntry: ManifestEntry, rows: Record<string, any>[]}>} options.equalityDeleteGroups
  * @param {string[]} [options.wantedColumns] - iceberg field names to emit; if undefined, emit all current-schema fields
  * @param {number} [options.rowGroupConcurrency] - Number of row groups to read concurrently while preserving yield order. Defaults to 1.
+ * @param {ParquetQueryFilter} [options.filter] - Predicate keyed by iceberg field name. Column names are remapped to physical parquet names per-file; the filter is dropped for this file if any referenced column has no parquet column (e.g. iceberg-added column with a default value).
  * @param {AbortSignal} [options.signal]
  * @returns {AsyncGenerator<Array<Record<string, any>>>} batches of rows, one per parquet row group
  */
@@ -161,6 +163,7 @@ export async function* readDataFile({
   equalityDeleteGroups,
   wantedColumns,
   rowGroupConcurrency = 1,
+  filter,
   signal,
 }) {
   const { data_file, sequence_number, partition_spec_id } = dataEntry
@@ -276,6 +279,20 @@ export async function* readDataFile({
     ? columns
     : parquetColumnNames.filter(n => n !== undefined)
 
+  // Remap filter from iceberg field names to physical parquet names. If any
+  // referenced column is absent in this file (added later in the iceberg
+  // schema and not yet materialized), drop the filter for this file so the
+  // read still succeeds; the data source promises only that WHERE *may* be
+  // applied at scan time, and the per-row delete loop yields all rows in
+  // that case (the engine will re-filter when `appliedWhere` is false).
+  /** @type {Record<string, string>} */
+  const icebergToParquet = {}
+  for (let i = 0; i < schema.fields.length; i++) {
+    const parquetName = parquetColumnNames[i]
+    if (parquetName) icebergToParquet[schema.fields[i].name] = parquetName
+  }
+  const parquetFilter = filter ? remapFilterColumns(filter, icebergToParquet) : undefined
+
   /**
    * @param {{readStart: number, readEnd: number}} range
    * @returns {Promise<Array<Record<string, any>>>}
@@ -288,6 +305,13 @@ export async function* readDataFile({
       rowStart: readStart,
       rowEnd: readEnd,
       compressors,
+      filter: parquetFilter,
+      // filterStrict:false matches the squirreling/parquet convention used
+      // elsewhere: hyparquet uses the filter for row-group/page pruning and
+      // per-row matching, but is permissive on edge cases (mixed bigint
+      // /number, nulls). The engine re-checks unless we set appliedWhere.
+      filterStrict: false,
+      useBloomFilters: true,
       // Iceberg `binary`/`fixed[N]` columns are plain BYTE_ARRAY/FIXED_LEN_BYTE_ARRAY
       // with no UTF8/STRING annotation; hyparquet's default would silently decode
       // them as strings. Disabling its global utf8 fallback preserves bytes.
@@ -429,6 +453,39 @@ export async function* readDataFile({
     if (result.batch && result.batch.length > 0) yield result.batch
     nextYield++
   }
+}
+
+/**
+ * Recursively rewrite top-level column references in a parquet filter using
+ * the provided mapping. Returns undefined if any referenced column has no
+ * entry in the mapping (the column doesn't exist in this parquet file).
+ *
+ * @param {ParquetQueryFilter} filter
+ * @param {Record<string, string>} mapping iceberg name -> parquet name
+ * @returns {ParquetQueryFilter | undefined}
+ */
+function remapFilterColumns(filter, mapping) {
+  const anyFilter = /** @type {Record<string, any>} */ (filter)
+  for (const op of ['$and', '$or', '$nor']) {
+    const subs = anyFilter[op]
+    if (Array.isArray(subs)) {
+      const out = []
+      for (const sub of subs) {
+        const m = remapFilterColumns(sub, mapping)
+        if (!m) return undefined
+        out.push(m)
+      }
+      return /** @type {ParquetQueryFilter} */ ({ [op]: out })
+    }
+  }
+  /** @type {Record<string, any>} */
+  const out = {}
+  for (const [key, cond] of Object.entries(anyFilter)) {
+    const mapped = mapping[key]
+    if (!mapped) return undefined
+    out[mapped] = cond
+  }
+  return out
 }
 
 /**

@@ -49,10 +49,10 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "hyparquet": "1.25.8",
+    "hyparquet": "1.26.0",
     "hyparquet-compressors": "1.1.1",
-    "hyparquet-writer": "0.15.1",
-    "squirreling": "0.12.20"
+    "hyparquet-writer": "0.15.3",
+    "squirreling": "0.12.22"
   },
   "devDependencies": {
     "@types/node": "25.9.1",

@@ -74,16 +74,85 @@ describe.concurrent('icebergDataSource', () => {
     expect(collected[0]?.['Breed Name']).toBe('Flemish Giant')
   })
 
-  it('does not push limit/offset down when a WHERE is supplied', async () => {
+  it('does not push limit/offset down when a WHERE is unpushable', async () => {
     const source = await icebergDataSource({
       tableUrl,
       resolver,
       metadataFileName: 'v2.metadata.json',
     })
+    // A bare literal WHERE has no parquet-filter translation.
     const where = /** @type {ExprNode} */ ({ type: 'literal', value: true })
     const { appliedWhere, appliedLimitOffset } = source.scan({ where, limit: 5 })
     expect(appliedWhere).toBe(false)
     expect(appliedLimitOffset).toBe(false)
+  })
+
+  it('pushes a comparison WHERE down to the parquet read', async () => {
+    const source = await icebergDataSource({
+      tableUrl,
+      resolver,
+      metadataFileName: 'v2.metadata.json',
+    })
+    // SELECT * WHERE "Popularity Rank" <= 3
+    const where = /** @type {ExprNode} */ ({
+      type: 'binary',
+      op: '<=',
+      left: { type: 'identifier', name: 'Popularity Rank' },
+      right: { type: 'literal', value: 3n },
+    })
+    const { rows, appliedWhere, appliedLimitOffset } = source.scan({ where })
+    expect(appliedWhere).toBe(true)
+    expect(appliedLimitOffset).toBe(true)
+
+    const collected = []
+    for await (const row of rows()) collected.push(row.resolved)
+    expect(collected).toHaveLength(3)
+    for (const r of collected) {
+      const rank = /** @type {bigint} */ (r?.['Popularity Rank'])
+      expect(rank <= 3n).toBe(true)
+    }
+  })
+
+  it('pushes WHERE down and combines with LIMIT/OFFSET when no deletes', async () => {
+    const source = await icebergDataSource({
+      tableUrl,
+      resolver,
+      metadataFileName: 'v2.metadata.json',
+    })
+    const where = /** @type {ExprNode} */ ({
+      type: 'binary',
+      op: '<=',
+      left: { type: 'identifier', name: 'Popularity Rank' },
+      right: { type: 'literal', value: 10n },
+    })
+    const { rows, appliedWhere, appliedLimitOffset } = source.scan({ where, limit: 2, offset: 1 })
+    expect(appliedWhere).toBe(true)
+    expect(appliedLimitOffset).toBe(true)
+    const collected = []
+    for await (const row of rows()) collected.push(row.resolved)
+    expect(collected).toHaveLength(2)
+  })
+
+  it('pushed WHERE still respects row-level deletes', async () => {
+    const source = await icebergDataSource({
+      tableUrl,
+      resolver,
+      metadataFileName: 'v4.metadata.json',
+    })
+    const where = /** @type {ExprNode} */ ({
+      type: 'binary',
+      op: '<=',
+      left: { type: 'identifier', name: 'Popularity Rank' },
+      right: { type: 'literal', value: 21n },
+    })
+    const { rows, appliedWhere, appliedLimitOffset } = source.scan({ where })
+    expect(appliedWhere).toBe(true)
+    // With deletes, offset pushdown is unsafe even when WHERE is resolved.
+    expect(appliedLimitOffset).toBe(false)
+    const collected = []
+    for await (const row of rows()) collected.push(row.resolved)
+    // v4 has 15 rows after deletes; the predicate covers them all.
+    expect(collected).toHaveLength(15)
   })
 
   it('respects row-level deletes (v4 has 15 rows after deletes)', async () => {
