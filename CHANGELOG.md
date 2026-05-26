@@ -1,5 +1,12 @@
 # Icebird Changelog
 
+## [0.8.6]
+ - Push down `where` filters into parquet reads so unmatched row groups and pages are skipped
+ - Validate partition specs and transform specs when creating or updating tables
+ - Fix `uuid` partitioning to follow the spec, and canonicalize uuid partition keys across string and byte values
+ - Distinguish `-0.0` and `+0.0` in float partition keys
+ - Fix identity partition fallback when a data file omits a partition value
+
 ## [0.8.5]
  - Parallelize row group reads for faster data file scans
  - Pass manifest lengths to the resolver so cached/range-aware resolvers can fetch manifests in a single request
