@@ -1,5 +1,9 @@
 # Icebird Changelog
 
+## [0.8.7]
+ - Match identity partition fields by their transform rather than source field id, so partition values resolve correctly when a column has multiple transforms
+ - Normalize a null identity partition value to `null` on projection
+
 ## [0.8.6]
  - Push down `where` filters into parquet reads so unmatched row groups and pages are skipped
  - Validate partition specs and transform specs when creating or updating tables
