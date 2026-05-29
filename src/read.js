@@ -363,7 +363,9 @@ export async function* readDataFile({
             // partition struct on data_file object in the manifest. This allows
             // for metadata only migrations of Hive tables.
             // The partition struct is keyed by partition-field name in Avro.
-            mapped[field.name] = data_file.partition[partitionField.name]
+            // A null partition value decodes as `undefined`; normalize it to
+            // `null` so it matches every other null in the output.
+            mapped[field.name] = data_file.partition[partitionField.name] ?? null
           } else if (nameMapping) {
             // 2. Use schema.name-mapping.default metadata to map field id to columns
             for (const name of nameMapping.names) {

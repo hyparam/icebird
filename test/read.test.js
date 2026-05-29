@@ -354,4 +354,105 @@ describe.concurrent('icebergRead', () => {
 
     expect(rows).toEqual([{ id: 1, tag: 'hello' }])
   })
+
+  it('projects a null identity partition value as null, not undefined', async () => {
+    // The Avro reader decodes a null partition value as `undefined` (the null
+    // union branch). When the column is absent from the file, projecting that
+    // value must normalize to `null` to match every other null in the output.
+    /** @type {Schema} */
+    const fileSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [{ id: 1, name: 'id', required: true, type: 'int' }],
+    }
+    /** @type {Schema} */
+    const currentSchema = {
+      type: 'struct',
+      'schema-id': 1,
+      fields: [
+        ...fileSchema.fields,
+        { id: 2, name: 'tag', required: false, type: 'string' },
+      ],
+    }
+    const writer = new ByteWriter()
+    await parquetWrite({
+      writer,
+      columnData: [{ name: 'id', data: [1] }],
+      schema: [
+        { name: 'root', num_children: 1 },
+        { name: 'id', type: 'INT32', repetition_type: 'REQUIRED', field_id: 1 },
+      ],
+      kvMetadata: [{ key: 'iceberg.schema', value: JSON.stringify(fileSchema) }],
+      codec: 'UNCOMPRESSED',
+    })
+    const bytes = writer.getBytes()
+    /** @type {AsyncBuffer} */
+    const asyncBuffer = {
+      byteLength: bytes.byteLength,
+      slice(start, end = bytes.byteLength) {
+        const slice = bytes.subarray(start, end)
+        return slice.buffer.slice(slice.byteOffset, slice.byteOffset + slice.byteLength)
+      },
+    }
+    /** @type {Resolver} */
+    const resolver = {
+      reader() {
+        return asyncBuffer
+      },
+    }
+    /** @type {ManifestEntry} */
+    const dataEntry = {
+      status: 1,
+      sequence_number: 0n,
+      partition_spec_id: 1,
+      data_file: {
+        content: 0,
+        file_path: 'mem://null-identity-partition.parquet',
+        file_format: 'parquet',
+        // Avro decodes a null partition value as `undefined`, with the key present.
+        partition: { tag: undefined },
+        record_count: 1n,
+        file_size_in_bytes: BigInt(bytes.byteLength),
+      },
+    }
+    /** @type {TableMetadata} */
+    const metadata = {
+      'format-version': 3,
+      'table-uuid': 'test',
+      location: 'mem://table',
+      'last-sequence-number': 0,
+      'last-updated-ms': 0,
+      'last-column-id': 2,
+      'current-schema-id': 1,
+      schemas: [fileSchema, currentSchema],
+      'default-spec-id': 1,
+      'partition-specs': [{
+        'spec-id': 1,
+        fields: [{ 'source-id': 2, 'field-id': 1000, name: 'tag', transform: 'identity' }],
+      }],
+      'last-partition-id': 1000,
+      'sort-orders': [{ 'order-id': 0, fields: [] }],
+      'default-sort-order-id': 0,
+      'next-row-id': 0,
+    }
+
+    /** @type {Record<string, any>[]} */
+    const rows = []
+    for await (const batch of readDataFile({
+      dataEntry,
+      fileRowStart: 0,
+      fileRowEnd: 1,
+      schema: currentSchema,
+      metadata,
+      resolver,
+      rowLineage: false,
+      positionDeletesMap: new Map(),
+      equalityDeleteGroups: [],
+    })) {
+      rows.push(...batch)
+    }
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toHaveProperty('tag', null)
+  })
 })
