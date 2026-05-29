@@ -251,4 +251,107 @@ describe.concurrent('icebergRead', () => {
 
     expect(rows).toEqual([{ id: 1, tag: 'unknown' }])
   })
+
+  it('projects identity partition value when the source also has a non-identity field', async () => {
+    // A column can have multiple partition fields on the same source id (e.g.
+    // bucket + identity). The identity value must still be projected for files
+    // that omit the column, regardless of field order in the spec.
+    /** @type {Schema} */
+    const fileSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [{ id: 1, name: 'id', required: true, type: 'int' }],
+    }
+    /** @type {Schema} */
+    const currentSchema = {
+      type: 'struct',
+      'schema-id': 1,
+      fields: [
+        ...fileSchema.fields,
+        { id: 2, name: 'tag', required: false, type: 'string' },
+      ],
+    }
+    const writer = new ByteWriter()
+    await parquetWrite({
+      writer,
+      columnData: [{ name: 'id', data: [1] }],
+      schema: [
+        { name: 'root', num_children: 1 },
+        { name: 'id', type: 'INT32', repetition_type: 'REQUIRED', field_id: 1 },
+      ],
+      kvMetadata: [{ key: 'iceberg.schema', value: JSON.stringify(fileSchema) }],
+      codec: 'UNCOMPRESSED',
+    })
+    const bytes = writer.getBytes()
+    /** @type {AsyncBuffer} */
+    const asyncBuffer = {
+      byteLength: bytes.byteLength,
+      slice(start, end = bytes.byteLength) {
+        const slice = bytes.subarray(start, end)
+        return slice.buffer.slice(slice.byteOffset, slice.byteOffset + slice.byteLength)
+      },
+    }
+    /** @type {Resolver} */
+    const resolver = {
+      reader() {
+        return asyncBuffer
+      },
+    }
+    /** @type {ManifestEntry} */
+    const dataEntry = {
+      status: 1,
+      sequence_number: 0n,
+      partition_spec_id: 1,
+      data_file: {
+        content: 0,
+        file_path: 'mem://identity-partition.parquet',
+        file_format: 'parquet',
+        partition: { tag_bucket: 1, tag: 'hello' },
+        record_count: 1n,
+        file_size_in_bytes: BigInt(bytes.byteLength),
+      },
+    }
+    /** @type {TableMetadata} */
+    const metadata = {
+      'format-version': 3,
+      'table-uuid': 'test',
+      location: 'mem://table',
+      'last-sequence-number': 0,
+      'last-updated-ms': 0,
+      'last-column-id': 2,
+      'current-schema-id': 1,
+      schemas: [fileSchema, currentSchema],
+      'default-spec-id': 1,
+      'partition-specs': [{
+        'spec-id': 1,
+        // bucket field comes first, so a naive source-id lookup would miss the identity field
+        fields: [
+          { 'source-id': 2, 'field-id': 1000, name: 'tag_bucket', transform: 'bucket[4]' },
+          { 'source-id': 2, 'field-id': 1001, name: 'tag', transform: 'identity' },
+        ],
+      }],
+      'last-partition-id': 1001,
+      'sort-orders': [{ 'order-id': 0, fields: [] }],
+      'default-sort-order-id': 0,
+      'next-row-id': 0,
+    }
+
+    /** @type {Record<string, any>[]} */
+    const rows = []
+    for await (const batch of readDataFile({
+      dataEntry,
+      fileRowStart: 0,
+      fileRowEnd: 1,
+      schema: currentSchema,
+      metadata,
+      resolver,
+      rowLineage: false,
+      positionDeletesMap: new Map(),
+      equalityDeleteGroups: [],
+    })) {
+      rows.push(...batch)
+    }
+
+    expect(rows).toEqual([{ id: 1, tag: 'hello' }])
+  })
 })

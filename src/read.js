@@ -340,7 +340,11 @@ export async function* readDataFile({
         if (parquetColumnName) {
           mapped[field.name] = row[parquetColumnName]
         } else {
-          const partitionField = partitionSpec?.fields.find(pf => pf['source-id'] === field.id)
+          // A source column may have multiple partition fields (e.g. bucket +
+          // identity). Match the identity field specifically so its value is
+          // projected regardless of field order in the spec.
+          const partitionField = partitionSpec?.fields.find(
+            pf => pf['source-id'] === field.id && pf.transform === 'identity')
 
           /** @type {NameMapping | undefined} */
           let nameMapping
@@ -352,7 +356,7 @@ export async function* readDataFile({
 
           // Values for field ids which are not present in a data file must
           // be resolved according the following rules:
-          if (partitionField?.transform === 'identity' &&
+          if (partitionField &&
               Object.hasOwn(data_file.partition, partitionField.name)) {
             // 1. Return the value from partition metadata if an Identity Transform
             // exists for the field and the partition value is present in the
