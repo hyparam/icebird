@@ -3,6 +3,7 @@ import { fetchDeleteMaps, urlResolver } from '../fetch.js'
 import { icebergManifests, splitManifestEntries } from '../manifest.js'
 import { icebergMetadata } from '../metadata.js'
 import { readDataFile } from '../read.js'
+import { partitionMightMatch } from '../prune.js'
 import { whereToParquetFilter } from './whereFilter.js'
 
 /**
@@ -88,14 +89,24 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
       // the engine must re-apply it.
       const filter = whereToParquetFilter(where)
       const appliedWhere = where !== undefined && filter !== undefined
+      // Partition-level scan pruning: drop data files whose partition tuple
+      // proves no row can match the filter. Manifest entries are already in
+      // memory, so this is a cheap synchronous pre-filter that avoids opening
+      // the pruned files entirely. Pruning never drops a file with a matching
+      // row, so query results are unchanged.
+      const scanEntries = filter
+        ? dataEntries.filter(entry => partitionMightMatch(filter, entry, schema, tableMetadata))
+        : dataEntries
+      const pruned = scanEntries.length < dataEntries.length
       // Treat a fully-pushed-down WHERE the same as "no WHERE" for the
       // purpose of LIMIT/OFFSET pushdown.
       const whereResolved = !where || appliedWhere
       // OFFSET pushdown (seeking past rows in the parquet file) is only safe
       // when the WHERE is fully resolved at scan time AND the table has no
       // deletes: record_count is pre-delete, so seeking by it would skip the
-      // wrong visible rows.
-      const canPushOffset = whereResolved && !hasDeletes
+      // wrong visible rows. It also assumes the cumulative record_count tracks
+      // row positions, so disable it once pruning has removed any file.
+      const canPushOffset = whereResolved && !hasDeletes && !pruned
       const skip = canPushOffset ? offset ?? 0 : 0
       // LIMIT pushdown (early termination) is safe whenever WHERE is
       // resolved: with deletes we yield offset+limit rows and let the engine
@@ -111,13 +122,13 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
         appliedLimitOffset,
         async *rows() {
           if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
-          if (take === 0 || dataEntries.length === 0) return
+          if (take === 0 || scanEntries.length === 0) return
 
           const { positionDeletesMap, equalityDeleteGroups } = await deleteMapsPromise
 
           let remainingSkip = skip
           let remaining = take
-          for (const entry of dataEntries) {
+          for (const entry of scanEntries) {
             if (remaining <= 0) break
             if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
             const recordCount = Number(entry.data_file.record_count)

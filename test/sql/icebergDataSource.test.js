@@ -347,3 +347,76 @@ describe.concurrent('icebergDataSource', () => {
     ])
   })
 })
+
+describe.concurrent('icebergDataSource partition pruning', () => {
+  // spark/rename_column spec 0: id_bucket = bucket[4](id), date = identity(date).
+  // Three data files: id_bucket=0 (ids 1,2), id_bucket=2 (id 4), id_bucket=3 (id 3).
+  const tableUrl = 's3://hyperparam-iceberg/spark/rename_column'
+
+  /**
+   * Wrap a resolver to count distinct data-file (.parquet under /data/) reads.
+   * @param {Resolver} inner
+   * @returns {Resolver & { dataFilesRead: () => number }}
+   */
+  function countingResolver(inner) {
+    const files = new Set()
+    return {
+      /** @type {Resolver['reader']} */
+      reader(url, byteLength) {
+        if (/\/data\/.*\.parquet$/.test(url)) files.add(url)
+        return inner.reader(url, byteLength)
+      },
+      dataFilesRead: () => files.size,
+    }
+  }
+
+  /**
+   * @param {string} column
+   * @param {bigint} value
+   * @returns {ExprNode}
+   */
+  function eq(column, value) {
+    return /** @type {ExprNode} */ ({
+      type: 'binary', op: '=', left: { type: 'identifier', name: column }, right: { type: 'literal', value },
+    })
+  }
+
+  it('reads only the bucket-matching data file for an equality predicate', async () => {
+    const resolver = countingResolver(localResolver('test/files'))
+    const source = await icebergDataSource({ tableUrl, resolver, metadataFileName: 'v2.metadata.json' })
+
+    // bucket[4](1) === 0, so only the id_bucket=0 file (ids 1 and 2) is read.
+    const out = []
+    for await (const row of source.scan({ where: eq('id', 1n) }).rows()) out.push(row.resolved)
+
+    expect(out).toEqual([{ id: 1, name: 'Flopsy 🐇', date: new Date('2022-01-01'), price: 9.99, active: true }])
+    expect(resolver.dataFilesRead()).toBe(1)
+  })
+
+  it('reads zero data files when no partition can match', async () => {
+    const resolver = countingResolver(localResolver('test/files'))
+    const source = await icebergDataSource({ tableUrl, resolver, metadataFileName: 'v2.metadata.json' })
+
+    // bucket[4](6) === 1, and no data file lives in bucket 1.
+    const out = []
+    for await (const row of source.scan({ where: eq('id', 6n) }).rows()) out.push(row.resolved)
+
+    expect(out).toEqual([])
+    expect(resolver.dataFilesRead()).toBe(0)
+  })
+
+  it('does not prune on a non-partition predicate', async () => {
+    const resolver = countingResolver(localResolver('test/files'))
+    const source = await icebergDataSource({ tableUrl, resolver, metadataFileName: 'v2.metadata.json' })
+
+    // `price` is not a partition source, so every data file must be read.
+    const where = /** @type {ExprNode} */ ({
+      type: 'binary', op: '>', left: { type: 'identifier', name: 'price' }, right: { type: 'literal', value: 0n },
+    })
+    const out = []
+    for await (const row of source.scan({ where }).rows()) out.push(row.resolved)
+
+    expect(out.map(r => r?.id).sort()).toEqual([1, 4])
+    expect(resolver.dataFilesRead()).toBe(3)
+  })
+})
