@@ -1,5 +1,8 @@
 # Icebird Changelog
 
+## [0.8.8]
+ - Prune data files in the SQL data source whose partition values cannot match the pushed-down `where` filter, skipping their parquet footer and data reads
+
 ## [0.8.7]
  - Match identity partition fields by their transform rather than source field id, so partition values resolve correctly when a column has multiple transforms
  - Normalize a null identity partition value to `null` on projection
