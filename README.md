@@ -140,6 +140,7 @@ import {
   icebergCreateTable,
   icebergDelete,
   icebergExpireSnapshots,
+  icebergRewrite,
   icebergSetRef,
 } from 'icebird'
 
@@ -171,6 +172,17 @@ await icebergDelete({
 await icebergSetRef({ catalog, tableUrl, ref: 'main', snapshotId })
 await icebergExpireSnapshots({ catalog, tableUrl, snapshotIds: [oldSnapshotId] })
 ```
+
+If the table is created with a `sortOrder`, `icebergAppend` orders the rows in each written file by that order (tightening per-file column bounds for scan pruning). `icebergRewrite` compacts the current snapshot — reading every live row (deletes applied), sorting globally, and rewriting into consolidated, non-overlapping files via a `replace` snapshot (v2 tables):
+
+```javascript
+// compact small files into sorted, non-overlapping ones
+await icebergRewrite({ catalog, tableUrl })
+// optionally split large partitions and/or re-partition under another spec
+await icebergRewrite({ catalog, tableUrl, targetFileRows: 1_000_000, partitionSpecId: 1 })
+```
+
+A rewrite is not retried on a concurrent commit (it would risk dropping rows another writer appended meanwhile); on conflict it throws and should be re-run against fresh metadata.
 
 For a REST catalog, swap `fileCatalog(...)` for the connect context and pass `namespace`/`table` instead of `tableUrl`:
 
@@ -212,7 +224,8 @@ Icebird aims to support reading any Iceberg table, but currently only supports a
 | Geometry Types | ✅ | |
 | Geography Types | ✅ | |
 | Row Lineage | ✅ | v3 `_row_id` and `_last_updated_sequence_number` inheritance. |
-| Sorting | ❌ | |
+| Sorting | ✅ | Orders rows by the declared sort order on append; `icebergRewrite` compacts to sorted, non-overlapping files (v2). |
+| Scan Pruning | ✅ | Skips data files via partition tuples and manifest column bounds, and parquet row groups via column statistics. |
 | Encryption | ❌ | |
 
 ## References

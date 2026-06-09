@@ -206,6 +206,9 @@ export interface Snapshot {
     // 'spark.app.id'?: string
     'added-data-files'?: string
     'added-records'?: string
+    'deleted-data-files'?: string
+    'deleted-records'?: string
+    'removed-files-size'?: string
     'added-delete-files'?: string
     'removed-delete-files'?: string
     'added-position-deletes'?: string
@@ -298,7 +301,7 @@ export type TableUpdate =
  * accumulated updates ship in one commit when the callback resolves.
  */
 export interface IcebergTransaction {
-  append(options: { records: Record<string, any>[] }): Promise<void>
+  append(options: { records: Record<string, any>[], sortOrderId?: number }): Promise<void>
   delete(options: {
     deletes: { file_path: string, pos: bigint | number }[]
     mode?: 'puffin' | 'parquet'

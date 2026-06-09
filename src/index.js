@@ -1,4 +1,4 @@
-export { IcebergTransactionConflictError, icebergAppend, icebergCreateTable, icebergDelete, icebergDropTable, icebergExpireSnapshots, icebergSetRef, icebergTransaction } from './write/write.js'
+export { IcebergTransactionConflictError, icebergAppend, icebergCreateTable, icebergDelete, icebergDropTable, icebergExpireSnapshots, icebergRewrite, icebergSetRef, icebergTransaction } from './write/write.js'
 export { icebergCreate } from './create.js'
 export { fileCatalog } from './catalog/file.js'
 export { restCatalogConnect, restCatalogCreateNamespace, restCatalogDropNamespace, restCatalogListNamespaces, restCatalogListTables, restCatalogLoadCredentials, restCatalogLoadTable, restCatalogRegisterTable, restCatalogRenameTable } from './catalog/rest.js'

@@ -3,6 +3,7 @@ import { uuid4 } from '../utils.js'
 import { writeParquet } from './parquet.js'
 import { writeDataManifest } from './manifest.js'
 import { groupByPartition } from './partition.js'
+import { buildSortComparator } from './sort.js'
 import {
   buildPartitionSummaries,
   buildSnapshotUpdate,
@@ -34,6 +35,11 @@ import { computeColumnStats } from './stats.js'
  * Only supports v2/v3 tables. Partitioning is supported with identity, void,
  * bucket[N], truncate[W], year, month, day, and hour transforms.
  *
+ * Records within each written data file are ordered by the table's
+ * `default-sort-order` (or `sortOrderId` override) when that order has fields;
+ * an empty sort order leaves input order unchanged. The resulting
+ * `sort_order_id` is recorded on each data file.
+ *
  * @param {object} options
  * @param {string} options.tableUrl - Base URL of the table.
  * @param {TableMetadata} options.metadata - Current table metadata. Used for
@@ -42,9 +48,11 @@ import { computeColumnStats } from './stats.js'
  *   per attempt in `stageSnapshotForAppend`.
  * @param {Record<string, any>[]} options.records - Rows to append.
  * @param {Resolver} options.resolver - Resolver with a writer method.
+ * @param {number} [options.sortOrderId] - Sort order id to apply; defaults to
+ *   the table's `default-sort-order-id`.
  * @returns {Promise<PreparedAppend>}
  */
-export async function prepareAppend({ tableUrl, metadata, records, resolver }) {
+export async function prepareAppend({ tableUrl, metadata, records, resolver, sortOrderId }) {
   if (!tableUrl) throw new Error('tableUrl is required')
   if (!resolver?.writer) throw new Error('resolver.writer is required')
   const writerFn = resolver.writer
@@ -68,30 +76,43 @@ export async function prepareAppend({ tableUrl, metadata, records, resolver }) {
   checkWriteFormat(metadata.properties?.['write.format.default'])
   const codec = resolveParquetCodec(metadata.properties?.['write.parquet.compression-codec'])
 
+  // Resolve the sort order to apply (table default unless overridden). An
+  // empty order yields no comparator and leaves records in input order.
+  const orderId = sortOrderId ?? metadata['default-sort-order-id'] ?? 0
+  const sortOrder = (metadata['sort-orders'] ?? []).find(o => o['order-id'] === orderId)
+  if (sortOrderId !== undefined && !sortOrder) {
+    throw new Error(`sort order ${sortOrderId} not found in metadata`)
+  }
+  const comparator = buildSortComparator(sortOrder, schema)
+  const appliedSortOrderId = comparator ? orderId : 0
+
   const groups = partitionSpec.fields.length
     ? groupByPartition(records, schema, partitionSpec)
     : [{ partition: {}, records }]
   const writtenDataFiles = await Promise.all(groups.map(async group => {
+    // Sort a copy so the caller's array is untouched; a stable sort keeps
+    // input order among equal sort keys.
+    const sortedRecords = comparator ? [...group.records].sort(comparator) : group.records
     const dataPath = `${tableUrl}/data/${uuid4()}.parquet`
     const dataWriter = writerFn(dataPath)
-    await writeParquet({ writer: dataWriter, schema, records: group.records, codec })
-    const stats = computeColumnStats(group.records, schema)
+    await writeParquet({ writer: dataWriter, schema, records: sortedRecords, codec })
+    const stats = computeColumnStats(sortedRecords, schema)
     return {
       partition: group.partition,
-      records: group.records,
+      records: sortedRecords,
       dataFile: {
         content: /** @type {0} */ (0),
         file_path: dataPath,
         file_format: /** @type {'parquet'} */ ('parquet'),
         partition: group.partition,
-        record_count: BigInt(group.records.length),
+        record_count: BigInt(sortedRecords.length),
         file_size_in_bytes: BigInt(dataWriter.offset),
         value_counts: stats.value_counts,
         null_value_counts: stats.null_value_counts,
         nan_value_counts: stats.nan_value_counts,
         lower_bounds: stats.lower_bounds,
         upper_bounds: stats.upper_bounds,
-        sort_order_id: 0,
+        sort_order_id: appliedSortOrderId,
       },
       path: dataPath,
     }
@@ -220,10 +241,11 @@ export async function stageSnapshotForAppend({ tableUrl, metadata, prepared, res
  * @param {TableMetadata} options.metadata
  * @param {Record<string, any>[]} options.records
  * @param {Resolver} options.resolver
+ * @param {number} [options.sortOrderId] - Sort order id to apply; defaults to the table default.
  * @returns {Promise<StagedUpdate>}
  */
-export async function icebergStageAppend({ tableUrl, metadata, records, resolver }) {
-  const prepared = await prepareAppend({ tableUrl, metadata, records, resolver })
+export async function icebergStageAppend({ tableUrl, metadata, records, resolver, sortOrderId }) {
+  const prepared = await prepareAppend({ tableUrl, metadata, records, resolver, sortOrderId })
   const staged = await stageSnapshotForAppend({ tableUrl, metadata, prepared, resolver })
   // Surface the prepare-phase writes alongside the manifest list so callers
   // can clean up everything on commit failure.

@@ -405,11 +405,13 @@ describe.concurrent('icebergDataSource partition pruning', () => {
     expect(resolver.dataFilesRead()).toBe(0)
   })
 
-  it('does not prune on a non-partition predicate', async () => {
+  it('prunes a non-partition predicate via manifest column bounds', async () => {
     const resolver = countingResolver(localResolver('test/files'))
     const source = await icebergDataSource({ tableUrl, resolver, metadataFileName: 'v2.metadata.json' })
 
-    // `price` is not a partition source, so every data file must be read.
+    // `price` is not a partition source, so partition pruning keeps every file.
+    // File-level bounds pruning (#20) still skips the data file whose price
+    // lower/upper bounds prove no row can be > 0, without changing the result.
     const where = /** @type {ExprNode} */ ({
       type: 'binary', op: '>', left: { type: 'identifier', name: 'price' }, right: { type: 'literal', value: 0n },
     })
@@ -417,6 +419,8 @@ describe.concurrent('icebergDataSource partition pruning', () => {
     for await (const row of source.scan({ where }).rows()) out.push(row.resolved)
 
     expect(out.map(r => r?.id).sort()).toEqual([1, 4])
-    expect(resolver.dataFilesRead()).toBe(3)
+    // The id_bucket=3 file (id 3) has price <= 0, so its bounds prune it; the
+    // other two files are read.
+    expect(resolver.dataFilesRead()).toBe(2)
   })
 })
