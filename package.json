@@ -1,6 +1,6 @@
 {
   "name": "icebird",
-  "version": "0.8.8",
+  "version": "0.8.9",
   "description": "Apache Iceberg client for javascript",
   "author": "Hyperparam",
   "homepage": "https://hyperparam.app",
@@ -55,11 +55,11 @@
     "squirreling": "0.12.23"
   },
   "devDependencies": {
-    "@types/node": "25.9.1",
-    "@vitest/coverage-v8": "4.1.7",
+    "@types/node": "25.9.2",
+    "@vitest/coverage-v8": "4.1.8",
     "eslint": "9.39.4",
-    "eslint-plugin-jsdoc": "63.0.0",
+    "eslint-plugin-jsdoc": "63.0.2",
     "typescript": "6.0.3",
-    "vitest": "4.1.7"
+    "vitest": "4.1.8"
   }
 }

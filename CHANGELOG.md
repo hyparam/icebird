@@ -1,5 +1,10 @@
 # Icebird Changelog
 
+## [0.8.9]
+ - Prune data files using manifest column bounds when pushed-down filters prove they cannot match
+ - Sort appended data files by the table's default sort order and record the real sort order id
+ - Add `icebergRewrite` to compact live rows into consolidated, sorted replacement data files
+
 ## [0.8.8]
  - Prune data files in the SQL data source whose partition values cannot match the pushed-down `where` filter, skipping their parquet footer and data reads
 
