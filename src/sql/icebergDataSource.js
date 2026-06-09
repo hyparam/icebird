@@ -3,7 +3,7 @@ import { fetchDeleteMaps, urlResolver } from '../fetch.js'
 import { icebergManifests, splitManifestEntries } from '../manifest.js'
 import { icebergMetadata } from '../metadata.js'
 import { readDataFile } from '../read.js'
-import { partitionMightMatch } from '../prune.js'
+import { fileMightMatch, partitionMightMatch } from '../prune.js'
 import { whereToParquetFilter } from './whereFilter.js'
 
 /**
@@ -22,11 +22,13 @@ import { whereToParquetFilter } from './whereFilter.js'
  * - Column projection (`columns`) is pushed into the parquet read so only the
  *   requested columns are decoded. Equality-delete predicate columns and row
  *   lineage columns are read regardless when needed.
- * - WHERE is pushed down to hyparquet (row-group pruning via statistics and
- *   bloom filters, plus per-row matching) when the expression can be fully
- *   converted to a parquet filter (comparisons, IN, AND/OR/NOT on identifier
- *   vs literal). Unsupported nodes (LIKE, functions, arithmetic, identifier
- *   vs identifier) leave WHERE for the engine to apply.
+ * - WHERE prunes whole data files before they are opened, using each manifest
+ *   entry's partition tuple and per-column `lower_bounds`/`upper_bounds`, and
+ *   is pushed down to hyparquet (row-group pruning via statistics and bloom
+ *   filters, plus per-row matching) when the expression can be fully converted
+ *   to a parquet filter (comparisons, IN, AND/OR/NOT on identifier vs literal).
+ *   Unsupported nodes (LIKE, functions, arithmetic, identifier vs identifier)
+ *   leave WHERE for the engine to apply.
  * - When WHERE is resolved at scan time (either absent or fully pushed) we
  *   cap the scan at `offset + limit` rows so the source terminates early.
  *   OFFSET is also pushed into the parquet seek when there are no deletes;
@@ -89,13 +91,16 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
       // the engine must re-apply it.
       const filter = whereToParquetFilter(where)
       const appliedWhere = where !== undefined && filter !== undefined
-      // Partition-level scan pruning: drop data files whose partition tuple
-      // proves no row can match the filter. Manifest entries are already in
-      // memory, so this is a cheap synchronous pre-filter that avoids opening
-      // the pruned files entirely. Pruning never drops a file with a matching
-      // row, so query results are unchanged.
+      // Scan pruning: drop data files whose partition tuple OR per-column
+      // manifest bounds prove no row can match the filter. Manifest entries are
+      // already in memory, so this is a cheap synchronous pre-filter that
+      // avoids opening the pruned files entirely. Both pruners are inclusive
+      // projections (they never drop a file with a matching row), so query
+      // results are unchanged.
       const scanEntries = filter
-        ? dataEntries.filter(entry => partitionMightMatch(filter, entry, schema, tableMetadata))
+        ? dataEntries.filter(entry =>
+          partitionMightMatch(filter, entry, schema, tableMetadata) &&
+            fileMightMatch(filter, entry, schema))
         : dataEntries
       const pruned = scanEntries.length < dataEntries.length
       // Treat a fully-pushed-down WHERE the same as "no WHERE" for the

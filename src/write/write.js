@@ -6,6 +6,7 @@ import { applyUpdates, fileCatalogCommit } from './commit.js'
 import { icebergStageDeletionVector } from './stage-deletion-vector.js'
 import { icebergStagePositionDelete } from './stage-position-delete.js'
 import { icebergStageAppend, icebergStageExpireSnapshots, icebergStageSetRef, prepareAppend, stageSnapshotForAppend } from './stage.js'
+import { icebergStageRewrite } from './rewrite.js'
 
 /**
  * @import {Catalog, IcebergTransaction, Lister, PartitionSpec, Resolver, Schema, Snapshot, SortOrder, StagedUpdate, TableMetadata, TableRequirement, TableUpdate} from '../../src/types.js'
@@ -30,9 +31,10 @@ const DEFAULT_RETRY = Object.freeze({
  * @param {string} [options.tableUrl] - File catalog only.
  * @param {Resolver} [options.resolver]
  * @param {Record<string, any>[]} options.records
+ * @param {number} [options.sortOrderId] - Sort order id to apply; defaults to the table default.
  * @returns {Promise<TableMetadata>}
  */
-export async function icebergAppend({ catalog, namespace, table, tableUrl, resolver, records }) {
+export async function icebergAppend({ catalog, namespace, table, tableUrl, resolver, records, sortOrderId }) {
   const ctx = await loadTable({ catalog, namespace, table, tableUrl, resolver })
   // Spec v3 §"Manifest Inheritance": data and manifest files do NOT need to
   // be rewritten on optimistic-commit retry. Prepare them once outside the
@@ -44,6 +46,7 @@ export async function icebergAppend({ catalog, namespace, table, tableUrl, resol
     metadata: ctx.metadata,
     records,
     resolver: requireResolver(ctx.resolver, 'icebergAppend'),
+    sortOrderId,
   })
   return await commitWithRetry({
     catalog, target: { namespace, table }, ctx,
@@ -54,6 +57,42 @@ export async function icebergAppend({ catalog, namespace, table, tableUrl, resol
       resolver: requireResolver(workingCtx.resolver, 'icebergAppend'),
     }),
   })
+}
+
+/**
+ * Compact / rewrite a table in one call: load metadata, read every live row
+ * (deletes applied), rewrite the data sorted by the declared sort order under
+ * the target partition spec, and commit a `replace` snapshot.
+ *
+ * Unlike {@link icebergAppend}, a rewrite is NOT retried on a concurrent-commit
+ * conflict: it only rewrote the rows it read, so blindly retrying could drop
+ * rows another writer appended in the meantime. On conflict the underlying
+ * commit error surfaces and the caller should re-run the rewrite against fresh
+ * metadata.
+ *
+ * @param {object} options
+ * @param {Catalog} options.catalog
+ * @param {string | string[]} [options.namespace] - REST catalog only.
+ * @param {string} [options.table] - REST catalog only.
+ * @param {string} [options.tableUrl] - File catalog only.
+ * @param {Resolver} [options.resolver]
+ * @param {number} [options.sortOrderId] - Sort order id to apply; defaults to the table default.
+ * @param {number} [options.partitionSpecId] - Target partition spec id; defaults to `default-spec-id`.
+ * @param {number} [options.targetFileRows] - Max rows per output file.
+ * @returns {Promise<TableMetadata>}
+ */
+export async function icebergRewrite({ catalog, namespace, table, tableUrl, resolver, sortOrderId, partitionSpecId, targetFileRows }) {
+  const ctx = await loadTable({ catalog, namespace, table, tableUrl, resolver })
+  const staged = await icebergStageRewrite({
+    tableUrl: ctx.tableUrl,
+    metadata: ctx.metadata,
+    resolver: requireResolver(ctx.resolver, 'icebergRewrite'),
+    sortOrderId,
+    partitionSpecId,
+    targetFileRows,
+  })
+  // Single commit attempt: see the doc comment on why a rewrite must not retry.
+  return await commitStaged(catalog, { namespace, table }, ctx, staged)
 }
 
 /**
@@ -232,13 +271,14 @@ export async function icebergTransaction({ catalog, namespace, table, tableUrl, 
 
   /** @type {IcebergTransaction} */
   const tx = {
-    async append({ records }) {
+    async append({ records, sortOrderId }) {
       const writer = requireResolver(ctx.resolver, 'icebergTransaction.append')
       const staged = await icebergStageAppend({
         tableUrl: ctx.tableUrl,
         metadata: workingMetadata,
         records,
         resolver: writer,
+        sortOrderId,
       })
       mergeStaged(staged)
     },
