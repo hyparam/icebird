@@ -8,7 +8,8 @@ import { icebergDataSource } from '../../src/sql/icebergDataSource.js'
 import { memResolver } from '../helpers.js'
 
 /**
- * @import {AsyncBuffer} from 'hyparquet'
+ * @import {AsyncBuffer, SchemaElement} from 'hyparquet'
+ * @import {ColumnSource} from 'hyparquet-writer'
  * @import {ExprNode} from 'squirreling'
  * @import {ManifestEntry, Resolver, Schema, TableMetadata} from '../../src/types.js'
  */
@@ -104,7 +105,7 @@ describe('#20 file-level bounds pruning (icebird-written)', () => {
     const out = []
     for await (const row of source.scan({ where: cmp('id', '>=', 1000n) }).rows()) out.push(row.resolved)
 
-    expect(out.map(r => r?.id).sort((a, b) => Number(a - b)))
+    expect(out.map(r => r?.id).sort((a, b) => Number(a) - Number(b)))
       .toEqual([1000n, 1001n, 1002n, 1003n, 1004n, 1005n, 1006n, 1007n, 1008n, 1009n])
     expect(dataFilesRead()).toBe(1)
   })
@@ -169,7 +170,9 @@ describe('#21 row-group pruning (readDataFile)', () => {
       values.push(i)
       if (payloadBytes > 0) payloads.push(String(i).padEnd(payloadBytes, 'x'))
     }
+    /** @type {ColumnSource[]} */
     const columnData = [{ name: 'v', data: values }]
+    /** @type {SchemaElement[]} */
     const parquetSchema = [
       { name: 'root', num_children: payloadBytes > 0 ? 2 : 1 },
       { name: 'v', type: 'INT32', repetition_type: 'OPTIONAL', field_id: 1 },
@@ -229,6 +232,7 @@ describe('#21 row-group pruning (readDataFile)', () => {
       schemas: [schema],
       'default-spec-id': 0,
       'partition-specs': [{ 'spec-id': 0, fields: [] }],
+      'last-partition-id': payloadBytes > 0 ? 2 : 1,
       'sort-orders': [{ 'order-id': 0, fields: [] }],
       'default-sort-order-id': 0,
     }

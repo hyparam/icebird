@@ -73,8 +73,10 @@ describe('fileMightMatch — numeric range/equality', () => {
   })
 
   it('bare value is treated as equality', () => {
-    expect(fileMightMatch({ id: 9n }, e, schema)).toBe(false)
-    expect(fileMightMatch({ id: 3n }, e, schema)).toBe(true)
+    // Bare values (no operator object) are a runtime convenience not modelled by
+    // hyparquet's ParquetQueryFilter type, so cast past it.
+    expect(fileMightMatch(/** @type {any} */ ({ id: 9n }), e, schema)).toBe(false)
+    expect(fileMightMatch(/** @type {any} */ ({ id: 3n }), e, schema)).toBe(true)
   })
 
   it('$in keeps if any value is in range, skips if all out', () => {

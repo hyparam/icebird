@@ -129,7 +129,7 @@ describe('sort-on-append integration', () => {
   /**
    * @param {SortOrder} sortOrder
    * @param {number} [sortOrderId]
-   * @returns {Promise<{ rows: any[], sortOrderIds: number[] }>}
+   * @returns {Promise<{ rows: any[], sortOrderIds: (number | undefined)[] }>}
    */
   async function appendAndRead(sortOrder, sortOrderId) {
     vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
