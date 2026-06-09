@@ -183,6 +183,15 @@ export function compare(a, b, type) {
     const bi = typeof b === 'bigint' ? b : BigInt(b)
     return ai < bi ? -1 : ai > bi ? 1 : 0
   }
+  case 'date': {
+    // Bounds decode to days-since-epoch, but query literals can be `Date`
+    // objects (or ISO strings). Normalize both sides to days so they compare in
+    // one domain; NaN keeps the comparison undecided so callers don't mis-prune.
+    const ad = dateToDays(a)
+    const bd = dateToDays(b)
+    if (Number.isNaN(ad) || Number.isNaN(bd)) return NaN
+    return ad < bd ? -1 : ad > bd ? 1 : 0
+  }
   case 'timestamp':
   case 'timestamptz':
     return compareBigInt(timestampToMicros(a), timestampToMicros(b))
@@ -221,6 +230,28 @@ export function compareFloating(a, b) {
  */
 export function compareBigInt(a, b) {
   return a < b ? -1 : a > b ? 1 : 0
+}
+
+/**
+ * Normalize a `date` value to days since the Unix epoch so a manifest bound
+ * (decoded as a day count) and a query literal compare in the same domain.
+ * Accepts a `Date` (its UTC day), a bigint or number already in days, or an ISO
+ * date string. Returns NaN for anything that can't be read as a date, so the
+ * comparator stays undecided and the caller keeps the file rather than
+ * mis-pruning. Matches `serializeValue`'s date encoding for `Date` inputs.
+ *
+ * @param {any} value
+ * @returns {number}
+ */
+export function dateToDays(value) {
+  if (value instanceof Date) return Math.floor(value.getTime() / 86400000)
+  if (typeof value === 'bigint') return Number(value)
+  if (typeof value === 'number') return value
+  if (typeof value === 'string') {
+    const ms = Date.parse(value)
+    return Number.isNaN(ms) ? NaN : Math.floor(ms / 86400000)
+  }
+  return NaN
 }
 
 /**

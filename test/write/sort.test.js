@@ -19,6 +19,7 @@ const schema = {
     { id: 1, name: 'id', required: true, type: 'long' },
     { id: 2, name: 'v', required: false, type: 'int' },
     { id: 3, name: 'name', required: false, type: 'string' },
+    { id: 4, name: 'd', required: false, type: 'double' },
   ],
 }
 
@@ -84,6 +85,32 @@ describe('buildSortComparator', () => {
     expect([...rows].sort(cmp)).toEqual([
       { v: 0, id: 5n }, { v: 1, id: 20n }, { v: 1, id: 10n },
     ])
+  })
+
+  it('orders NaN greatest under asc and reverses it under desc', () => {
+    const rows = [{ d: 2.0 }, { d: NaN }, { d: -3.0 }, { d: 1.0 }]
+    const asc = buildSortComparator(
+      { 'order-id': 1, fields: [{ transform: 'identity', 'source-id': 4, direction: 'asc', 'null-order': 'nulls-last' }] },
+      schema
+    )
+    // NaN is ordered greatest (Iceberg), so it lands after the largest finite value.
+    expect([...rows].sort(asc).map(r => r.d)).toEqual([-3.0, 1.0, 2.0, NaN])
+
+    const desc = buildSortComparator(
+      { 'order-id': 1, fields: [{ transform: 'identity', 'source-id': 4, direction: 'desc', 'null-order': 'nulls-last' }] },
+      schema
+    )
+    // desc reverses the order of present values, so the greatest (NaN) comes first.
+    expect([...rows].sort(desc).map(r => r.d)).toEqual([NaN, 2.0, 1.0, -3.0])
+  })
+
+  it('treats NaN vs NaN as a tie, preserving input order', () => {
+    const cmp = buildSortComparator(
+      { 'order-id': 1, fields: [{ transform: 'identity', 'source-id': 4, direction: 'asc', 'null-order': 'nulls-last' }] },
+      schema
+    )
+    const rows = [{ d: NaN, id: 1n }, { d: NaN, id: 2n }, { d: NaN, id: 3n }]
+    expect([...rows].sort(cmp).map(r => r.id)).toEqual([1n, 2n, 3n])
   })
 
   it('sorts on a transform key (truncate)', () => {

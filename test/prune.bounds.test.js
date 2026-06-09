@@ -16,6 +16,7 @@ const schema = {
     { id: 3, name: 'ts', required: false, type: 'timestamp' },
     { id: 4, name: 'price', required: false, type: 'double' },
     { id: 5, name: 'amount', required: false, type: 'decimal(10, 2)' },
+    { id: 6, name: 'd', required: false, type: 'date' },
   ],
 }
 
@@ -118,6 +119,31 @@ describe('fileMightMatch — timestamp with Date literal', () => {
     expect(fileMightMatch({ ts: { $gt: new Date('2022-07-01') } }, e, schema)).toBe(false)
     expect(fileMightMatch({ ts: { $gt: new Date('2022-03-01') } }, e, schema)).toBe(true)
     expect(fileMightMatch({ ts: { $lt: new Date('2021-01-01') } }, e, schema)).toBe(false)
+  })
+})
+
+describe('fileMightMatch — date with Date literal', () => {
+  // d in days-since-epoch for 2022-01-01 .. 2022-06-01
+  const lo = Math.floor(Date.parse('2022-01-01') / 86400000)
+  const hi = Math.floor(Date.parse('2022-06-01') / 86400000)
+  const e = entry({ 6: { min: lo, max: hi, type: 'date' } })
+
+  it('normalizes a Date literal (ms) against day-domain bounds', () => {
+    expect(fileMightMatch({ d: { $gt: new Date('2022-07-01') } }, e, schema)).toBe(false)
+    expect(fileMightMatch({ d: { $gt: new Date('2022-03-01') } }, e, schema)).toBe(true)
+    expect(fileMightMatch({ d: { $lt: new Date('2021-01-01') } }, e, schema)).toBe(false)
+    expect(fileMightMatch({ d: { $eq: new Date('2022-03-01') } }, e, schema)).toBe(true)
+    expect(fileMightMatch({ d: { $eq: new Date('2023-01-01') } }, e, schema)).toBe(false)
+  })
+
+  it('also prunes with numeric (days) and ISO-string literals', () => {
+    expect(fileMightMatch({ d: { $gt: hi } }, e, schema)).toBe(false) // nothing > max
+    expect(fileMightMatch({ d: { $gt: '2022-07-01' } }, e, schema)).toBe(false)
+    expect(fileMightMatch({ d: { $gt: '2022-03-01' } }, e, schema)).toBe(true)
+  })
+
+  it('keeps the file for an unparseable date literal (no mis-prune)', () => {
+    expect(fileMightMatch({ d: { $gt: 'not-a-date' } }, e, schema)).toBe(true)
   })
 })
 
