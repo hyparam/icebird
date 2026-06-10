@@ -14,7 +14,7 @@ import { computeColumnStats } from './stats.js'
 import { checkWriteFormat, newSnapshotId, resolveParquetCodec } from './stage.js'
 
 /**
- * @import {Manifest, Resolver, Snapshot, StagedUpdate, TableMetadata} from '../../src/types.js'
+ * @import {Manifest, Resolver, Schema, Snapshot, StagedUpdate, TableMetadata} from '../../src/types.js'
  */
 
 /**
@@ -30,8 +30,16 @@ import { checkWriteFormat, newSnapshotId, resolveParquetCodec } from './stage.js
  * boundary). Row contents and counts are preserved (modulo deleted rows and
  * order); deletes are consumed, so the new snapshot has no delete files.
  *
- * v2 only for now: a v3 rewrite would have to preserve `_row_id` row lineage
- * rather than let `assignFirstRowIds` renumber the rewritten rows.
+ * On v3 tables, row lineage is preserved: each surviving row's `_row_id` and
+ * `_last_updated_sequence_number` are materialized as explicit columns in the
+ * rewritten files (the global sort breaks positional derivation, so stored
+ * values are required). When every live row carries lineage, the new manifest's
+ * `first_row_id` is pinned to the minimum carried `_row_id` so no new row ids
+ * are consumed (`next-row-id` does not advance). When some rows lack lineage
+ * (a table upgraded from v2 whose pre-upgrade rows were never assigned ids),
+ * the manifest is left for commit-time assignment per the spec: stored ids
+ * still win on read, null rows get derived ids, and `next-row-id` advances by
+ * the manifest's row count.
  *
  * @param {object} options
  * @param {string} options.tableUrl
@@ -48,10 +56,10 @@ export async function icebergStageRewrite({
   if (!tableUrl) throw new Error('tableUrl is required')
   if (!resolver?.writer) throw new Error('resolver.writer is required')
   const writerFn = resolver.writer
-  const formatVersion = metadata['format-version']
-  if (formatVersion !== 2) {
-    throw new Error(`icebergRewrite supports format-version 2 only (got ${formatVersion}); v3 row lineage is not yet handled`)
+  if (metadata['format-version'] !== 2 && metadata['format-version'] !== 3) {
+    throw new Error(`unsupported format-version: ${metadata['format-version']}`)
   }
+  const formatVersion = /** @type {2|3} */ (metadata['format-version'])
   if (targetFileRows !== undefined && !(targetFileRows > 0)) {
     throw new Error('targetFileRows must be a positive number')
   }
@@ -77,9 +85,20 @@ export async function icebergStageRewrite({
   checkWriteFormat(metadata.properties?.['write.format.default'])
   const codec = resolveParquetCodec(metadata.properties?.['write.parquet.compression-codec'])
 
-  // Read every live row (deletes applied), then sort globally.
+  // Read every live row (deletes applied), then sort globally. For v3 tables
+  // the rows carry `_row_id` / `_last_updated_sequence_number` (derived or
+  // stored by the read path).
   const liveRows = await icebergRead({ tableUrl, metadata, resolver })
   const sortedRows = comparator ? [...liveRows].sort(comparator) : liveRows
+
+  const rowLineage = formatVersion >= 3
+  // Preserve mode requires complete lineage: rows from pre-upgrade v2
+  // snapshots read with null ids and need commit-time assignment instead.
+  const allLineage = rowLineage && liveRows.length > 0 &&
+    liveRows.every(r => r._row_id != null && r._last_updated_sequence_number != null)
+  const minRowId = allLineage
+    ? liveRows.reduce((min, r) => r._row_id < min ? r._row_id : min, liveRows[0]._row_id)
+    : undefined
 
   // Regroup under the target partition spec (re-derives tuples from values, so
   // files written under an older spec are rewritten under the new one).
@@ -90,6 +109,22 @@ export async function icebergStageRewrite({
   const snapshotId = newSnapshotId(metadata)
   const manifestUuid = uuid4()
 
+  // For v3, materialize the carried lineage as explicit columns in the
+  // rewritten files (reserved field ids per spec). The extended schema is
+  // passed to the parquet writer only: stats, partitioning, and the manifest's
+  // embedded schema stay user-only.
+  /** @type {Schema} */
+  const writeSchema = rowLineage
+    ? {
+      ...schema,
+      fields: [
+        ...schema.fields,
+        { id: 2147483540, name: '_row_id', required: false, type: 'long' },
+        { id: 2147483539, name: '_last_updated_sequence_number', required: false, type: 'long' },
+      ],
+    }
+    : schema
+
   /** @type {{ partition: Record<string, any>, dataFile: any, path: string }[]} */
   const writtenDataFiles = []
   for (const group of groups) {
@@ -98,7 +133,7 @@ export async function icebergStageRewrite({
       if (chunk.length === 0) continue
       const dataPath = `${tableUrl}/data/${uuid4()}.parquet`
       const dataWriter = writerFn(dataPath)
-      await writeParquet({ writer: dataWriter, schema, records: chunk, codec })
+      await writeParquet({ writer: dataWriter, schema: writeSchema, records: chunk, codec })
       const stats = computeColumnStats(chunk, schema)
       writtenDataFiles.push({
         partition: group.partition,
@@ -159,6 +194,14 @@ export async function icebergStageRewrite({
     existing_rows_count: 0n,
     deleted_rows_count: 0n,
     partitions,
+  }
+  if (allLineage) {
+    // Every rewritten row carries a materialized `_row_id`, so the manifest
+    // does not need a fresh id range from `assignFirstRowIds`. Pin its
+    // first_row_id to the smallest carried id: ids are distinct and below
+    // next-row-id, so min + row count never exceeds next-row-id and no new
+    // ids are consumed (`next-row-id` does not advance for a pure rewrite).
+    newManifest.first_row_id = minRowId
   }
 
   // Supersede every prior manifest (data + delete) for the rewritten snapshot.
