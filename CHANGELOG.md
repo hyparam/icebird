@@ -1,5 +1,8 @@
 # Icebird Changelog
 
+## [0.8.10]
+ - Support format-version 3 tables in `icebergRewrite`, preserving row lineage (`_row_id` and `_last_updated_sequence_number`) across rewrites
+
 ## [0.8.9]
  - Prune data files using manifest column bounds when pushed-down filters prove they cannot match
  - Sort appended data files by the table's default sort order and record the real sort order id
