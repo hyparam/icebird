@@ -69,7 +69,7 @@ function lineageById(rows) {
  * Create a sorted, multi-file table and return its committed metadata.
  * @param {object} [opts]
  * @param {SortOrder} [opts.sortOrder]
- * @param {number} [opts.formatVersion]
+ * @param {2 | 3} [opts.formatVersion]
  * @returns {Promise<{ tableUrl: string, resolver: import('../../src/types.js').Resolver, metadata: TableMetadata }>}
  */
 async function makeMultiFileTable({ sortOrder, formatVersion } = {}) {
