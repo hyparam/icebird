@@ -31,10 +31,13 @@ import { whereToParquetFilter } from './whereFilter.js'
  *   leave WHERE for the engine to apply.
  * - When WHERE is resolved at scan time (either absent or fully pushed) we
  *   cap the scan at `offset + limit` rows so the source terminates early.
- *   OFFSET is also pushed into the parquet seek when there are no deletes;
- *   with deletes the engine still applies OFFSET itself (record_count is
- *   pre-delete, so seeking by record_count would miscount visible rows in
- *   any file with applicable deletes).
+ *   OFFSET is also pushed into the parquet seek, and the per-file read bounded
+ *   by row position, only when there is no WHERE at all: a pushed-down WHERE is
+ *   matched per row, so physical row positions no longer line up with result
+ *   positions and a position-based bound would drop matching rows that sort
+ *   later in the file. Deletes disable position pushdown for the same reason
+ *   (record_count is pre-delete). In those cases the engine applies the final
+ *   LIMIT/OFFSET slice over the (at most offset+limit) rows the source emits.
  *
  * @param {object} options
  * @param {string} options.tableUrl - Base URL or path of the table.
@@ -104,18 +107,26 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
         : dataEntries
       const pruned = scanEntries.length < dataEntries.length
       // Treat a fully-pushed-down WHERE the same as "no WHERE" for the
-      // purpose of LIMIT/OFFSET pushdown.
+      // purpose of capping how many rows the source emits (LIMIT).
       const whereResolved = !where || appliedWhere
-      // OFFSET pushdown (seeking past rows in the parquet file) is only safe
-      // when the WHERE is fully resolved at scan time AND the table has no
-      // deletes: record_count is pre-delete, so seeking by it would skip the
-      // wrong visible rows. It also assumes the cumulative record_count tracks
-      // row positions, so disable it once pruning has removed any file.
-      const canPushOffset = whereResolved && !hasDeletes && !pruned
+      // Position-based pushdown — seeking past `offset` physical rows and the
+      // `fileRowEnd` LIMIT bound below — translates a row *count* into a
+      // physical row *position*, which is only correct when every physical row
+      // is also a result row. That holds only when there is NO WHERE at all.
+      // A pushed-down WHERE (appliedWhere) is matched per-row inside the
+      // parquet read, so the first N physical rows may contain fewer than N
+      // (or zero) matches; bounding by position would silently drop matching
+      // rows that sort later in the file (e.g. WHERE node_type='File' LIMIT 5
+      // when the leading rows are all 'Session'). It is likewise unsafe with
+      // deletes (record_count is pre-delete) or once pruning has dropped a
+      // file (cumulative record_count no longer tracks row positions). In all
+      // those cases we keep emitting up to `offset + limit` matched rows and
+      // let the engine apply the final LIMIT/OFFSET slice.
+      const canPushOffset = !where && !hasDeletes && !pruned
       const skip = canPushOffset ? offset ?? 0 : 0
-      // LIMIT pushdown (early termination) is safe whenever WHERE is
-      // resolved: with deletes we yield offset+limit rows and let the engine
-      // apply the slice, which still saves reading later files.
+      // LIMIT (early termination) is safe whenever WHERE is resolved: we yield
+      // at most offset+limit rows and, when offset isn't pushed, let the engine
+      // apply the slice. This still saves reading later files/row groups.
       let take = Infinity
       if (whereResolved && limit !== undefined) {
         take = canPushOffset ? limit : (offset ?? 0) + limit

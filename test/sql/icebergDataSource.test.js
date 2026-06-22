@@ -102,7 +102,9 @@ describe.concurrent('icebergDataSource', () => {
     })
     const { rows, appliedWhere, appliedLimitOffset } = source.scan({ where })
     expect(appliedWhere).toBe(true)
-    expect(appliedLimitOffset).toBe(true)
+    // A pushed-down WHERE disables position-based LIMIT/OFFSET pushdown, so the
+    // engine owns the final slice even though none was requested here.
+    expect(appliedLimitOffset).toBe(false)
 
     const collected = []
     for await (const row of rows()) collected.push(row.resolved)
@@ -113,7 +115,11 @@ describe.concurrent('icebergDataSource', () => {
     }
   })
 
-  it('pushes WHERE down and combines with LIMIT/OFFSET when no deletes', async () => {
+  it('pushes WHERE down but lets the engine apply LIMIT/OFFSET', async () => {
+    // A pushed-down WHERE is matched per row, so OFFSET cannot be pushed by
+    // physical position (the first N physical rows are not the first N
+    // matches). appliedLimitOffset must be false; the source emits up to
+    // offset+limit matched rows and the engine slices the final window.
     const source = await icebergDataSource({
       tableUrl,
       resolver,
@@ -125,12 +131,50 @@ describe.concurrent('icebergDataSource', () => {
       left: { type: 'identifier', name: 'Popularity Rank' },
       right: { type: 'literal', value: 10n },
     })
-    const { rows, appliedWhere, appliedLimitOffset } = source.scan({ where, limit: 2, offset: 1 })
-    expect(appliedWhere).toBe(true)
-    expect(appliedLimitOffset).toBe(true)
+    // Full matched set in physical order, for the slice oracle.
+    const matched = []
+    for await (const row of source.scan({ where }).rows()) matched.push(row.resolved)
+
+    const offset = 1
+    const limit = 2
+    const plan = source.scan({ where, limit, offset })
+    expect(plan.appliedWhere).toBe(true)
+    expect(plan.appliedLimitOffset).toBe(false)
     const collected = []
-    for await (const row of rows()) collected.push(row.resolved)
-    expect(collected).toHaveLength(2)
+    for await (const row of plan.rows()) collected.push(row.resolved)
+    // Source emits the first offset+limit matches; engine slices [offset, offset+limit).
+    expect(collected).toEqual(matched.slice(0, offset + limit))
+    expect(collected.slice(offset, offset + limit)).toEqual(matched.slice(offset, offset + limit))
+  })
+
+  it('pushed WHERE + LIMIT returns matches that sort after the LIMIT window', async () => {
+    // Regression: with a pushed-down filter, bounding the per-file read at
+    // `offset + limit` physical rows silently dropped any match positioned
+    // after that window. Pick the LAST physical row and query for it with
+    // LIMIT 1: a position bound would read only row 0 and return nothing.
+    const source = await icebergDataSource({
+      tableUrl,
+      resolver,
+      metadataFileName: 'v2.metadata.json',
+    })
+    const all = []
+    for await (const row of source.scan({}).rows()) all.push(row.resolved)
+    expect(all.length).toBeGreaterThan(1)
+    const target = /** @type {Record<string, any>} */ (all[all.length - 1])
+    const targetRank = /** @type {bigint} */ (target['Popularity Rank'])
+
+    // Equality on a unique column → pushable, matches exactly the last row.
+    const where = /** @type {ExprNode} */ ({
+      type: 'binary',
+      op: '=',
+      left: { type: 'identifier', name: 'Popularity Rank' },
+      right: { type: 'literal', value: targetRank },
+    })
+    const plan = source.scan({ where, limit: 1 })
+    expect(plan.appliedWhere).toBe(true)
+    const collected = []
+    for await (const row of plan.rows()) collected.push(row.resolved)
+    expect(collected).toEqual([target])
   })
 
   it('pushed WHERE still respects row-level deletes', async () => {
