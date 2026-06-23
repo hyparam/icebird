@@ -1,5 +1,8 @@
 # Icebird Changelog
 
+## [0.8.11]
+ - Fix pushed-down `where` combined with `limit`/`offset` silently dropping matching rows
+
 ## [0.8.10]
  - Support format-version 3 tables in `icebergRewrite`, preserving row lineage (`_row_id` and `_last_updated_sequence_number`) across rewrites
 

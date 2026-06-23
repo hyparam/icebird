@@ -10,6 +10,8 @@
 
 Icebird is a JavaScript client for [Apache Iceberg](https://iceberg.apache.org/) tables. It reads and writes Iceberg v1/v2/v3 tables, runs SQL queries over them, and speaks to file-based or REST catalogs. It is built on top of [hyparquet](https://github.com/hyparam/hyparquet) and [hyparquet-writer](https://github.com/hyparam/hyparquet-writer) for the underlying parquet I/O.
 
+> Part of **[HypStack](https://hypstack.ai/)**, an open-source stack for AI observability.
+
 ## Usage
 
 To read an Iceberg table:
