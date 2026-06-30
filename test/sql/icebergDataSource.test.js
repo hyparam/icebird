@@ -473,6 +473,12 @@ describe.concurrent('icebergDataSource scanColumn', () => {
   const tableUrl = 's3://hyperparam-iceberg/java/bunnies'
   const resolver = localResolver('test/files')
 
+  // bunnies v2/v4 each resolve to a single data file, so the cross-file
+  // OFFSET/LIMIT and between-file abort branches need a multi-file table.
+  // spark/rename_column has three data files walked in record-count order
+  // (two single-row files then the two-row file; oracle id order [3,4,1,2]).
+  const renameTableUrl = 's3://hyperparam-iceberg/spark/rename_column'
+
   /**
    * Flatten a scanColumn stream into a single array of values, asserting each
    * yielded chunk is an array-like batch (the streaming/bounded-memory shape).
@@ -539,6 +545,38 @@ describe.concurrent('icebergDataSource scanColumn', () => {
     expect(past).toEqual([])
   })
 
+  it('honors cross-file LIMIT/OFFSET against a multi-data-file table', async () => {
+    // The only fixture that exercises scanColumn's cross-file OFFSET whole-file
+    // skip-and-resume and cross-file LIMIT early-break (the off-by-one-prone
+    // sites). Asserted against the scan() oracle slice in every case.
+    const source = await icebergDataSource({ tableUrl: renameTableUrl, resolver, metadataFileName: 'v2.metadata.json' })
+    const full = await scanColumnOracle(source, 'id')
+    expect(full).toHaveLength(4)
+
+    const { scanColumn } = source
+    if (!scanColumn) throw new Error('scanColumn not implemented')
+
+    // Full-column read streams all three files, one chunk per row group/file.
+    const { values: all, chunks: allChunks } = await drain(scanColumn({ column: 'id' }))
+    expect(all).toEqual(full)
+    expect(allChunks).toBe(3)
+
+    // (a) OFFSET that crosses a data-file boundary: offset 1 skips the whole
+    // first file and resumes in the second; offset 2 skips the first two files;
+    // offset 3 lands inside the final file; offset+limit may overshoot the end.
+    for (const [offset, limit] of [[1, 2], [2, 2], [1, 10], [3, 1]]) {
+      const { values } = await drain(scanColumn({ column: 'id', offset, limit }))
+      expect(values).toEqual(full.slice(offset, offset + limit))
+    }
+
+    // (b) LIMIT satisfied before the last file: limit 2 is filled by the first
+    // two single-row files, so the final (two-row) file is never opened —
+    // proven by the chunk count dropping below the full-read 3.
+    const { values: capped, chunks: cappedChunks } = await drain(scanColumn({ column: 'id', limit: 2 }))
+    expect(capped).toEqual(full.slice(0, 2))
+    expect(cappedChunks).toBe(2)
+  })
+
   it('applies LIMIT/OFFSET over post-delete values when deletes are present', async () => {
     const source = await icebergDataSource({ tableUrl, resolver, metadataFileName: 'v4.metadata.json' })
     const full = await scanColumnOracle(source, 'Breed Name')
@@ -567,6 +605,27 @@ describe.concurrent('icebergDataSource scanColumn', () => {
     controller.abort()
     await expect(drain(scanColumn({ column: 'Popularity Rank', signal: controller.signal })))
       .rejects.toThrow('Aborted')
+  })
+
+  it('aborts mid-stream after consuming the first chunk', async () => {
+    // The pre-aborted case above only covers the entry guard. Use the
+    // multi-file fixture so there is more to read after the first chunk:
+    // consume the first file's chunk successfully, then abort, and the next
+    // pull must reject (the same error scan raises) at the between-file guard,
+    // honoring the JSDoc's "aborts between chunks" promise.
+    const source = await icebergDataSource({ tableUrl: renameTableUrl, resolver, metadataFileName: 'v2.metadata.json' })
+    const { scanColumn } = source
+    if (!scanColumn) throw new Error('scanColumn not implemented')
+
+    const controller = new AbortController()
+    const iterator = scanColumn({ column: 'id', signal: controller.signal })[Symbol.asyncIterator]()
+
+    const first = await iterator.next()
+    expect(first.done).toBe(false)
+    expect(first.value.length).toBeGreaterThanOrEqual(1)
+
+    controller.abort()
+    await expect(iterator.next()).rejects.toThrow('Aborted')
   })
 
   it('lights squirreling\'s streaming scalar-aggregate fast path', async () => {
@@ -600,5 +659,65 @@ describe.concurrent('icebergDataSource scanColumn', () => {
     expect(Number(row.mx)).toBe(21)
     expect(Number(row.s)).toBe(231)
     expect(Number(row.a)).toBe(11)
+  })
+
+  it('serves a plain single-column SELECT with LIMIT/OFFSET through the hook', async () => {
+    // execute.js takes the scanColumn fast path for any single-column,
+    // WHERE-free scan, not just aggregates. Prove the hook is invoked and the
+    // streamed rows match the ordinary scan() path (hook removed).
+    const source = await icebergDataSource({ tableUrl, resolver, metadataFileName: 'v2.metadata.json' })
+    const baseScanColumn = source.scanColumn
+    if (!baseScanColumn) throw new Error('scanColumn not implemented')
+
+    let scanColumnCalls = 0
+    /** @type {AsyncDataSource} */
+    const spied = {
+      ...source,
+      /** @type {NonNullable<AsyncDataSource['scanColumn']>} */
+      scanColumn(options) {
+        scanColumnCalls++
+        return baseScanColumn(options)
+      },
+    }
+    // Same source with the hook removed forces the ordinary row scan() path.
+    /** @type {AsyncDataSource} */
+    const noHook = { ...source, scanColumn: undefined }
+
+    const query = 'SELECT "Popularity Rank" FROM bunnies LIMIT 5 OFFSET 2'
+    const viaHook = await collect(executeSql({ tables: { bunnies: spied }, query }))
+    const viaScan = await collect(executeSql({ tables: { bunnies: noHook }, query }))
+
+    expect(scanColumnCalls).toBe(1)
+    expect(viaHook).toEqual(viaScan)
+    expect(viaHook).toHaveLength(5)
+  })
+
+  it('characterizes: N aggregates on one column re-scan it N times (no coalescing)', async () => {
+    // Current behavior, pinned for visibility — NOT an endorsement. squirreling
+    // runs the streaming-aggregate fast path once per aggregate, so five
+    // aggregates over one column re-scan the column five times. Coalescing them
+    // into one pass is an upstream squirreling opportunity, not an icebird bug;
+    // this characterization makes a future fix a visible diff here.
+    const source = await icebergDataSource({ tableUrl, resolver, metadataFileName: 'v2.metadata.json' })
+    const baseScanColumn = source.scanColumn
+    if (!baseScanColumn) throw new Error('scanColumn not implemented')
+
+    let scanColumnCalls = 0
+    /** @type {AsyncDataSource} */
+    const spied = {
+      ...source,
+      /** @type {NonNullable<AsyncDataSource['scanColumn']>} */
+      scanColumn(options) {
+        scanColumnCalls++
+        return baseScanColumn(options)
+      },
+    }
+
+    await collect(executeSql({
+      tables: { bunnies: spied },
+      query: 'SELECT COUNT("Popularity Rank") AS c, MIN("Popularity Rank") AS mn, MAX("Popularity Rank") AS mx, SUM("Popularity Rank") AS s, AVG("Popularity Rank") AS a FROM bunnies',
+    }))
+
+    expect(scanColumnCalls).toBe(5)
   })
 })
