@@ -4,7 +4,7 @@ import { icebergDataSource } from '../../src/sql/icebergDataSource.js'
 import { localResolver } from '../helpers.js'
 
 /**
- * @import {ExprNode} from 'squirreling'
+ * @import {AsyncDataSource, ExprNode} from 'squirreling'
  * @import {Resolver} from '../../src/types.js'
  */
 
@@ -466,5 +466,139 @@ describe.concurrent('icebergDataSource partition pruning', () => {
     // The id_bucket=3 file (id 3) has price <= 0, so its bounds prune it; the
     // other two files are read.
     expect(resolver.dataFilesRead()).toBe(2)
+  })
+})
+
+describe.concurrent('icebergDataSource scanColumn', () => {
+  const tableUrl = 's3://hyperparam-iceberg/java/bunnies'
+  const resolver = localResolver('test/files')
+
+  /**
+   * Flatten a scanColumn stream into a single array of values, asserting each
+   * yielded chunk is an array-like batch (the streaming/bounded-memory shape).
+   *
+   * @param {AsyncIterable<ArrayLike<any>>} stream
+   * @returns {Promise<{ values: any[], chunks: number }>}
+   */
+  async function drain(stream) {
+    /** @type {any[]} */
+    const values = []
+    let chunks = 0
+    for await (const chunk of stream) {
+      expect(typeof chunk.length).toBe('number')
+      chunks++
+      for (let i = 0; i < chunk.length; i++) values.push(chunk[i])
+    }
+    return { values, chunks }
+  }
+
+  /**
+   * Read a single column's full value list via the row `scan()` path, the
+   * oracle scanColumn must agree with.
+   *
+   * @param {AsyncDataSource} source
+   * @param {string} column
+   * @returns {Promise<any[]>}
+   */
+  async function scanColumnOracle(source, column) {
+    /** @type {any[]} */
+    const out = []
+    for await (const row of source.scan({ columns: [column] }).rows()) {
+      out.push((row.resolved ?? {})[column])
+    }
+    return out
+  }
+
+  it('streams a column in row order, matching scan() for the same column', async () => {
+    const source = await icebergDataSource({ tableUrl, resolver, metadataFileName: 'v2.metadata.json' })
+    const expected = await scanColumnOracle(source, 'Popularity Rank')
+
+    const { scanColumn } = source
+    if (!scanColumn) throw new Error('scanColumn not implemented')
+    const { values, chunks } = await drain(scanColumn({ column: 'Popularity Rank' }))
+
+    expect(values).toEqual(expected)
+    expect(values).toHaveLength(21)
+    // At least one chunk was yielded (values arrive incrementally, not as one
+    // pre-materialized array the source built internally).
+    expect(chunks).toBeGreaterThanOrEqual(1)
+  })
+
+  it('respects LIMIT and OFFSET (no deletes)', async () => {
+    const source = await icebergDataSource({ tableUrl, resolver, metadataFileName: 'v2.metadata.json' })
+    const full = await scanColumnOracle(source, 'Popularity Rank')
+
+    const { scanColumn } = source
+    if (!scanColumn) throw new Error('scanColumn not implemented')
+    for (const [offset, limit] of [[0, 5], [2, 3], [18, 10], [0, 0], [5, 0]]) {
+      const { values } = await drain(scanColumn({ column: 'Popularity Rank', offset, limit }))
+      expect(values).toEqual(full.slice(offset, offset + limit))
+    }
+    // OFFSET past the end yields nothing.
+    const { values: past } = await drain(scanColumn({ column: 'Popularity Rank', offset: 100, limit: 5 }))
+    expect(past).toEqual([])
+  })
+
+  it('applies LIMIT/OFFSET over post-delete values when deletes are present', async () => {
+    const source = await icebergDataSource({ tableUrl, resolver, metadataFileName: 'v4.metadata.json' })
+    const full = await scanColumnOracle(source, 'Breed Name')
+    expect(full).toHaveLength(15)
+
+    const { scanColumn } = source
+    if (!scanColumn) throw new Error('scanColumn not implemented')
+    // Whole column matches the post-delete scan.
+    const { values: all } = await drain(scanColumn({ column: 'Breed Name' }))
+    expect(all).toEqual(full)
+
+    // LIMIT/OFFSET are post-delete coordinates (record_count is pre-delete), so
+    // they must align with slices of the post-delete oracle, not raw files.
+    for (const [offset, limit] of [[0, 1], [4, 2], [8, 4], [13, 5]]) {
+      const { values } = await drain(scanColumn({ column: 'Breed Name', offset, limit }))
+      expect(values).toEqual(full.slice(offset, offset + limit))
+    }
+  })
+
+  it('aborts promptly on a pre-aborted signal', async () => {
+    const source = await icebergDataSource({ tableUrl, resolver, metadataFileName: 'v2.metadata.json' })
+    const { scanColumn } = source
+    if (!scanColumn) throw new Error('scanColumn not implemented')
+
+    const controller = new AbortController()
+    controller.abort()
+    await expect(drain(scanColumn({ column: 'Popularity Rank', signal: controller.signal })))
+      .rejects.toThrow('Aborted')
+  })
+
+  it('lights squirreling\'s streaming scalar-aggregate fast path', async () => {
+    const source = await icebergDataSource({ tableUrl, resolver, metadataFileName: 'v2.metadata.json' })
+    const baseScanColumn = source.scanColumn
+    if (!baseScanColumn) throw new Error('scanColumn not implemented')
+
+    // Spy on scanColumn so we can prove the engine took the streaming path
+    // (tryColumnScanAggregate) rather than the buffering aggregate fallback.
+    let scanColumnCalls = 0
+    /** @type {AsyncDataSource} */
+    const spied = {
+      ...source,
+      /** @type {NonNullable<AsyncDataSource['scanColumn']>} */
+      scanColumn(options) {
+        scanColumnCalls++
+        return baseScanColumn(options)
+      },
+    }
+
+    const result = await collect(executeSql({
+      tables: { bunnies: spied },
+      query: 'SELECT COUNT("Popularity Rank") AS c, MIN("Popularity Rank") AS mn, MAX("Popularity Rank") AS mx, SUM("Popularity Rank") AS s, AVG("Popularity Rank") AS a FROM bunnies',
+    }))
+
+    expect(scanColumnCalls).toBeGreaterThanOrEqual(1)
+    expect(result).toHaveLength(1)
+    const row = result[0]
+    expect(Number(row.c)).toBe(21)
+    expect(Number(row.mn)).toBe(1)
+    expect(Number(row.mx)).toBe(21)
+    expect(Number(row.s)).toBe(231)
+    expect(Number(row.a)).toBe(11)
   })
 })
