@@ -7,7 +7,7 @@ import { fileMightMatch, partitionMightMatch } from '../prune.js'
 import { whereToParquetFilter } from './whereFilter.js'
 
 /**
- * @import {AsyncDataSource} from 'squirreling'
+ * @import {AsyncDataSource, SqlPrimitive} from 'squirreling'
  * @import {Lister, Resolver, TableMetadata} from '../../src/types.js'
  */
 
@@ -188,6 +188,112 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
               }
               if (stop) break
             }
+          }
+        },
+      }
+    },
+    /**
+     * Streams a single column's values in row order as an async iterable of
+     * chunks (one chunk per parquet row group), so peak memory is bounded by a
+     * single row group's worth of values rather than the whole table. This is
+     * squirreling's optional `AsyncDataSource.scanColumn` hook: its
+     * `tryColumnScanAggregate` consumes it to compute a scalar aggregate
+     * (`COUNT`/`MIN`/`MAX`/`SUM`/`AVG`, low-cardinality `COUNT(DISTINCT …)`) in
+     * O(1)/O(cardinality) state; without the hook the engine falls back to
+     * buffering every scanned row.
+     *
+     * `scanColumn` is never given a WHERE (the engine only takes the streaming
+     * aggregate path when the scan has no filter), so there is no file or
+     * row-group pruning here, and there is no `appliedLimitOffset` flag to defer
+     * to: the source must fully honor LIMIT/OFFSET itself. Without deletes,
+     * record_count is exact, so whole files are skipped for OFFSET and the
+     * per-file read is bounded for LIMIT. With deletes, record_count is
+     * pre-delete, so OFFSET/LIMIT are applied over the post-delete value stream
+     * instead. `signal` aborts between chunks, mirroring `scan`.
+     *
+     * @param {object} options
+     * @param {string} options.column - Name of the single column to stream.
+     * @param {number} [options.limit] - Max number of values to yield.
+     * @param {number} [options.offset] - Number of leading values to skip.
+     * @param {AbortSignal} [options.signal] - Aborts the stream between chunks.
+     * @returns {AsyncIterable<ArrayLike<SqlPrimitive>>} Chunks of column values.
+     */
+    scanColumn({ column, limit, offset, signal }) {
+      const wantedColumns = [column]
+      const skip = offset ?? 0
+      const take = limit ?? Infinity
+      return {
+        async *[Symbol.asyncIterator]() {
+          if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+          if (take === 0 || dataEntries.length === 0) return
+
+          const { positionDeletesMap, equalityDeleteGroups } = await deleteMapsPromise
+
+          let remainingSkip = skip
+          let remaining = take
+          for (const entry of dataEntries) {
+            if (remaining <= 0) break
+            if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+            const recordCount = Number(entry.data_file.record_count)
+            // Without deletes record_count counts visible rows, so skip whole
+            // files for OFFSET and bound the per-file end for LIMIT. With
+            // deletes it is pre-delete, so read each file whole and slice the
+            // post-delete batches below.
+            let fileRowStart = 0
+            if (!hasDeletes && remainingSkip > 0) {
+              if (remainingSkip >= recordCount) {
+                remainingSkip -= recordCount
+                continue
+              }
+              fileRowStart = remainingSkip
+              remainingSkip = 0
+            }
+            const fileRowEnd = !hasDeletes && remaining !== Infinity
+              ? Math.min(recordCount, fileRowStart + remaining)
+              : recordCount
+
+            let stop = false
+            for await (const batch of readDataFile({
+              dataEntry: entry,
+              fileRowStart,
+              fileRowEnd,
+              schema,
+              metadata: tableMetadata,
+              resolver: fetchResolver,
+              rowLineage,
+              positionDeletesMap,
+              equalityDeleteGroups,
+              wantedColumns,
+              signal,
+            })) {
+              if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+              // Apply any OFFSET still owed in post-delete coordinates. Without
+              // deletes this is already spent at fileRowStart, so the guard is
+              // only reached when deletes are present.
+              let start = 0
+              if (remainingSkip > 0) {
+                if (remainingSkip >= batch.length) {
+                  remainingSkip -= batch.length
+                  continue
+                }
+                start = remainingSkip
+                remainingSkip = 0
+              }
+              let end = batch.length
+              if (remaining !== Infinity && end - start > remaining) {
+                end = start + remaining
+                stop = true
+              }
+              /** @type {SqlPrimitive[]} */
+              const chunk = []
+              for (let i = start; i < end; i++) chunk.push(batch[i][column])
+              if (chunk.length > 0) {
+                yield chunk
+                remaining -= chunk.length
+              }
+              if (stop || remaining <= 0) break
+            }
+            if (stop || remaining <= 0) break
           }
         },
       }
