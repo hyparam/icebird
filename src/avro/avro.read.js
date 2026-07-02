@@ -96,7 +96,26 @@ function readType(reader, type) {
       }
     }
     return arr
-  } else if (typeof type === 'object' && type.logicalType) {
+  } else if (typeof type === 'object' && type.type === 'map') {
+    // Avro map: repeated blocks of (count, [string key, value]...) ending with 0.
+    /** @type {Record<string, any>} */
+    const map = {}
+    while (true) {
+      let count = readZigZag(reader)
+      if (count === 0) break
+      if (count < 0) {
+        count = -count
+        readZigZag(reader) // block size in bytes
+      }
+      for (let i = 0; i < count; i++) {
+        const key = readType(reader, 'string')
+        map[key] = readType(reader, type.values)
+      }
+    }
+    return map
+  } else if (typeof type === 'object' && type.type === 'enum') {
+    return type.symbols[readZigZag(reader)]
+  } else if (typeof type === 'object' && 'logicalType' in type && type.logicalType) {
     if (type.logicalType === 'date' && type.type === 'int') {
       const value = readZigZag(reader)
       return new Date(value * 86400000)
@@ -159,9 +178,11 @@ function readType(reader, type) {
     const text = new TextDecoder().decode(bytes)
     reader.offset += length
     return text
+  } else if (typeof type === 'object' && typeof type.type === 'string') {
+    // Boxed primitive/named type, e.g. { "type": "string" } or { "type": "long" }.
+    return readType(reader, type.type)
   } else {
-    // enum, fixed, null, map
-    throw new Error(`unsupported type: ${type}`)
+    throw new Error(`unsupported type: ${JSON.stringify(type)}`)
   }
 }
 

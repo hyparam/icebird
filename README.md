@@ -116,6 +116,8 @@ const { metadata } = await restCatalogLoadTable(ctx, { namespace: 'analytics', t
 const data = await icebergRead({ tableUrl: metadata.location, metadata })
 ```
 
+For Amazon S3 Tables, use the optional [`icebird/s3tables`](#amazon-s3-tables) subpath (read-only in this release).
+
 ## SQL
 
 Icebird ships a SQL engine on top of [squirreling](https://github.com/hyparam/squirreling). `icebergQuery` runs a SQL query across one or more iceberg tables. Rows are streamed lazily. Multi-segment namespaces in the SQL `FROM` clause must be dot-separated and quoted: `FROM "analytics.orders"` resolves to namespace `analytics`, table `orders`.
@@ -130,6 +132,53 @@ const result = await icebergQuery({
 })
 const rows = await collect(result)
 ```
+
+## Amazon S3 Tables
+
+Read-only support for [Amazon S3 Tables](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-tables-tables.html) lives in the optional `icebird/s3tables` subpath. The main `icebird` export has **no AWS dependency**, and requests are signed with icebird's own SigV4 implementation. The only optional dependency is `@aws-sdk/credential-providers`, used to resolve the default AWS credential chain — and even that is imported lazily, so passing explicit credentials needs no AWS SDK at all.
+
+Install the peer dependency only if you rely on the default credential chain:
+
+```bash
+npm install icebird @aws-sdk/credential-providers
+```
+
+Connect with the default AWS credential chain (env vars, shared config, IAM role on Lambda/EC2):
+
+```javascript
+import { icebergRead } from 'icebird'
+import { loadS3TablesTable, s3TablesCatalogConnectFromEnv } from 'icebird/s3tables'
+
+const catalog = await s3TablesCatalogConnectFromEnv({
+  region: 'us-east-1',
+  tableBucketArn: 'arn:aws:s3tables:us-east-1:111122223333:bucket/my-bucket',
+})
+const { metadata, tableUrl, resolver } = await loadS3TablesTable({
+  catalog, namespace: 'analytics', table: 'orders',
+})
+const rows = await icebergRead({ tableUrl, metadata, resolver })
+```
+
+Or pass explicit credentials:
+
+```javascript
+import { icebergRead, restCatalogLoadTable } from 'icebird'
+import { loadS3TablesTable, s3TablesCatalogConnect, s3TablesResolver } from 'icebird/s3tables'
+
+const creds = { region: 'us-east-1', accessKeyId, secretAccessKey }
+const catalog = await s3TablesCatalogConnect({
+  ...creds,
+  tableBucketArn: 'arn:aws:s3tables:us-east-1:111122223333:bucket/my-bucket',
+})
+
+const resolver = await s3TablesResolver(creds)
+const { metadata } = await restCatalogLoadTable(catalog, { namespace: 'analytics', table: 'orders' })
+const rows = await icebergRead({ tableUrl: metadata.location, metadata, resolver })
+```
+
+**IAM (read-only):** grant `s3tables:GetTableBucket`, `s3tables:ListNamespaces`, `s3tables:GetNamespace`, `s3tables:ListTables`, `s3tables:GetTable`, `s3tables:GetTableMetadataLocation`, and `s3tables:GetTableData` on your table bucket and tables.
+
+**Limitations:** S3 Tables namespaces are single-level only. `s3Lister` does not work on table-bucket warehouse paths (use the REST catalog to load metadata). Writes, Glue REST endpoint, and OAuth are not supported via this subpath yet.
 
 ## Writing
 
