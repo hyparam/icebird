@@ -27,6 +27,8 @@ export interface RestCatalogContext {
   defaults: Record<string, string>
   overrides: Record<string, string>
   requestInit?: RequestInit
+  /** Optional per-request auth hook (e.g. SigV4 signing). Called after merging requestInit. */
+  signRequest?: (url: string, init?: RequestInit) => Promise<RequestInit>
 }
 
 export interface FileCatalog {
@@ -429,9 +431,14 @@ interface AvroField {
   'field-id'?: number
 }
 
-export type AvroType = AvroPrimitiveType | AvroComplexType | AvroLogicalType
+export type AvroType = AvroPrimitiveType | AvroComplexType | AvroLogicalType | AvroBoxedPrimitive
 
 type AvroPrimitiveType = 'null' | 'boolean' | 'int' | 'long' | 'float' | 'double' | 'bytes' | 'string'
+
+// Avro allows a primitive to be written boxed in an object, e.g. { "type": "string" }.
+type AvroBoxedPrimitive = {
+  type: AvroPrimitiveType
+}
 
 interface AvroRecord {
   type: 'record'
@@ -452,6 +459,21 @@ interface AvroArray {
 }
 
 type AvroUnion = AvroType[]
+
+interface AvroMap {
+  type: 'map'
+  values: AvroType
+  default?: any
+  'key-id'?: number
+  'value-id'?: number
+}
+
+type AvroEnum = {
+  type: 'enum'
+  name: string
+  symbols: string[]
+  default?: string
+}
 
 type AvroDate = {
   type: 'int'
@@ -532,4 +554,4 @@ type AvroFixed = {
 }
 
 // Avro complex types: records, enums, arrays, maps, unions, fixed
-type AvroComplexType = AvroRecord | AvroArray | AvroUnion | AvroFixed
+type AvroComplexType = AvroRecord | AvroArray | AvroMap | AvroEnum | AvroUnion | AvroFixed

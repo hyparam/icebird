@@ -32,8 +32,12 @@ describe('package.json', () => {
     })
   })
 
-  it('should have no peer dependencies', () => {
-    expect('peerDependencies' in packageJson).toBe(false)
+  it('should declare the optional AWS peer dependency for icebird/s3tables', () => {
+    const { peerDependencies, peerDependenciesMeta } = packageJson
+    expect(peerDependencies).toEqual({
+      '@aws-sdk/credential-providers': '^3.0.0',
+    })
+    expect(peerDependenciesMeta?.['@aws-sdk/credential-providers']?.optional).toBe(true)
   })
 
   it('should have exports with types first', () => {

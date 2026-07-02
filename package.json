@@ -34,6 +34,10 @@
       "types": "./types/avro/index.d.ts",
       "import": "./src/avro/index.js"
     },
+    "./s3tables": {
+      "types": "./types/aws/s3tables.d.ts",
+      "import": "./src/aws/s3tables.js"
+    },
     "./src/*.js": {
       "types": "./types/*.d.ts",
       "import": "./src/*.js"
@@ -54,7 +58,16 @@
     "hyparquet-writer": "0.16.1",
     "squirreling": "0.12.24"
   },
+  "peerDependencies": {
+    "@aws-sdk/credential-providers": "^3.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@aws-sdk/credential-providers": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "@aws-sdk/credential-providers": "3.1079.0",
     "@types/node": "26.0.0",
     "@vitest/coverage-v8": "4.1.9",
     "eslint": "9.39.4",
