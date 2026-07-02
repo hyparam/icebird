@@ -692,12 +692,11 @@ describe.concurrent('icebergDataSource scanColumn', () => {
     expect(viaHook).toHaveLength(5)
   })
 
-  it('characterizes: N aggregates on one column re-scan it N times (no coalescing)', async () => {
-    // Current behavior, pinned for visibility — NOT an endorsement. squirreling
-    // runs the streaming-aggregate fast path once per aggregate, so five
-    // aggregates over one column re-scan the column five times. Coalescing them
-    // into one pass is an upstream squirreling opportunity, not an icebird bug;
-    // this characterization makes a future fix a visible diff here.
+  it('characterizes: N aggregates on one column coalesce into a single scan', async () => {
+    // Current behavior, pinned for visibility. squirreling coalesces the
+    // streaming-aggregate fast path, so five aggregates over one column share a
+    // single scan of that column. (Earlier squirreling releases re-scanned once
+    // per aggregate; this characterization tracks the behavior as a visible diff.)
     const source = await icebergDataSource({ tableUrl, resolver, metadataFileName: 'v2.metadata.json' })
     const baseScanColumn = source.scanColumn
     if (!baseScanColumn) throw new Error('scanColumn not implemented')
@@ -718,6 +717,6 @@ describe.concurrent('icebergDataSource scanColumn', () => {
       query: 'SELECT COUNT("Popularity Rank") AS c, MIN("Popularity Rank") AS mn, MAX("Popularity Rank") AS mx, SUM("Popularity Rank") AS s, AVG("Popularity Rank") AS a FROM bunnies',
     }))
 
-    expect(scanColumnCalls).toBe(5)
+    expect(scanColumnCalls).toBe(1)
   })
 })
