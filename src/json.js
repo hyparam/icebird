@@ -122,3 +122,43 @@ export function parseIcebergJson(text) {
   if (i !== text.length) throw new Error(`unexpected trailing input at ${i}`)
   return value
 }
+
+/**
+ * Serialize Iceberg metadata to JSON, emitting BigInt values as bare JSON
+ * number literals (the inverse of `parseIcebergJson`). Plain `JSON.stringify`
+ * throws on BigInt, and a naive replacer that returns a string would corrupt
+ * the metadata by quoting 64-bit snapshot ids the spec requires as numbers.
+ * Values above 2^53 are never coerced through Number, so precision is kept.
+ *
+ * Output matches `JSON.stringify(value, null, indent)` for the JSON value
+ * types Iceberg metadata uses (objects, arrays, strings, numbers, booleans,
+ * null) and additionally handles BigInt.
+ *
+ * @param {any} value
+ * @param {number} [indent] - Spaces of indentation per level. Default 2.
+ * @returns {string}
+ */
+export function stringifyIcebergJson(value, indent = 2) {
+  const pad = ' '.repeat(indent)
+  /**
+   * @param {any} val
+   * @param {number} depth
+   * @returns {string}
+   */
+  function serialize(val, depth) {
+    if (typeof val === 'bigint') return val.toString()
+    if (val === null || typeof val !== 'object') return JSON.stringify(val)
+    const inner = pad.repeat(depth + 1)
+    const outer = pad.repeat(depth)
+    if (Array.isArray(val)) {
+      if (val.length === 0) return '[]'
+      const items = val.map(v => inner + serialize(v === undefined ? null : v, depth + 1))
+      return `[\n${items.join(',\n')}\n${outer}]`
+    }
+    const keys = Object.keys(val).filter(k => val[k] !== undefined)
+    if (keys.length === 0) return '{}'
+    const items = keys.map(k => `${inner}${JSON.stringify(k)}: ${serialize(val[k], depth + 1)}`)
+    return `{\n${items.join(',\n')}\n${outer}}`
+  }
+  return serialize(value, 0)
+}

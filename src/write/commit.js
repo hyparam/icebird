@@ -1,3 +1,4 @@
+import { stringifyIcebergJson } from '../json.js'
 import { maxFieldId, validateSchemaForVersion } from '../schema.js'
 import { parseDecimalType } from './conversions.js'
 import { validatePartitionSpecForWrite } from './partition.js'
@@ -75,7 +76,7 @@ export async function fileCatalogCommit({ tableUrl, metadata, metadataFileName, 
   const metaWriter = conditionalCommits
     ? resolver.writer(newMetadataPath, { ifNoneMatch: '*' })
     : resolver.writer(newMetadataPath)
-  metaWriter.appendBytes(new TextEncoder().encode(JSON.stringify(newMetadata, null, 2)))
+  metaWriter.appendBytes(new TextEncoder().encode(stringifyIcebergJson(newMetadata)))
   await metaWriter.finish()
 
   // version-hint last so a partial write doesn't surface a torn commit.
