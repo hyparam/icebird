@@ -86,7 +86,7 @@ export function icebergLatestVersion({ tableUrl, resolver, lister }) {
         })
     })
     .catch(err => {
-      throw new Error(`failed to determine latest iceberg version: ${err.message}`)
+      throw new Error(`failed to determine latest iceberg version of ${tableUrl}: ${err.message}`)
     })
 }
 
@@ -115,7 +115,7 @@ export function icebergListVersions({ tableUrl, resolver, lister }) {
       return lister(metadataDir).then(metadataVersions)
     })
     .catch(err => {
-      throw new Error(`failed to determine latest iceberg version: ${err.message}`)
+      throw new Error(`failed to determine latest iceberg version of ${tableUrl}: ${err.message}`)
     })
 }
 

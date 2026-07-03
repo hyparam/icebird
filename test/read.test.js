@@ -14,13 +14,13 @@ describe.concurrent('icebergRead', () => {
   })
 
   it('throws for fetch errors', async () => {
-    // not found
+    // not found; the error names the table it was looking for
     await expect(() => icebergRead({ tableUrl: 'https://hyperparam.app' }))
-      .rejects.toThrow('failed to determine latest iceberg version')
+      .rejects.toThrow('failed to determine latest iceberg version of https://hyperparam.app')
 
     // invalid dns
     await expect(() => icebergRead({ tableUrl: 'https://nope.hyperparam.app' }))
-      .rejects.toThrow('failed to determine latest iceberg version')
+      .rejects.toThrow('failed to determine latest iceberg version of https://nope.hyperparam.app')
 
     // with metadataFileName
     await expect(() => icebergRead({
