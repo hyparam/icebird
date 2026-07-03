@@ -7,7 +7,7 @@ import { avroMetadata, avroRead } from '../src/avro/index.js'
  */
 
 /**
- * @param {InstanceType<typeof ByteWriter>} w
+ * @param {ByteWriter} w
  * @param {string} s
  */
 function writeString(w, s) {
