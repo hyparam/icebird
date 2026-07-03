@@ -1,3 +1,4 @@
+import { stringifyIcebergJson } from './json.js'
 import { maxFieldId, validateSchemaForVersion } from './schema.js'
 import { uuid4 } from './utils.js'
 import { validatePartitionSpecForWrite } from './write/partition.js'
@@ -76,7 +77,7 @@ export async function icebergCreate({
   const metadataWriter = conditionalCommits
     ? resolver.writer(metadataUrl, { ifNoneMatch: '*' })
     : resolver.writer(metadataUrl)
-  const metadataBytes = new TextEncoder().encode(JSON.stringify(metadata, null, 2))
+  const metadataBytes = new TextEncoder().encode(stringifyIcebergJson(metadata))
   metadataWriter.appendBytes(metadataBytes)
   await metadataWriter.finish()
 

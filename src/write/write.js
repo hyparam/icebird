@@ -187,7 +187,7 @@ export async function icebergSetRef({
  * @param {string} [options.table]
  * @param {string} [options.tableUrl]
  * @param {Resolver} [options.resolver]
- * @param {number[]} options.snapshotIds
+ * @param {(number | bigint)[]} options.snapshotIds
  * @returns {Promise<TableMetadata>}
  */
 export async function icebergExpireSnapshots({ catalog, namespace, table, tableUrl, resolver, snapshotIds }) {

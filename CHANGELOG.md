@@ -1,5 +1,9 @@
 # Icebird Changelog
 
+## [0.8.12]
+ - Add `scanColumn` streaming primitive to the Iceberg SQL data source
+ - Fix commit crash when serializing metadata with snapshot ids above 2^53
+
 ## [0.8.11]
  - Fix pushed-down `where` combined with `limit`/`offset` silently dropping matching rows
 
