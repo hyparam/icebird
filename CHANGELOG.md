@@ -1,5 +1,8 @@
 # Icebird Changelog
 
+## [0.8.13]
+ - Include the table name in version resolution errors
+
 ## [0.8.12]
  - Add `scanColumn` streaming primitive to the Iceberg SQL data source
  - Fix commit crash when serializing metadata with snapshot ids above 2^53
