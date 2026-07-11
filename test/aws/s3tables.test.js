@@ -78,7 +78,7 @@ describe('icebird/s3tables', () => {
       return Promise.resolve(new Response('', { status: 200, headers: { 'content-length': '0' } }))
     })
     vi.stubGlobal('fetch', fakeFetch)
-    const resolver = await s3TablesResolver({ ...CREDS, tableBucketArn: BUCKET_ARN })
+    const resolver = await s3TablesResolver(CREDS)
     await resolver.reader('s3://uuid--table-s3/data/file.parquet')
   })
 

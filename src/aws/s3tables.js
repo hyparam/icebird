@@ -20,6 +20,8 @@ import { resolveAwsCredentials } from './credentials.js'
  * @property {string} [sessionToken]
  */
 
+/** @typedef {Omit<S3TablesConnectOptions, 'tableBucketArn'>} S3TablesCredentialsOptions */
+
 /**
  * Iceberg REST endpoint URL for Amazon S3 Tables in a region.
  *
@@ -75,7 +77,7 @@ export function s3TablesCatalogConnectFromEnv({ region, tableBucketArn }) {
 /**
  * Build a SigV4 `Resolver` for reading S3 Tables data files (`s3://…--table-s3/…`).
  *
- * @param {S3TablesConnectOptions} options
+ * @param {S3TablesCredentialsOptions} options
  * @returns {Promise<Resolver>}
  */
 export async function s3TablesResolver({ region, accessKeyId, secretAccessKey, sessionToken }) {
