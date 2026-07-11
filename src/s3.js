@@ -1,10 +1,9 @@
 import { ByteWriter } from 'hyparquet-writer'
+import { signRequest as sigV4SignRequest } from './sigv4.js'
 
 /**
  * @import {Resolver} from '../src/types.js'
  */
-
-const enc = new TextEncoder()
 
 /**
  * Build a SigV4-signing `Resolver` for private S3-compatible buckets (AWS S3,
@@ -52,7 +51,13 @@ export function s3SignedResolver({
       if (pathStyle) return `${ep.origin}${ep.pathname}${bucket}/${key}`
       return `${ep.protocol}//${bucket}.${ep.host}/${key}`
     }
-    // No custom endpoint: AWS S3 virtual-hosted-style.
+    // No custom endpoint: AWS S3 virtual-hosted-style. Use the regional
+    // endpoint so buckets outside us-east-1 (and S3 Tables `--table-s3`
+    // buckets) don't 301-redirect. `us-east-1` and `auto` fall back to the
+    // global endpoint.
+    if (region && region !== 'us-east-1' && region !== 'auto') {
+      return `https://${bucket}.s3.${region}.amazonaws.com/${key}`
+    }
     return `https://${bucket}.s3.amazonaws.com/${key}`
   }
 
@@ -63,60 +68,10 @@ export function s3SignedResolver({
    * @param {Record<string, string>} [extra]
    * @returns {Promise<Record<string, string>>}
    */
-  async function signRequest(method, url, body, extra = {}) {
-    const u = new URL(url)
-    const now = new Date()
-    const xAmzDate = now.toISOString().replace(/[-:]|\.\d{3}/g, '')
-    const dStamp = xAmzDate.slice(0, 8)
-    const payloadHash = body !== undefined ? await sha256hex(body) : await sha256hex('')
-
-    /** @type {Record<string, string>} */
-    const lc = {}
-    for (const [k, v] of Object.entries(extra)) lc[k.toLowerCase()] = String(v)
-    lc['host'] = u.host
-    lc['x-amz-date'] = xAmzDate
-    lc['x-amz-content-sha256'] = payloadHash
-    if (sessionToken) lc['x-amz-security-token'] = sessionToken
-
-    const sortedKeys = Object.keys(lc).sort()
-    const canonicalHeaders = sortedKeys
-      .map(k => `${k}:${lc[k].trim().replace(/\s+/g, ' ')}\n`)
-      .join('')
-    const signedHeaders = sortedKeys.join(';')
-
-    const canonicalUri = u.pathname
-      .split('/')
-      .map(seg => encodeRfc3986(decodeURIComponent(seg)))
-      .join('/')
-
-    const params = [...u.searchParams.entries()].sort((a, b) => {
-      if (a[0] !== b[0]) return a[0] < b[0] ? -1 : 1
-      return a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0
+  function signRequest(method, url, body, extra = {}) {
+    return sigV4SignRequest(method, url, body, {
+      accessKeyId, secretAccessKey, sessionToken, region, service: 's3', extraHeaders: extra,
     })
-    const canonicalQuery = params
-      .map(([k, v]) => `${encodeRfc3986(k)}=${encodeRfc3986(v)}`)
-      .join('&')
-
-    const canonicalRequest = [
-      method, canonicalUri, canonicalQuery, canonicalHeaders, signedHeaders, payloadHash,
-    ].join('\n')
-    const credentialScope = `${dStamp}/${region}/s3/aws4_request`
-    const stringToSign = [
-      'AWS4-HMAC-SHA256', xAmzDate, credentialScope, await sha256hex(canonicalRequest),
-    ].join('\n')
-
-    const signingKey = await deriveSigningKey(secretAccessKey, dStamp, region, 's3')
-    const sigBytes = await hmac(signingKey, stringToSign)
-    const signature = bytesToHex(sigBytes)
-
-    /** @type {Record<string, string>} */
-    const out = {}
-    for (const [k, v] of Object.entries(lc)) {
-      if (k === 'host') continue // fetch sets host itself
-      out[k] = v
-    }
-    out['Authorization'] = `AWS4-HMAC-SHA256 Credential=${accessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`
-    return out
   }
 
   return {
@@ -173,69 +128,4 @@ export function s3SignedResolver({
       }
     },
   }
-}
-
-/**
- * @param {string | Uint8Array} data
- * @returns {Promise<string>}
- */
-async function sha256hex(data) {
-  const bytes = /** @type {BufferSource} */ (typeof data === 'string' ? enc.encode(data) : data)
-  const hash = await crypto.subtle.digest('SHA-256', bytes)
-  return bytesToHex(new Uint8Array(hash))
-}
-
-/**
- * @param {string | Uint8Array} key
- * @param {string | Uint8Array} data
- * @returns {Promise<Uint8Array>}
- */
-async function hmac(key, data) {
-  const keyBytes = /** @type {BufferSource} */ (typeof key === 'string' ? enc.encode(key) : key)
-  const dataBytes = /** @type {BufferSource} */ (typeof data === 'string' ? enc.encode(data) : data)
-  const cryptoKey = await crypto.subtle.importKey(
-    'raw', keyBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
-  )
-  const sig = await crypto.subtle.sign('HMAC', cryptoKey, dataBytes)
-  return new Uint8Array(sig)
-}
-
-/**
- * SigV4 signing key: HMAC chain over date, region, service, "aws4_request".
- *
- * @param {string} secret
- * @param {string} dateStamp
- * @param {string} region
- * @param {string} service
- * @returns {Promise<Uint8Array>}
- */
-async function deriveSigningKey(secret, dateStamp, region, service) {
-  const kDate = await hmac(`AWS4${secret}`, dateStamp)
-  const kRegion = await hmac(kDate, region)
-  const kService = await hmac(kRegion, service)
-  return await hmac(kService, 'aws4_request')
-}
-
-/**
- * RFC 3986 percent-encode for SigV4 canonical components. `encodeURIComponent`
- * leaves `!*'()` un-encoded; SigV4 wants them encoded.
- *
- * @param {string} str
- * @returns {string}
- */
-function encodeRfc3986(str) {
-  return encodeURIComponent(str).replace(
-    /[!*'()]/g,
-    c => '%' + c.charCodeAt(0).toString(16).toUpperCase()
-  )
-}
-
-/**
- * @param {Uint8Array} bytes
- * @returns {string}
- */
-function bytesToHex(bytes) {
-  let s = ''
-  for (const b of bytes) s += b.toString(16).padStart(2, '0')
-  return s
 }

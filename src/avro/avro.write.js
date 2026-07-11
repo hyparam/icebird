@@ -67,7 +67,8 @@ function writeType(writer, schema, value) {
       // annotation (e.g. an Iceberg array with logicalType=map is still an array).
       const tag = typeof s === 'string' ? s
         : s.type === 'record' || s.type === 'array' || s.type === 'fixed' ? s.type
-          : s.logicalType
+          : 'logicalType' in s && s.logicalType ? s.logicalType
+            : s.type
 
       if (value == null) return tag === 'null'
       if (tag === 'boolean') return typeof value === 'boolean'

@@ -29,9 +29,17 @@ describe('s3SignedResolver', () => {
     expect(psUrl).toBe('https://acct.r2.cloudflarestorage.com/bucket/key')
   })
 
-  it('falls back to AWS S3 endpoint when no endpoint given', async () => {
+  it('falls back to regional AWS S3 endpoint when no endpoint given', async () => {
     const url = await captureUrl(
       { accessKeyId: 'AKID', secretAccessKey: 'SECRET', region: 'us-west-2' },
+      's3://my-bucket/a/b.parquet'
+    )
+    expect(url).toBe('https://my-bucket.s3.us-west-2.amazonaws.com/a/b.parquet')
+  })
+
+  it('uses the global AWS S3 endpoint for us-east-1', async () => {
+    const url = await captureUrl(
+      { accessKeyId: 'AKID', secretAccessKey: 'SECRET', region: 'us-east-1' },
       's3://my-bucket/a/b.parquet'
     )
     expect(url).toBe('https://my-bucket.s3.amazonaws.com/a/b.parquet')

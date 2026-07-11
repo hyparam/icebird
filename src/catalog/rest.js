@@ -20,14 +20,17 @@ import { parseIcebergJson } from '../json.js'
  * @param {string} options.url - catalog base URL, with or without trailing slash
  * @param {string} [options.warehouse] - optional warehouse query param sent to /v1/config
  * @param {RequestInit} [options.requestInit] - fetch options (e.g. Authorization header)
+ * @param {(url: string, init?: RequestInit) => Promise<RequestInit>} [options.signRequest] - per-request auth hook
  * @returns {Promise<RestCatalogContext>}
  */
-export async function restCatalogConnect({ url, warehouse, requestInit }) {
+export async function restCatalogConnect({ url, warehouse, requestInit, signRequest }) {
   const base = url.replace(/\/$/, '')
   const configUrl = warehouse
     ? `${base}/v1/config?warehouse=${encodeURIComponent(warehouse)}`
     : `${base}/v1/config`
-  const res = await fetch(configUrl, requestInit)
+  let init = requestInit
+  if (signRequest) init = await signRequest(configUrl, init)
+  const res = await fetch(configUrl, init)
   if (!res.ok) await throwRestError(res)
   const body = parseIcebergJson(await res.text())
   const defaults = body.defaults ?? {}
@@ -36,14 +39,17 @@ export async function restCatalogConnect({ url, warehouse, requestInit }) {
   // config — overrides wins over defaults. Cloudflare R2 Data Catalog returns
   // it via `overrides.prefix`.
   const prefix = overrides.prefix ?? defaults.prefix ?? ''
-  return Object.freeze({
+  /** @type {RestCatalogContext} */
+  const ctx = {
     type: 'rest',
     url: base,
     prefix: typeof prefix === 'string' ? prefix : '',
     defaults,
     overrides,
     requestInit,
-  })
+  }
+  if (signRequest) ctx.signRequest = signRequest
+  return Object.freeze(ctx)
 }
 
 /**
@@ -339,7 +345,8 @@ function encodeNamespace(namespace) {
 async function restFetch(ctx, path, init) {
   const prefixSegment = ctx.prefix ? `${ctx.prefix.replace(/^\/|\/$/g, '')}/` : ''
   const fullUrl = `${ctx.url}/v1/${prefixSegment}${path}`
-  const merged = mergeRequestInit(ctx.requestInit, init)
+  let merged = mergeRequestInit(ctx.requestInit, init)
+  if (ctx.signRequest) merged = await ctx.signRequest(fullUrl, merged)
   const res = await fetch(fullUrl, merged)
   if (!res.ok) await throwRestError(res)
   return res

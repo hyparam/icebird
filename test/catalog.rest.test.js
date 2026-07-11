@@ -111,4 +111,28 @@ describe('REST Catalog client — connect & infrastructure', () => {
       expect(headers?.Authorization).toBe('Bearer secret-token')
     }
   })
+
+  it('restCatalogConnect and restFetch invoke signRequest hook', async () => {
+    const signRequest = vi.fn((_url, init) => Promise.resolve({
+      ...init,
+      headers: { ...init?.headers ?? {}, Authorization: 'sigv4-signed' },
+    }))
+    mock = makeFetch({
+      'https://cat/v1/config': {},
+      'https://cat/v1/namespaces': { namespaces: [['default']] },
+    })
+    vi.stubGlobal('fetch', mock.fn)
+
+    const ctx = await restCatalogConnect({ url: 'https://cat', signRequest })
+    await restCatalogListNamespaces(ctx)
+
+    expect(signRequest).toHaveBeenCalledTimes(2)
+    expect(signRequest.mock.calls[0][0]).toBe('https://cat/v1/config')
+    expect(signRequest.mock.calls[1][0]).toBe('https://cat/v1/namespaces')
+    for (const call of mock.calls) {
+      const headers = /** @type {Record<string,string>} */ (call.init?.headers)
+      expect(headers?.Authorization).toBe('sigv4-signed')
+    }
+    expect(ctx.signRequest).toBe(signRequest)
+  })
 })
