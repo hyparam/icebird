@@ -1,5 +1,6 @@
 import { validateSchemaForVersion } from '../schema.js'
 import { uuid4 } from '../utils.js'
+import { applyUpdates } from './commit.js'
 import { writeParquet } from './parquet.js'
 import { writeDataManifest } from './manifest.js'
 import { groupByPartition } from './partition.js'
@@ -13,7 +14,7 @@ import { computeColumnStats } from './stats.js'
 
 /**
  * @import {CompressionCodec} from 'hyparquet'
- * @import {FieldSummary, Manifest, PreparedAppend, Resolver, Snapshot, StagedUpdate, TableMetadata, TableRequirement, TableUpdate} from '../../src/types.js'
+ * @import {FieldSummary, Manifest, PreparedAppend, Resolver, Schema, Snapshot, StagedCommit, StagedUpdate, TableMetadata, TableRequirement, TableUpdate} from '../../src/types.js'
  */
 
 /**
@@ -367,10 +368,8 @@ export function icebergStageExpireSnapshots({ metadata, snapshotIds }) {
   /** @type {TableUpdate} */
   const update = { action: 'remove-snapshots', 'snapshot-ids': snapshotIds }
 
-  // The snapshot field on StagedUpdate is non-optional; surface the current
-  // snapshot so callers reading `staged.snapshot` after an expire still see
-  // the live tip. Synthesize a minimal placeholder for tables with no
-  // snapshots left after the operation.
+  // Surface the current snapshot so callers reading `staged.snapshot` after
+  // an expire (e.g. `icebergTransaction`) still see the live tip.
   const tip = currentSnapshot(metadata) ?? snapshots[0]
   if (!tip) throw new Error('cannot expire snapshots from a table with no snapshots')
 
@@ -378,6 +377,56 @@ export function icebergStageExpireSnapshots({ metadata, snapshotIds }) {
     snapshot: tip,
     requirements,
     updates: [update],
+    writtenFiles: [],
+  }
+}
+
+/**
+ * Stage a schema update: add `schema` as a new schema and make it current.
+ * This is the schema-evolution primitive — add a column, rename a column,
+ * promote a type — expressed as the full evolved schema.
+ *
+ * The caller supplies the complete new schema with field ids assigned:
+ * existing columns keep their ids, new columns use ids above
+ * `last-column-id`. The `schema-id` is assigned at commit time via the spec
+ * sentinel `-1`, so any `schema-id` on the input is ignored. Evolution rules
+ * (no field-id reuse, valid type promotions, immutable `initial-default`,
+ * required new fields need defaults) are validated here against the loaded
+ * metadata and again at commit.
+ *
+ * Pure: produces a metadata-only `StagedCommit` (no snapshot, no files) to
+ * pass into a commit function (`fileCatalogCommit`, `restCatalogUpdateTable`).
+ *
+ * @param {object} options
+ * @param {TableMetadata} options.metadata - Current table metadata.
+ * @param {Schema} options.schema - The complete evolved schema.
+ * @returns {StagedCommit}
+ */
+export function icebergStageUpdateSchema({ metadata, schema }) {
+  if (!schema || schema.type !== 'struct' || !Array.isArray(schema.fields)) {
+    throw new Error('schema must be a struct with a fields array')
+  }
+
+  /** @type {TableRequirement[]} */
+  const requirements = [
+    { type: 'assert-table-uuid', uuid: metadata['table-uuid'] },
+    { type: 'assert-current-schema-id', 'current-schema-id': metadata['current-schema-id'] },
+    { type: 'assert-last-assigned-field-id', 'last-assigned-field-id': metadata['last-column-id'] },
+  ]
+
+  /** @type {TableUpdate[]} */
+  const updates = [
+    { action: 'add-schema', schema: { ...schema, 'schema-id': -1 } },
+    { action: 'set-current-schema', 'schema-id': -1 },
+  ]
+
+  // Fail fast at stage time: applyUpdates enforces the schema-evolution rules
+  // that would otherwise only surface at commit (server-side for REST).
+  applyUpdates(metadata, updates)
+
+  return {
+    requirements,
+    updates,
     writtenFiles: [],
   }
 }
