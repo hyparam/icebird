@@ -5,22 +5,9 @@ import { createSigV4SignRequest } from '../sigv4.js'
 import { resolveAwsCredentials } from './credentials.js'
 
 /**
- * @import {Resolver, RestCatalogContext} from '../types.js'
- * @import {ResolvedAwsCredentials} from './credentials.js'
+ * @import {S3TablesCatalogContext, S3TablesConnectOptions, S3TablesCredentialsOptions} from '../../src/aws/types.js'
+ * @import {Resolver} from '../../src/types.js'
  */
-
-/** @typedef {RestCatalogContext & { s3TablesCreds?: ResolvedAwsCredentials }} S3TablesCatalogContext */
-
-/**
- * @typedef {object} S3TablesConnectOptions
- * @property {string} region - AWS region, e.g. `us-east-1`
- * @property {string} tableBucketArn - e.g. `arn:aws:s3tables:us-east-1:111122223333:bucket/my-bucket`
- * @property {string} [accessKeyId] - Omit to use the default AWS credential chain
- * @property {string} [secretAccessKey]
- * @property {string} [sessionToken]
- */
-
-/** @typedef {Omit<S3TablesConnectOptions, 'tableBucketArn'>} S3TablesCredentialsOptions */
 
 /**
  * Iceberg REST endpoint URL for Amazon S3 Tables in a region.

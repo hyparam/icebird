@@ -1,9 +1,5 @@
 /**
- * @typedef {object} ResolvedAwsCredentials
- * @property {string} accessKeyId
- * @property {string} secretAccessKey
- * @property {string} [sessionToken]
- * @property {string} region
+ * @import {ResolvedAwsCredentials} from '../../src/aws/types.js'
  */
 
 /**
