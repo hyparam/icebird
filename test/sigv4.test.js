@@ -62,7 +62,7 @@ describe('sigv4', () => {
       body: '{"requirements":[],"updates":[]}',
     })
     expect(init.method).toBe('POST')
-    const headers = /** @type {Record<string, string>} */ (init.headers)
+    const { headers } = /** @type {{ headers: Record<string, string> }} */ (init)
     expect(headers.Authorization).toMatch(/s3tables\/aws4_request/)
     expect(headers['content-type']).toBe('application/json')
   })
