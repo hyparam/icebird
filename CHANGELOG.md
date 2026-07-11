@@ -1,5 +1,8 @@
 # Icebird Changelog
 
+## [0.8.14]
+ - Support pushed-down `where` filters in the SQL data source's `scanColumn` streaming primitive
+
 ## [0.8.13]
  - Include the table name in version resolution errors
 
