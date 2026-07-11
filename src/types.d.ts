@@ -320,15 +320,25 @@ export interface IcebergTransaction {
 }
 
 /**
- * Output of an `icebergStage*` call: the snapshot just produced, the CAS
- * preconditions and updates a catalog must apply, and the data/manifest files
- * already written to storage (useful for cleanup on commit failure).
+ * Input to a commit function (`fileCatalogCommit`, `restCatalogUpdateTable`):
+ * the CAS preconditions and updates a catalog must apply, and the
+ * data/manifest files already written to storage (useful for cleanup on
+ * commit failure). `snapshot` is absent for metadata-only updates like a
+ * schema change.
  */
-export interface StagedUpdate {
-  snapshot: Snapshot
+export interface StagedCommit {
+  snapshot?: Snapshot
   requirements: TableRequirement[]
   updates: TableUpdate[]
   writtenFiles: string[]
+}
+
+/**
+ * Output of an `icebergStage*` call that produces a snapshot (append, delete,
+ * rewrite, setRef, expireSnapshots).
+ */
+export interface StagedUpdate extends StagedCommit {
+  snapshot: Snapshot
 }
 
 /**

@@ -7,7 +7,8 @@ import { fileMightMatch, partitionMightMatch } from '../prune.js'
 import { whereToParquetFilter } from './whereFilter.js'
 
 /**
- * @import {AsyncDataSource, SqlPrimitive} from 'squirreling'
+ * @import {AsyncDataSource, ExprNode, SqlPrimitive} from 'squirreling'
+ * @import {ScanColumnResults} from 'squirreling/src/types.js'
  * @import {Lister, Resolver, TableMetadata} from '../../src/types.js'
  */
 
@@ -202,45 +203,70 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
      * O(1)/O(cardinality) state; without the hook the engine falls back to
      * buffering every scanned row.
      *
-     * `scanColumn` is never given a WHERE (the engine only takes the streaming
-     * aggregate path when the scan has no filter), so there is no file or
-     * row-group pruning here, and there is no `appliedLimitOffset` flag to defer
-     * to: the source must fully honor LIMIT/OFFSET itself. Without deletes,
-     * record_count is exact, so whole files are skipped for OFFSET and the
-     * per-file read is bounded for LIMIT. With deletes, record_count is
-     * pre-delete, so OFFSET/LIMIT are applied over the post-delete value stream
-     * instead. `signal` aborts between chunks, mirroring `scan`.
+     * WHERE is pruned and pushed down exactly as in `scan`: whole data files
+     * are dropped by partition tuple and per-column manifest bounds, and the
+     * predicate is handed to hyparquet (row-group/page pruning plus per-row
+     * matching) when it fully converts to a parquet filter. Unsupported nodes
+     * (LIKE, functions, arithmetic) leave `appliedWhere: false` and the engine
+     * re-applies the predicate over the emitted values. `appliedLimitOffset`
+     * mirrors `scan`: OFFSET is pushed into the per-file seek and LIMIT bounds
+     * the read only when WHERE is fully resolved AND there is no WHERE, no
+     * deletes, and no pruning (position no longer tracks result rows
+     * otherwise); in every other case the source emits at most `offset+limit`
+     * values and the consumer applies the final slice. `signal` aborts between
+     * chunks, mirroring `scan`.
      *
      * @param {object} options
      * @param {string} options.column - Name of the single column to stream.
+     * @param {ExprNode} [options.where] - Row predicate; pruned/pushed when convertible.
      * @param {number} [options.limit] - Max number of values to yield.
      * @param {number} [options.offset] - Number of leading values to skip.
      * @param {AbortSignal} [options.signal] - Aborts the stream between chunks.
-     * @returns {AsyncIterable<ArrayLike<SqlPrimitive>>} Chunks of column values.
+     * @returns {ScanColumnResults} Column-value chunks plus applied-hint flags.
      */
-    scanColumn({ column, limit, offset, signal }) {
+    scanColumn({ column, where, limit, offset, signal }) {
       const wantedColumns = [column]
-      const skip = offset ?? 0
-      const take = limit ?? Infinity
+      // Mirror scan(): convert WHERE, prune files by manifest bounds, and only
+      // treat LIMIT/OFFSET as position-pushable when no WHERE is matched
+      // per-row, no deletes shift positions, and no file was pruned.
+      const filter = whereToParquetFilter(where)
+      const appliedWhere = where !== undefined && filter !== undefined
+      const scanEntries = filter
+        ? dataEntries.filter(entry =>
+          partitionMightMatch(filter, entry, schema, tableMetadata) &&
+            fileMightMatch(filter, entry, schema))
+        : dataEntries
+      const pruned = scanEntries.length < dataEntries.length
+      const whereResolved = !where || appliedWhere
+      const canPushOffset = !where && !hasDeletes && !pruned
+      const skip = canPushOffset ? offset ?? 0 : 0
+      let take = Infinity
+      if (whereResolved && limit !== undefined) {
+        take = canPushOffset ? limit : (offset ?? 0) + limit
+      }
+      const appliedLimitOffset = canPushOffset
       return {
-        async *[Symbol.asyncIterator]() {
+        appliedWhere,
+        appliedLimitOffset,
+        async *chunks() {
           if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
-          if (take === 0 || dataEntries.length === 0) return
+          if (take === 0 || scanEntries.length === 0) return
 
           const { positionDeletesMap, equalityDeleteGroups } = await deleteMapsPromise
 
           let remainingSkip = skip
           let remaining = take
-          for (const entry of dataEntries) {
+          for (const entry of scanEntries) {
             if (remaining <= 0) break
             if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
             const recordCount = Number(entry.data_file.record_count)
-            // Without deletes record_count counts visible rows, so skip whole
-            // files for OFFSET and bound the per-file end for LIMIT. With
-            // deletes it is pre-delete, so read each file whole and slice the
-            // post-delete batches below.
+            // Position-based file skip / per-file bound is only correct when
+            // canPushOffset holds; a matched WHERE, deletes, or pruning break
+            // the record_count-to-position mapping, so read whole files and
+            // let the value-stream slice below (and the consumer) apply the
+            // final LIMIT/OFFSET.
             let fileRowStart = 0
-            if (!hasDeletes && remainingSkip > 0) {
+            if (canPushOffset && remainingSkip > 0) {
               if (remainingSkip >= recordCount) {
                 remainingSkip -= recordCount
                 continue
@@ -248,7 +274,7 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
               fileRowStart = remainingSkip
               remainingSkip = 0
             }
-            const fileRowEnd = !hasDeletes && remaining !== Infinity
+            const fileRowEnd = canPushOffset && remaining !== Infinity
               ? Math.min(recordCount, fileRowStart + remaining)
               : recordCount
 
@@ -264,29 +290,21 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
               positionDeletesMap,
               equalityDeleteGroups,
               wantedColumns,
+              filter,
               signal,
             })) {
               if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
-              // Apply any OFFSET still owed in post-delete coordinates. Without
-              // deletes this is already spent at fileRowStart, so the guard is
-              // only reached when deletes are present.
-              let start = 0
-              if (remainingSkip > 0) {
-                if (remainingSkip >= batch.length) {
-                  remainingSkip -= batch.length
-                  continue
-                }
-                start = remainingSkip
-                remainingSkip = 0
-              }
+              // OFFSET is either already spent at fileRowStart (canPushOffset)
+              // or deferred to the consumer via appliedLimitOffset: false, so
+              // batches start at 0 here. `take` still caps the emitted count.
               let end = batch.length
-              if (remaining !== Infinity && end - start > remaining) {
-                end = start + remaining
+              if (remaining !== Infinity && end > remaining) {
+                end = remaining
                 stop = true
               }
               /** @type {SqlPrimitive[]} */
               const chunk = []
-              for (let i = start; i < end; i++) chunk.push(batch[i][column])
+              for (let i = 0; i < end; i++) chunk.push(batch[i][column])
               if (chunk.length > 0) {
                 yield chunk
                 remaining -= chunk.length
