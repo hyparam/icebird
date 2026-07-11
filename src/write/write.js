@@ -5,11 +5,11 @@ import { loadLatestFileCatalogMetadata } from '../metadata.js'
 import { applyUpdates, fileCatalogCommit } from './commit.js'
 import { icebergStageDeletionVector } from './stage-deletion-vector.js'
 import { icebergStagePositionDelete } from './stage-position-delete.js'
-import { icebergStageAppend, icebergStageExpireSnapshots, icebergStageSetRef, prepareAppend, stageSnapshotForAppend } from './stage.js'
+import { icebergStageAppend, icebergStageExpireSnapshots, icebergStageSetRef, icebergStageUpdateSchema, prepareAppend, stageSnapshotForAppend } from './stage.js'
 import { icebergStageRewrite } from './rewrite.js'
 
 /**
- * @import {Catalog, IcebergTransaction, Lister, PartitionSpec, Resolver, Schema, Snapshot, SortOrder, StagedUpdate, TableMetadata, TableRequirement, TableUpdate} from '../../src/types.js'
+ * @import {Catalog, IcebergTransaction, Lister, PartitionSpec, Resolver, Schema, Snapshot, SortOrder, StagedCommit, StagedUpdate, TableMetadata, TableRequirement, TableUpdate} from '../../src/types.js'
  */
 
 const DEFAULT_RETRY = Object.freeze({
@@ -174,6 +174,33 @@ export async function icebergSetRef({
       maxSnapshotAgeMs,
       maxRefAgeMs,
     }),
+  })
+}
+
+/**
+ * Evolve the table schema: add `schema` as a new schema version and make it
+ * current. Use it to add columns, rename columns, or promote types — pass the
+ * complete evolved schema with existing field ids preserved and new columns
+ * using ids above the table's `last-column-id`.
+ *
+ * Metadata-only: no data files are rewritten. Existing data files read the
+ * new columns as `null` (or their `initial-default`), and subsequent appends
+ * write with the evolved schema.
+ *
+ * @param {object} options
+ * @param {Catalog} options.catalog
+ * @param {string | string[]} [options.namespace] - REST catalog only.
+ * @param {string} [options.table] - REST catalog only.
+ * @param {string} [options.tableUrl] - File catalog only.
+ * @param {Resolver} [options.resolver]
+ * @param {Schema} options.schema - The complete evolved schema.
+ * @returns {Promise<TableMetadata>}
+ */
+export async function icebergUpdateSchema({ catalog, namespace, table, tableUrl, resolver, schema }) {
+  const ctx = await loadTable({ catalog, namespace, table, tableUrl, resolver })
+  return await commitWithRetry({
+    catalog, target: { namespace, table }, ctx,
+    stage: workingCtx => icebergStageUpdateSchema({ metadata: workingCtx.metadata, schema }),
   })
 }
 
@@ -499,7 +526,7 @@ function requireResolver(resolver, caller) {
  * @param {Catalog} catalog
  * @param {{namespace?: string | string[], table?: string}} target
  * @param {{metadata: TableMetadata, metadataFileName: string | undefined, version?: number, tableUrl: string, resolver: Resolver | undefined}} ctx
- * @param {StagedUpdate} staged
+ * @param {StagedCommit} staged
  * @returns {Promise<TableMetadata>}
  */
 async function commitStaged(catalog, target, ctx, staged) {
@@ -552,7 +579,7 @@ async function commitStaged(catalog, target, ctx, staged) {
  * @param {Catalog} options.catalog
  * @param {{namespace?: string | string[], table?: string}} options.target
  * @param {{metadata: TableMetadata, metadataFileName: string | undefined, version?: number, tableUrl: string, resolver: Resolver | undefined}} options.ctx - The initial loaded ctx; refreshed on retry.
- * @param {(workingCtx: {metadata: TableMetadata, metadataFileName: string | undefined, version?: number, tableUrl: string, resolver: Resolver | undefined}) => Promise<StagedUpdate> | StagedUpdate} options.stage
+ * @param {(workingCtx: {metadata: TableMetadata, metadataFileName: string | undefined, version?: number, tableUrl: string, resolver: Resolver | undefined}) => Promise<StagedCommit> | StagedCommit} options.stage
  * @returns {Promise<TableMetadata>}
  */
 async function commitWithRetry({ catalog, target, ctx, stage }) {

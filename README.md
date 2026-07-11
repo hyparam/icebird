@@ -144,6 +144,7 @@ import {
   icebergExpireSnapshots,
   icebergRewrite,
   icebergSetRef,
+  icebergUpdateSchema,
 } from 'icebird'
 
 // `urlResolver()` ships with a `writer` (HTTP PUT) and `deleter` (HTTP DELETE);
@@ -173,6 +174,21 @@ await icebergDelete({
 // snapshot management
 await icebergSetRef({ catalog, tableUrl, ref: 'main', snapshotId })
 await icebergExpireSnapshots({ catalog, tableUrl, snapshotIds: [oldSnapshotId] })
+
+// schema evolution — pass the complete evolved schema; existing columns keep
+// their field ids, new columns use ids above the table's `last-column-id`.
+// Metadata-only: existing data files read the new column as `null`.
+await icebergUpdateSchema({
+  catalog, tableUrl,
+  schema: {
+    type: 'struct',
+    'schema-id': 0, // ignored; the next schema id is assigned at commit
+    fields: [
+      ...schema.fields,
+      { id: 3, name: 'score', required: false, type: 'double' },
+    ],
+  },
+})
 ```
 
 If the table is created with a `sortOrder`, `icebergAppend` orders the rows in each written file by that order (tightening per-file column bounds for scan pruning). `icebergRewrite` compacts the current snapshot — reading every live row (deletes applied), sorting globally, and rewriting into consolidated, non-overlapping files via a `replace` snapshot (v2 tables):

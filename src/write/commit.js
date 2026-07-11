@@ -4,11 +4,11 @@ import { parseDecimalType } from './conversions.js'
 import { validatePartitionSpecForWrite } from './partition.js'
 
 /**
- * @import {Field, IcebergType, PartitionSpec, Resolver, Schema, SnapshotRef, SortOrder, StagedUpdate, TableMetadata, TableRequirement, TableUpdate} from '../../src/types.js'
+ * @import {Field, IcebergType, PartitionSpec, Resolver, Schema, SnapshotRef, SortOrder, StagedCommit, TableMetadata, TableRequirement, TableUpdate} from '../../src/types.js'
  */
 
 /**
- * Commit a `StagedUpdate` against a file-based catalog: verify requirements
+ * Commit a `StagedCommit` against a file-based catalog: verify requirements
  * against the current metadata, apply updates, and write the next
  * `vN.metadata.json` and `version-hint.text`.
  *
@@ -30,7 +30,7 @@ import { validatePartitionSpecForWrite } from './partition.js'
  *   prior version so rollback / log walks land on a real file even when the
  *   prior writer used `NNNNN-<uuid>.metadata.json` instead of `vN.metadata.json`.
  * @param {number} [options.currentVersion] - If known, the on-disk version of `metadata`. Bypasses deriving from `metadata-log`, which can be empty/stale on foreign-written tables.
- * @param {StagedUpdate} options.staged
+ * @param {StagedCommit} options.staged
  * @param {Resolver} options.resolver
  * @param {boolean} [options.conditionalCommits] - When true, write the metadata file with `ifNoneMatch: '*'`.
  * @returns {Promise<TableMetadata>} The new metadata, already persisted.
