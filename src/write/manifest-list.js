@@ -2,7 +2,8 @@ import { avroWrite } from '../avro/avro.write.js'
 
 /**
  * @import {Writer} from 'hyparquet-writer'
- * @import {AvroField, AvroRecord, Manifest} from '../../src/types.js'
+ * @import {AvroField, AvroRecord} from '../../src/avro/types.js'
+ * @import {Manifest} from '../../src/types.js'
  */
 
 /**

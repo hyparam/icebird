@@ -9,7 +9,8 @@ import {
 } from './conversions.js'
 
 /**
- * @import {AvroField, AvroType, Field, IcebergType, PartitionSpec, Schema} from '../../src/types.js'
+ * @import {AvroField, AvroType} from '../../src/avro/types.js'
+ * @import {Field, IcebergType, PartitionSpec, Schema} from '../../src/types.js'
  */
 
 /**

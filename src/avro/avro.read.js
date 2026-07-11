@@ -63,7 +63,7 @@ export function avroRead({ reader, metadata, syncMarker }) {
 
 /**
  * @import {DataReader} from 'hyparquet/src/types.js'
- * @import {AvroType} from '../../src/types.js'
+ * @import {AvroType} from '../../src/avro/types.js'
  * @param {DataReader} reader
  * @param {AvroType} type
  * @returns {any}

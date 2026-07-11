@@ -51,7 +51,7 @@ export function avroWrite({ writer, schema, records, blockSize = 512, metadata }
 
 /**
  * @import {Writer} from 'hyparquet-writer/src/types.js'
- * @import {AvroRecord, AvroType} from '../../src/types.js'
+ * @import {AvroRecord, AvroType} from '../../src/avro/types.js'
  * @param {Writer} writer
  * @param {AvroType} schema
  * @param {*} value

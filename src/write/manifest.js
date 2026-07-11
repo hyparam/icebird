@@ -3,7 +3,8 @@ import { partitionAvroSchema, partitionSpecJson, partitionToAvroRecord } from '.
 
 /**
  * @import {Writer} from 'hyparquet-writer'
- * @import {AvroField, AvroRecord, DataFile, ManifestEntry, PartitionSpec, Schema} from '../../src/types.js'
+ * @import {AvroField, AvroRecord} from '../../src/avro/types.js'
+ * @import {DataFile, ManifestEntry, PartitionSpec, Schema} from '../../src/types.js'
  */
 
 /**

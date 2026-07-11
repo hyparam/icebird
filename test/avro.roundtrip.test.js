@@ -3,7 +3,7 @@ import { ByteWriter } from 'hyparquet-writer'
 import { avroMetadata, avroRead, avroWrite } from '../src/avro/index.js'
 
 /**
- * @import {AvroType} from '../src/types.js'
+ * @import {AvroType} from '../src/avro/types.js'
  */
 
 describe('Avro round-trip', () => {
