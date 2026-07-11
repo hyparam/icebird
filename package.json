@@ -52,7 +52,7 @@
     "hyparquet": "1.26.2",
     "hyparquet-compressors": "1.1.1",
     "hyparquet-writer": "0.16.1",
-    "squirreling": "0.12.27"
+    "squirreling": "0.15.0"
   },
   "devDependencies": {
     "@types/node": "26.1.0",
