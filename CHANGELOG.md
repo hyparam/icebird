@@ -1,5 +1,9 @@
 # Icebird Changelog
 
+## [0.8.15]
+ - Add read-only Amazon S3 Tables support via the `icebird/s3tables` subpath
+ - Add `icebergUpdateSchema` for schema evolution
+
 ## [0.8.14]
  - Support pushed-down `where` filters in the SQL data source's `scanColumn` streaming primitive
 

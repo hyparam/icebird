@@ -1,5 +1,5 @@
 import type { AsyncBuffer } from 'hyparquet'
-import type { Writer } from 'hyparquet-writer/src/types.js'
+import type { Writer } from 'hyparquet-writer'
 
 export interface WriterOptions {
   /**
