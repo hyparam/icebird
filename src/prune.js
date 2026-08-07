@@ -150,6 +150,12 @@ function opMightMatch(op, value, v, transform, sourceType) {
   }
 
   const kind = transformKind(transform)
+  // A day-transform partition value has iceberg type `date`, which the Avro
+  // reader decodes to a `Date`, while `applyTransform('day', ...)` projects
+  // literals to day ordinals; normalize to days so both sides compare.
+  if (transform === 'day' && v instanceof Date) {
+    v = Math.floor(v.getTime() / 86400000)
+  }
   if (kind === 'identity') return identityMightMatch(op, v, value)
   if (kind === 'monotonic') return monotonicMightMatch(op, v, value, transform, sourceType)
   if (kind === 'bucket') return bucketMightMatch(op, v, value, transform, sourceType)

@@ -1,3 +1,4 @@
+import { collect } from 'squirreling'
 import { describe, expect, it, vi } from 'vitest'
 import { ByteWriter, parquetWrite } from 'hyparquet-writer'
 import { fileCatalogCommit } from '../../src/write/commit.js'
@@ -5,6 +6,7 @@ import { icebergCreate } from '../../src/create.js'
 import { readDataFile } from '../../src/read.js'
 import { icebergStageAppend } from '../../src/write/stage.js'
 import { icebergDataSource } from '../../src/sql/icebergDataSource.js'
+import { icebergQuery } from '../../src/sql/icebergQuery.js'
 import { memResolver } from '../helpers.js'
 
 /**
@@ -291,5 +293,104 @@ describe('#21 row-group pruning (readDataFile)', () => {
     expect(all.length).toBe(50)
     expect(filtered).toEqual(all.filter(r => r.v >= 25))
     expect(filtered.length).toBe(25)
+  })
+})
+
+describe('timestamp predicate pushdown on a day-partitioned table', () => {
+  /** @type {Schema} */
+  const schema = {
+    type: 'struct',
+    'schema-id': 0,
+    fields: [
+      { id: 1, name: 'id', required: true, type: 'long' },
+      { id: 2, name: 'message_created_at', required: false, type: 'timestamptz' },
+    ],
+  }
+  /** @type {import('../../src/types.js').PartitionSpec} */
+  const partitionSpec = {
+    'spec-id': 0,
+    fields: [{ 'source-id': 2, 'field-id': 1000, name: 'created_day', transform: 'day' }],
+  }
+  const days = ['2026-08-04', '2026-08-05', '2026-08-06']
+
+  /**
+   * Build a table partitioned by day(message_created_at) with one data file
+   * per day (a single append; the writer groups records by partition tuple).
+   *
+   * @returns {Promise<{ tableUrl: string, resolver: Resolver, dataFilesRead: () => number }>}
+   */
+  async function buildDayPartitionedTable() {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'mem://events'
+    const { resolver: memR } = memResolver()
+    let metadata = await icebergCreate({ tableUrl, resolver: memR, schema, partitionSpec })
+    const records = []
+    let id = 0n
+    for (const day of days) {
+      for (const hour of ['01', '09', '17']) {
+        records.push({ id: id++, message_created_at: new Date(`${day}T${hour}:30:00Z`) })
+      }
+    }
+    const staged = await icebergStageAppend({ tableUrl, metadata, records, resolver: memR })
+    metadata = await fileCatalogCommit({ tableUrl, metadata, staged, resolver: memR })
+    const { resolver, dataFilesRead } = countingResolver({ reader: memR.reader })
+    return { tableUrl, resolver, dataFilesRead }
+  }
+
+  /**
+   * @param {string} where
+   * @returns {Promise<{ rows: Record<string, any>[], dataFilesRead: number }>}
+   */
+  async function query(where) {
+    const { tableUrl, resolver, dataFilesRead } = await buildDayPartitionedTable()
+    const source = await icebergDataSource({ tableUrl, resolver })
+    const result = await icebergQuery({
+      query: `SELECT id, message_created_at FROM events WHERE ${where} ORDER BY id`,
+      tables: { events: source },
+    })
+    const rows = await collect(result)
+    return { rows, dataFilesRead: dataFilesRead() }
+  }
+
+  it('skips files from days that cannot match a >= TIMESTAMP predicate', async () => {
+    const { rows, dataFilesRead } = await query('message_created_at >= TIMESTAMP \'2026-08-06T00:00:00Z\'')
+    expect(rows.map(r => r.id)).toEqual([6n, 7n, 8n])
+    expect(dataFilesRead).toBe(1)
+  })
+
+  it('returns the same rows as engine-side filtering', async () => {
+    // The added `id + 0 >= 0` conjunct is a tautology, but arithmetic is not
+    // pushable, so the whole WHERE falls back to the engine and reads all files.
+    const pushed = await query('message_created_at >= TIMESTAMP \'2026-08-06T00:00:00Z\'')
+    const engine = await query('message_created_at >= TIMESTAMP \'2026-08-06T00:00:00Z\' AND id + 0 >= 0')
+    expect(pushed.rows).toEqual(engine.rows)
+    expect(engine.dataFilesRead).toBe(3)
+    expect(pushed.dataFilesRead).toBe(1)
+  })
+
+  it('prunes to two files for a < TIMESTAMP mid-range boundary', async () => {
+    const { rows, dataFilesRead } = await query('message_created_at < TIMESTAMP \'2026-08-06T00:00:00Z\'')
+    expect(rows.map(r => r.id)).toEqual([0n, 1n, 2n, 3n, 4n, 5n])
+    expect(dataFilesRead).toBe(2)
+  })
+
+  it('prunes to one file for an equality on a single instant', async () => {
+    const { rows, dataFilesRead } = await query('message_created_at = TIMESTAMP \'2026-08-05T09:30:00Z\'')
+    expect(rows.map(r => r.id)).toEqual([4n])
+    expect(dataFilesRead).toBe(1)
+  })
+
+  it('prunes to one file for an IN list of same-day instants', async () => {
+    const { rows, dataFilesRead } = await query(
+      'message_created_at IN (TIMESTAMP \'2026-08-05T01:30:00Z\', TIMESTAMP \'2026-08-05T17:30:00Z\')')
+    expect(rows.map(r => r.id)).toEqual([3n, 5n])
+    expect(dataFilesRead).toBe(1)
+  })
+
+  it('keeps the boundary day for BETWEEN-style range predicates', async () => {
+    const { rows, dataFilesRead } = await query(
+      'message_created_at >= TIMESTAMP \'2026-08-05T00:00:00Z\' AND message_created_at < TIMESTAMP \'2026-08-06T00:00:00Z\'')
+    expect(rows.map(r => r.id)).toEqual([3n, 4n, 5n])
+    expect(dataFilesRead).toBe(1)
   })
 })

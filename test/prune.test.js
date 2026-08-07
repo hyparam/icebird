@@ -114,6 +114,16 @@ describe('partitionMightMatch — monotonic (day)', () => {
     const ts = new Date('2022-01-01T00:00:00Z')
     expect(partitionMightMatch({ ts: { $ne: ts } }, entry({ ts_day: day('2022-01-01') }), schema, m)).toBe(true)
   })
+
+  it('prunes when the partition value decodes as a Date (avro logical date)', () => {
+    // Spec-compliant manifests (Spark, Java) type day partitions as
+    // {int, logicalType: date}, which the avro reader decodes to a Date.
+    const ts = new Date('2022-06-15T12:00:00Z')
+    expect(partitionMightMatch({ ts: { $gt: ts } }, entry({ ts_day: new Date('2022-01-01') }), schema, m)).toBe(false)
+    expect(partitionMightMatch({ ts: { $gt: ts } }, entry({ ts_day: new Date('2022-12-01') }), schema, m)).toBe(true)
+    expect(partitionMightMatch({ ts: { $eq: ts } }, entry({ ts_day: new Date('2022-06-15') }), schema, m)).toBe(true)
+    expect(partitionMightMatch({ ts: { $eq: ts } }, entry({ ts_day: new Date('2022-06-14') }), schema, m)).toBe(false)
+  })
 })
 
 describe('partitionMightMatch — combinators and conservative defaults', () => {

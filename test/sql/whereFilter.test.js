@@ -49,6 +49,15 @@ function inList(expr, values) {
   return /** @type {ExprNode} */ ({ type: 'in valuelist', expr, values })
 }
 
+/**
+ * @param {string} toType
+ * @param {ExprNode} expr
+ * @returns {ExprNode}
+ */
+function cast(toType, expr) {
+  return /** @type {ExprNode} */ ({ type: 'cast', toType, expr })
+}
+
 describe.concurrent('whereToParquetFilter', () => {
   it('returns undefined for missing where', () => {
     expect(whereToParquetFilter(undefined)).toBeUndefined()
@@ -142,6 +151,74 @@ describe.concurrent('whereToParquetFilter', () => {
       expr: bin('=', id('a'), lit(1)),
     })
     expect(whereToParquetFilter(where)).toEqual({ a: { $eq: 1 } })
+  })
+
+  it('falls back for a truthiness-changing cast at boolean position', () => {
+    // CAST(a = 1 AS TEXT) yields 'false', which is truthy, so unwrapping the
+    // cast would filter rows the engine keeps.
+    expect(whereToParquetFilter(cast('TEXT', bin('=', id('a'), lit(1))))).toBeUndefined()
+    expect(whereToParquetFilter(cast('TIMESTAMP', bin('=', id('a'), lit(1))))).toBeUndefined()
+  })
+
+  it('converts a TIMESTAMP typed literal into a Date predicate', () => {
+    const where = bin('>=', id('message_created_at'), cast('TIMESTAMP', lit('2026-08-06T00:00:00Z')))
+    expect(whereToParquetFilter(where)).toEqual({
+      message_created_at: { $gte: new Date('2026-08-06T00:00:00Z') },
+    })
+  })
+
+  it('flips a TIMESTAMP literal on the left of the comparison', () => {
+    const where = bin('>', cast('TIMESTAMP', lit('2026-08-06T00:00:00Z')), id('ts'))
+    expect(whereToParquetFilter(where)).toEqual({ ts: { $lt: new Date('2026-08-06T00:00:00Z') } })
+  })
+
+  it('negates a TIMESTAMP comparison under NOT', () => {
+    const where = un('NOT', bin('<', id('ts'), cast('TIMESTAMP', lit('2026-08-06T00:00:00Z'))))
+    expect(whereToParquetFilter(where)).toEqual({ ts: { $gte: new Date('2026-08-06T00:00:00Z') } })
+  })
+
+  it('casts numeric epoch literals to TIMESTAMP', () => {
+    const where = bin('=', id('ts'), cast('TIMESTAMP', lit(86400000)))
+    expect(whereToParquetFilter(where)).toEqual({ ts: { $eq: new Date('1970-01-02T00:00:00Z') } })
+  })
+
+  it('folds numeric, boolean, and text casts of literals', () => {
+    expect(whereToParquetFilter(bin('=', id('a'), cast('INT', lit('5'))))).toEqual({ a: { $eq: 5 } })
+    expect(whereToParquetFilter(bin('=', id('a'), cast('INT', lit(5.7))))).toEqual({ a: { $eq: 5 } })
+    expect(whereToParquetFilter(bin('=', id('a'), cast('BIGINT', lit(5))))).toEqual({ a: { $eq: 5n } })
+    expect(whereToParquetFilter(bin('=', id('a'), cast('DOUBLE', lit('2.5'))))).toEqual({ a: { $eq: 2.5 } })
+    expect(whereToParquetFilter(bin('=', id('a'), cast('BOOL', lit(1))))).toEqual({ a: { $eq: true } })
+    expect(whereToParquetFilter(bin('=', id('a'), cast('TEXT', lit(5))))).toEqual({ a: { $eq: '5' } })
+  })
+
+  it('folds nested casts', () => {
+    const where = bin('=', id('a'), cast('TEXT', cast('INT', lit('5.7'))))
+    expect(whereToParquetFilter(where)).toEqual({ a: { $eq: '5' } })
+  })
+
+  it('falls back for casts the engine would evaluate to null', () => {
+    expect(whereToParquetFilter(bin('>=', id('ts'), cast('TIMESTAMP', lit('not a date'))))).toBeUndefined()
+    expect(whereToParquetFilter(bin('>=', id('ts'), cast('TIMESTAMP', lit(null))))).toBeUndefined()
+    expect(whereToParquetFilter(bin('=', id('a'), cast('INT', lit('abc'))))).toBeUndefined()
+    expect(whereToParquetFilter(bin('=', id('a'), cast('INT', lit(null))))).toBeUndefined()
+  })
+
+  it('pushes TIMESTAMP literals inside IN lists', () => {
+    // Needs hyparquet >= 1.28.0, whose $in/$nin compare Dates by time.
+    const where = inList(id('ts'), [cast('TIMESTAMP', lit('2026-08-06T00:00:00Z')), lit(1)])
+    expect(whereToParquetFilter(where)).toEqual({
+      ts: { $in: [new Date('2026-08-06T00:00:00Z'), 1] },
+    })
+  })
+
+  it('falls back when an IN value cast is unparseable', () => {
+    const where = inList(id('ts'), [cast('TIMESTAMP', lit('not a date'))])
+    expect(whereToParquetFilter(where)).toBeUndefined()
+  })
+
+  it('folds casts inside IN lists', () => {
+    const where = inList(id('a'), [cast('INT', lit('1')), lit(2)])
+    expect(whereToParquetFilter(where)).toEqual({ a: { $in: [1, 2] } })
   })
 
   it('returns undefined for LIKE (not pushable)', () => {
