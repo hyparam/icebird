@@ -1,5 +1,8 @@
 # Icebird Changelog
 
+## [0.8.16]
+ - Support pushed-down `IS NULL` and `IS NOT NULL` where filters
+
 ## [0.8.15]
  - Add read-only Amazon S3 Tables support via the `icebird/s3tables` subpath
  - Add `icebergUpdateSchema` for schema evolution
