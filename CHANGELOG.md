@@ -1,5 +1,9 @@
 # Icebird Changelog
 
+## [0.8.17]
+ - Push down `where` filters comparing against timestamp literals and casts of literals
+ - Fix partition pruning of `day`-transform partitions
+
 ## [0.8.16]
  - Support pushed-down `IS NULL` and `IS NOT NULL` where filters
 
