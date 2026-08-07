@@ -27,6 +27,11 @@ function convertExpr(node, negate) {
   if (node.type === 'unary' && node.op === 'NOT') {
     return convertExpr(node.argument, !negate)
   }
+  if (node.type === 'unary' && (node.op === 'IS NULL' || node.op === 'IS NOT NULL')) {
+    if (node.argument.type !== 'identifier') return undefined
+    const isNull = negate ? node.op === 'IS NOT NULL' : node.op === 'IS NULL'
+    return { [node.argument.name]: { [isNull ? '$eq' : '$ne']: null } }
+  }
   if (node.type === 'binary') {
     return convertBinary(node, negate)
   }

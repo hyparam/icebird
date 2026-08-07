@@ -53,9 +53,9 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "hyparquet": "1.26.2",
+    "hyparquet": "1.27.1",
     "hyparquet-compressors": "1.1.1",
-    "hyparquet-writer": "0.16.1",
+    "hyparquet-writer": "0.16.5",
     "squirreling": "0.15.0"
   },
   "peerDependencies": {
@@ -67,11 +67,11 @@
     }
   },
   "devDependencies": {
-    "@aws-sdk/credential-providers": "3.1081.0",
-    "@types/node": "26.1.1",
+    "@aws-sdk/credential-providers": "3.1105.0",
+    "@types/node": "26.1.2",
     "@vitest/coverage-v8": "4.1.10",
     "eslint": "9.39.4",
-    "eslint-plugin-jsdoc": "63.0.13",
+    "eslint-plugin-jsdoc": "63.3.3",
     "typescript": "7.0.2",
     "vitest": "4.1.10"
   }

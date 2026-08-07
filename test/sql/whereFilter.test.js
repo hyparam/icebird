@@ -90,6 +90,36 @@ describe.concurrent('whereToParquetFilter', () => {
     expect(whereToParquetFilter(where)).toEqual({ a: { $gte: 5 } })
   })
 
+  it('converts IS NULL and IS NOT NULL, including negation', () => {
+    expect(whereToParquetFilter(un('IS NULL', id('a')))).toEqual({ a: { $eq: null } })
+    expect(whereToParquetFilter(un('IS NOT NULL', id('a')))).toEqual({ a: { $ne: null } })
+    expect(whereToParquetFilter(un('NOT', un('IS NULL', id('a'))))).toEqual({ a: { $ne: null } })
+    expect(whereToParquetFilter(un('NOT', un('IS NOT NULL', id('a'))))).toEqual({ a: { $eq: null } })
+  })
+
+  it('keeps a session lookup pushable when its chain predicate tests nulls', () => {
+    const where = bin(
+      'AND',
+      bin('=', id('session_id'), lit('session-1')),
+      bin(
+        'AND',
+        bin('OR', un('IS NULL', id('agent_id')), bin('=', id('agent_id'), lit(''))),
+        un('IS NOT NULL', id('provider_uuid'))
+      )
+    )
+    expect(whereToParquetFilter(where)).toEqual({
+      $and: [
+        { session_id: { $eq: 'session-1' } },
+        {
+          $and: [
+            { $or: [{ agent_id: { $eq: null } }, { agent_id: { $eq: '' } }] },
+            { provider_uuid: { $ne: null } },
+          ],
+        },
+      ],
+    })
+  })
+
   it('turns NOT (a AND b) into ($or)', () => {
     const where = un('NOT', bin('AND', bin('=', id('a'), lit(1)), bin('=', id('b'), lit(2))))
     expect(whereToParquetFilter(where)).toEqual({
@@ -126,6 +156,11 @@ describe.concurrent('whereToParquetFilter', () => {
 
   it('returns undefined for identifier-vs-identifier comparisons', () => {
     const where = bin('=', id('a'), id('b'))
+    expect(whereToParquetFilter(where)).toBeUndefined()
+  })
+
+  it('returns undefined for a null test over a non-identifier expression', () => {
+    const where = un('IS NULL', bin('+', id('a'), lit(1)))
     expect(whereToParquetFilter(where)).toBeUndefined()
   })
 })
