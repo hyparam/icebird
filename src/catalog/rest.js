@@ -1,4 +1,4 @@
-import { parseIcebergJson } from '../json.js'
+import { parseIcebergJson, stringifyIcebergJson } from '../json.js'
 
 /**
  * Iceberg REST Catalog client.
@@ -236,7 +236,7 @@ export async function restCatalogUpdateTable(ctx, { namespace, table, requiremen
   const res = await restFetch(ctx, `namespaces/${ns}/tables/${tbl}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ requirements, updates }),
+    body: stringifyIcebergJson({ requirements, updates }),
   })
   const responseBody = parseIcebergJson(await res.text())
   return {
