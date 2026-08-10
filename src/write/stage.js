@@ -9,6 +9,7 @@ import {
   buildPartitionSummaries,
   buildSnapshotUpdate,
   currentSnapshot,
+  normalizeCurrentSnapshotId,
 } from './snapshot.js'
 import { computeColumnStats } from './stats.js'
 
@@ -288,7 +289,7 @@ export function icebergStageSetRef({ metadata, ref, snapshotId, type = 'branch',
   const existingRef = metadata.refs?.[ref]
   let currentSnapshotId = existingRef?.['snapshot-id'] ?? null
   if (currentSnapshotId === null && ref === 'main') {
-    currentSnapshotId = metadata['current-snapshot-id'] ?? null
+    currentSnapshotId = normalizeCurrentSnapshotId(metadata['current-snapshot-id'])
   }
   if (existingRef && existingRef.type !== type) {
     throw new Error(`ref ${ref} is a ${existingRef.type}, cannot set as ${type}`)

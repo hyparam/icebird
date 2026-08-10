@@ -2,6 +2,7 @@ import { stringifyIcebergJson } from '../json.js'
 import { maxFieldId, validateSchemaForVersion } from '../schema.js'
 import { parseDecimalType } from './conversions.js'
 import { validatePartitionSpecForWrite } from './partition.js'
+import { normalizeCurrentSnapshotId } from './snapshot.js'
 
 /**
  * @import {Field, IcebergType, PartitionSpec, Resolver, Schema, SnapshotRef, SortOrder, StagedCommit, TableMetadata, TableRequirement, TableUpdate} from '../../src/types.js'
@@ -146,7 +147,7 @@ export function checkRequirements(metadata, requirements) {
       let current = refs[req.ref]?.['snapshot-id'] ?? null
       // legacy tables may have current-snapshot-id without a populated refs.main
       if (current === null && req.ref === 'main') {
-        current = metadata['current-snapshot-id'] ?? null
+        current = normalizeCurrentSnapshotId(metadata['current-snapshot-id'])
       }
       const expected = req['snapshot-id']
       const matches = current === expected
