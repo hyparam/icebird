@@ -1,6 +1,6 @@
 import { typeName } from './schema.js'
 import { applyTransform } from './write/transform.js'
-import { compare, deserializeValue } from './write/serde.js'
+import { compare, compareStringsCodePoint, deserializeValue } from './write/serde.js'
 
 /**
  * Partition-level scan pruning. Given a hyparquet query filter (keyed by
@@ -325,9 +325,10 @@ function equals(a, b) {
 
 /**
  * Order two partition values. Returns -1/0/1, or undefined when the values are
- * not safely orderable. Strings and booleans are intentionally not ordered
- * (JS UTF-16 order can differ from Iceberg's UTF-8 order), so range predicates
- * on them never prune.
+ * not safely orderable. Strings order by code point, which matches Iceberg's
+ * UTF-8 byte order (JS `<` compares UTF-16 code units and disagrees, which is
+ * why they were previously not ordered here). Booleans are intentionally not
+ * ordered, so range predicates on them never prune.
  *
  * @param {any} a
  * @param {any} b
@@ -342,6 +343,7 @@ function compareOrder(a, b) {
   if (aDate && bDate) return sign(a.getTime() - b.getTime())
 
   if (typeof a === 'bigint' && typeof b === 'bigint') return a < b ? -1 : a > b ? 1 : 0
+  if (typeof a === 'string' && typeof b === 'string') return compareStringsCodePoint(a, b)
 
   const na = numericOf(a)
   const nb = numericOf(b)
@@ -385,9 +387,14 @@ function sign(n) {
 function boundsMightMatch(column, condition, dataFile, schema) {
   const field = schema.fields.find(f => f.name === column)
   if (!field) return true
-  // Bounds and metric ordering are only defined for orderable scalar types.
-  // String/binary/fixed/uuid bounds are truncated prefixes, so we never use
-  // them for pruning (equality on a truncated prefix is undecidable).
+  // Bounds pruning needs a totally ordered type. String/binary/fixed/uuid
+  // bounds may be truncated prefixes (Iceberg's `truncate(16)` metrics), but
+  // truncation preserves them as OUTER bounds: a truncated lower bound is a
+  // prefix of the minimum (byte order <= min), a truncated upper bound has its
+  // last unit incremented (>= max) or is omitted entirely when incrementing
+  // overflows. Every skip below requires the predicate to be provably outside
+  // [lo, hi], which outer bounds only ever widen, so pruning stays safe; only
+  // $ne/$nin would need exact single-value bounds, and those already keep.
   if (!isOrderableForBounds(field.type)) return true
 
   const lowerBytes = boundForField(dataFile.lower_bounds, field.id)
@@ -423,16 +430,20 @@ function boundForField(map, fieldId) {
 }
 
 /**
- * Whether a type has totally-ordered, untruncated single-value bounds suitable
- * for range/equality pruning. String/binary/fixed/uuid are excluded because
- * their bounds are stored truncated.
+ * Whether a type has totally-ordered bounds suitable for range/equality
+ * pruning. The byte-ordered family (string/binary/fixed/uuid) qualifies even
+ * though its bounds may be truncated prefixes: truncation keeps them valid
+ * outer bounds (see boundsMightMatch), and `compare` orders strings by code
+ * point, which matches the UTF-8 byte order the bounds were chosen under.
+ * Excluded are only types with no defined value order (struct, list, map,
+ * variant, geometry).
  *
  * @param {IcebergType} type
  * @returns {boolean}
  */
 function isOrderableForBounds(type) {
   const name = typeName(type)
-  if (name.startsWith('decimal(')) return true
+  if (name.startsWith('decimal(') || name.startsWith('fixed[')) return true
   switch (name) {
   case 'boolean':
   case 'int':
@@ -445,6 +456,9 @@ function isOrderableForBounds(type) {
   case 'timestamptz':
   case 'timestamp_ns':
   case 'timestamptz_ns':
+  case 'string':
+  case 'binary':
+  case 'uuid':
     return true
   default:
     return false

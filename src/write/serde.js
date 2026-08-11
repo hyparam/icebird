@@ -199,7 +199,7 @@ export function compare(a, b, type) {
   case 'timestamptz_ns':
     return compareBigInt(timestampToNanos(a), timestampToNanos(b))
   case 'string':
-    return a < b ? -1 : a > b ? 1 : 0
+    return compareStringsCodePoint(a, b)
   case 'binary':
   case 'uuid':
     return compareBytes(a, b)
@@ -207,6 +207,36 @@ export function compare(a, b, type) {
     if (typeName(type).startsWith('fixed[')) return compareBytes(a, b)
     return a < b ? -1 : a > b ? 1 : 0
   }
+}
+
+/**
+ * Compare two strings by Unicode code point, which is the same order as their
+ * UTF-8 byte encodings - Iceberg's order for string bounds and sort keys. JS
+ * `<` compares UTF-16 code units instead, which disagrees whenever a character
+ * in U+E000..U+FFFF meets a supplementary character (its surrogates sort below
+ * U+E000), so bounds picked or pruned with `<` can be wrong for such strings.
+ * Walking code points costs no allocation, unlike encoding both sides.
+ *
+ * @param {string} a
+ * @param {string} b
+ * @returns {number}
+ */
+export function compareStringsCodePoint(a, b) {
+  // Throw rather than coerce: pruning wraps comparisons in safeCompare, which
+  // turns a throw into "undecidable, keep the file"; a coerced comparison of a
+  // non-string literal would instead order garbage and could mis-prune.
+  if (typeof a !== 'string' || typeof b !== 'string') {
+    throw new Error('compareStringsCodePoint expects two strings')
+  }
+  let i = 0
+  while (i < a.length && i < b.length) {
+    const ca = /** @type {number} */ (a.codePointAt(i))
+    const cb = /** @type {number} */ (b.codePointAt(i))
+    if (ca !== cb) return ca < cb ? -1 : 1
+    // Equal code points advance both strings by the same number of units.
+    i += ca > 0xffff ? 2 : 1
+  }
+  return a.length === b.length ? 0 : a.length < b.length ? -1 : 1
 }
 
 /**
