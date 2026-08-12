@@ -1,5 +1,9 @@
 # Icebird Changelog
 
+## [0.8.19]
+ - Fix REST catalog commits crashing with "Do not know how to serialize a BigInt" for snapshot ids above 2^53
+ - Read `current-snapshot-id: -1` as "no current snapshot", so the first append to a table created by Java/Spark no longer fails with a ref assertion error
+
 ## [0.8.18]
  - Prune data files using string, binary, uuid, and fixed column bounds, including truncated bounds
  - Compare strings by code point (UTF-8 byte order) to match Iceberg ordering for bounds, min/max metrics, and write-path sorting
