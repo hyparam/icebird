@@ -8,6 +8,22 @@ import { transformResultType } from './transform.js'
  */
 
 /**
+ * Normalize `current-snapshot-id` to "no current snapshot" (null). Java writes
+ * the sentinel -1 on v1/v2 tables rather than omitting the field, and the spec
+ * asks other implementations to read it as null. Passed through, it becomes a
+ * `parent-snapshot-id` pointing at a snapshot that cannot exist — the spec
+ * omits that field for a snapshot with no parent — and a ref assertion that no
+ * catalog can satisfy.
+ *
+ * @param {number | bigint | undefined | null} id
+ * @returns {number | bigint | null}
+ */
+export function normalizeCurrentSnapshotId(id) {
+  if (id === undefined || id === null) return null
+  return BigInt(id) < 0n ? null : id
+}
+
+/**
  * @param {TableMetadata} metadata
  * @returns {Snapshot|undefined}
  */
@@ -87,8 +103,8 @@ export async function buildSnapshotUpdate({
     snapshot['first-row-id'] = toMetadataLong(firstRowId)
     snapshot['added-rows'] = toMetadataLong(addedRows)
   }
-  const parentId = metadata['current-snapshot-id']
-  if (parentId !== undefined) snapshot['parent-snapshot-id'] = parentId
+  const parentId = normalizeCurrentSnapshotId(metadata['current-snapshot-id'])
+  if (parentId !== null) snapshot['parent-snapshot-id'] = parentId
 
   /** @type {TableRequirement[]} */
   const requirements = [
@@ -96,7 +112,7 @@ export async function buildSnapshotUpdate({
     {
       type: 'assert-ref-snapshot-id',
       ref: 'main',
-      'snapshot-id': metadata['current-snapshot-id'] ?? null,
+      'snapshot-id': normalizeCurrentSnapshotId(metadata['current-snapshot-id']),
     },
   ]
   if (rowLineage) {
