@@ -70,33 +70,70 @@ describe.concurrent('whereToParquetFilter', () => {
 
   it('flips literal = identifier into a column-first predicate', () => {
     const where = bin('<', lit(5), id('rank'))
-    expect(whereToParquetFilter(where)).toEqual({ rank: { $gt: 5 } })
+    expect(whereToParquetFilter(where)).toEqual({
+      $and: [{ rank: { $ne: null } }, { rank: { $gt: 5 } }],
+    })
   })
 
   it('maps all comparison operators', () => {
     /** @type {Array<[string, string]>} */
     const cases = [
-      ['=', '$eq'], ['==', '$eq'],
       ['!=', '$ne'], ['<>', '$ne'],
       ['<', '$lt'], ['<=', '$lte'],
       ['>', '$gt'], ['>=', '$gte'],
     ]
     for (const [op, mongo] of cases) {
       const where = bin(op, id('x'), lit(3))
-      expect(whereToParquetFilter(where)).toEqual({ x: { [mongo]: 3 } })
+      expect(whereToParquetFilter(where)).toEqual({
+        $and: [{ x: { $ne: null } }, { x: { [mongo]: 3 } }],
+      })
     }
+    // $eq is already false on a null cell, so it needs no guard
+    expect(whereToParquetFilter(bin('=', id('x'), lit(3)))).toEqual({ x: { $eq: 3 } })
+    expect(whereToParquetFilter(bin('==', id('x'), lit(3)))).toEqual({ x: { $eq: 3 } })
   })
 
   it('combines AND/OR', () => {
     const where = bin('AND', bin('=', id('a'), lit(1)), bin('>', id('b'), lit(2)))
     expect(whereToParquetFilter(where)).toEqual({
-      $and: [{ a: { $eq: 1 } }, { b: { $gt: 2 } }],
+      $and: [
+        { a: { $eq: 1 } },
+        { $and: [{ b: { $ne: null } }, { b: { $gt: 2 } }] },
+      ],
     })
   })
 
   it('negates by inverting operator under NOT', () => {
     const where = un('NOT', bin('<', id('a'), lit(5)))
-    expect(whereToParquetFilter(where)).toEqual({ a: { $gte: 5 } })
+    expect(whereToParquetFilter(where)).toEqual({
+      $or: [{ a: { $eq: null } }, { a: { $gte: 5 } }],
+    })
+  })
+
+  it('guards comparisons so null cells match the engine', () => {
+    // The engine's applyBinaryOp returns false for any comparison with a null
+    // operand, so a null cell never satisfies a bare comparison and always
+    // satisfies a negated one. hyparquet's raw JS comparisons disagree.
+    expect(whereToParquetFilter(bin('<=', id('a'), lit(5)))).toEqual({
+      $and: [{ a: { $ne: null } }, { a: { $lte: 5 } }],
+    })
+    expect(whereToParquetFilter(bin('!=', id('a'), lit(5)))).toEqual({
+      $and: [{ a: { $ne: null } }, { a: { $ne: 5 } }],
+    })
+    expect(whereToParquetFilter(un('NOT', bin('!=', id('a'), lit(5))))).toEqual({
+      $or: [{ a: { $eq: null } }, { a: { $eq: 5 } }],
+    })
+    // $ne under NOT is already true on a null cell, so it needs no guard
+    expect(whereToParquetFilter(un('NOT', bin('=', id('a'), lit(5))))).toEqual({ a: { $ne: 5 } })
+  })
+
+  it('falls back for a comparison against a NULL literal', () => {
+    // The engine answers `a = NULL` false for every row; {$eq: null} would
+    // instead return exactly the null rows.
+    expect(whereToParquetFilter(bin('=', id('a'), lit(null)))).toBeUndefined()
+    expect(whereToParquetFilter(bin('!=', id('a'), lit(null)))).toBeUndefined()
+    expect(whereToParquetFilter(bin('<', id('a'), lit(null)))).toBeUndefined()
+    expect(whereToParquetFilter(un('NOT', bin('=', id('a'), lit(null))))).toBeUndefined()
   })
 
   it('converts IS NULL and IS NOT NULL, including negation', () => {
@@ -163,18 +200,25 @@ describe.concurrent('whereToParquetFilter', () => {
   it('converts a TIMESTAMP typed literal into a Date predicate', () => {
     const where = bin('>=', id('message_created_at'), cast('TIMESTAMP', lit('2026-08-06T00:00:00Z')))
     expect(whereToParquetFilter(where)).toEqual({
-      message_created_at: { $gte: new Date('2026-08-06T00:00:00Z') },
+      $and: [
+        { message_created_at: { $ne: null } },
+        { message_created_at: { $gte: new Date('2026-08-06T00:00:00Z') } },
+      ],
     })
   })
 
   it('flips a TIMESTAMP literal on the left of the comparison', () => {
     const where = bin('>', cast('TIMESTAMP', lit('2026-08-06T00:00:00Z')), id('ts'))
-    expect(whereToParquetFilter(where)).toEqual({ ts: { $lt: new Date('2026-08-06T00:00:00Z') } })
+    expect(whereToParquetFilter(where)).toEqual({
+      $and: [{ ts: { $ne: null } }, { ts: { $lt: new Date('2026-08-06T00:00:00Z') } }],
+    })
   })
 
   it('negates a TIMESTAMP comparison under NOT', () => {
     const where = un('NOT', bin('<', id('ts'), cast('TIMESTAMP', lit('2026-08-06T00:00:00Z'))))
-    expect(whereToParquetFilter(where)).toEqual({ ts: { $gte: new Date('2026-08-06T00:00:00Z') } })
+    expect(whereToParquetFilter(where)).toEqual({
+      $or: [{ ts: { $eq: null } }, { ts: { $gte: new Date('2026-08-06T00:00:00Z') } }],
+    })
   })
 
   it('casts numeric epoch literals to TIMESTAMP', () => {
@@ -189,6 +233,13 @@ describe.concurrent('whereToParquetFilter', () => {
     expect(whereToParquetFilter(bin('=', id('a'), cast('DOUBLE', lit('2.5'))))).toEqual({ a: { $eq: 2.5 } })
     expect(whereToParquetFilter(bin('=', id('a'), cast('BOOL', lit(1))))).toEqual({ a: { $eq: true } })
     expect(whereToParquetFilter(bin('=', id('a'), cast('TEXT', lit(5))))).toEqual({ a: { $eq: '5' } })
+  })
+
+  it('falls back for a TEXT cast of a non-primitive literal', () => {
+    // The engine JSON-stringifies objects for a TEXT cast, so a Date folds to
+    // '"2026-08-06T00:00:00.000Z"', not its String() form.
+    const where = bin('=', id('s'), cast('TEXT', cast('TIMESTAMP', lit('2026-08-06T00:00:00Z'))))
+    expect(whereToParquetFilter(where)).toBeUndefined()
   })
 
   it('folds nested casts', () => {
