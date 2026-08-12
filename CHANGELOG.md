@@ -1,5 +1,9 @@
 # Icebird Changelog
 
+## [0.8.18]
+ - Prune data files using string, binary, uuid, and fixed column bounds, including truncated bounds
+ - Compare strings by code point (UTF-8 byte order) to match Iceberg ordering for bounds, min/max metrics, and write-path sorting
+
 ## [0.8.17]
  - Push down `where` filters comparing against timestamp literals and casts of literals
  - Fix partition pruning of `day`-transform partitions
