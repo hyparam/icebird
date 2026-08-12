@@ -151,7 +151,7 @@ export async function icebergDelete({ catalog, namespace, table, tableUrl, resol
  * @param {string} [options.tableUrl]
  * @param {Resolver} [options.resolver]
  * @param {string} options.ref
- * @param {number} options.snapshotId
+ * @param {number | bigint} options.snapshotId
  * @param {'branch'|'tag'} [options.type]
  * @param {number} [options.minSnapshotsToKeep]
  * @param {number} [options.maxSnapshotAgeMs]

@@ -7,10 +7,12 @@
 // commit re-serializing loaded metadata with a snapshot id > 2^53 succeeds
 // and preserves the id exactly.
 
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fileCatalog } from '../../src/catalog/file.js'
+import { restCatalogConnect } from '../../src/catalog/rest.js'
 import { loadLatestFileCatalogMetadata } from '../../src/metadata.js'
-import { icebergAppend, icebergCreateTable, icebergExpireSnapshots } from '../../src/write/write.js'
+import { icebergAppend, icebergCreateTable, icebergExpireSnapshots, icebergSetRef } from '../../src/write/write.js'
+import { makeFetch } from '../catalog.rest.helpers.js'
 import { memResolver } from '../helpers.js'
 
 /**
@@ -119,5 +121,81 @@ describe('commit round-trips snapshot ids above 2^53', () => {
     if (!child) throw new Error('expected the appended snapshot')
     // Exact BigInt equality proves the parent id was not coerced to a double.
     expect(child['parent-snapshot-id']).toBe(BIG_ID)
+  })
+})
+
+describe('rest catalog commit round-trips snapshot ids above 2^53', () => {
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  /**
+   * Stub a REST catalog whose `loadTable` reports a table already sitting on a
+   * snapshot id above 2^53 — the normal state of any table written by Spark or
+   * the Java library, whose ids are random 64-bit longs. The response body is
+   * built as raw text so the id crosses the wire as a bare JSON number, which
+   * is what `parseIcebergJson` promotes to BigInt on the way in.
+   *
+   * @returns {{url: string, init: RequestInit | undefined}[]} calls made against the stub
+   */
+  function stubCatalogAtBigId() {
+    const metadata = `{
+      "format-version": 2,
+      "table-uuid": "uuid-1",
+      "location": "http://test/t",
+      "current-schema-id": 0,
+      "schemas": [${JSON.stringify(schema)}],
+      "current-snapshot-id": ${BIG_ID},
+      "snapshots": [{
+        "snapshot-id": ${BIG_ID},
+        "sequence-number": 1,
+        "timestamp-ms": 1,
+        "manifest-list": "http://test/t/metadata/snap-1.avro",
+        "summary": { "operation": "append" }
+      }],
+      "refs": { "main": { "snapshot-id": ${BIG_ID}, "type": "branch" } }
+    }`
+    const mock = makeFetch({
+      'https://cat/v1/config': {},
+      // A thunk, not a bare Response: the route is hit twice (loadTable, then
+      // the commit) and a Response body can only be read once.
+      'https://cat/v1/namespaces/db/tables/orders': () => new Response(
+        `{"metadata-location": "http://test/t/metadata/v1.metadata.json", "metadata": ${metadata}}`,
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      ),
+    })
+    vi.stubGlobal('fetch', mock.fn)
+    return mock.calls
+  }
+
+  it('POSTs a BigInt snapshot id as a bare JSON number', async () => {
+    const calls = stubCatalogAtBigId()
+    const catalog = await restCatalogConnect({ url: 'https://cat' })
+
+    // Re-pointing main asserts the ref against its current value and sets it
+    // again, so the BigInt lands in both the requirements and the updates.
+    // Before the fix this threw "Do not know how to serialize a BigInt" out
+    // of the commit body, making every write to such a table impossible.
+    await icebergSetRef({
+      catalog, namespace: 'db', table: 'orders',
+      ref: 'main', type: 'branch', snapshotId: BIG_ID,
+    })
+
+    const post = calls.find(c => c.init?.method === 'POST')
+    const body = /** @type {string} */ (post?.init?.body)
+    // Assert on the raw text: the id must be an unquoted number, since a
+    // replacer emitting `"9151314442816847871"` would be silently rejected
+    // (or coerced) by the catalog rather than failing loudly here.
+    expect(body).toContain(`"snapshot-id": ${BIG_ID}`)
+    expect(body).not.toContain(`"${BIG_ID}"`)
+
+    // Both halves of the commit carry the id, so check each one.
+    const parsed = JSON.parse(body)
+    const ref = parsed.requirements
+      .find((/** @type {any} */ r) => r.type === 'assert-ref-snapshot-id')
+    const update = parsed.updates
+      .find((/** @type {any} */ u) => u.action === 'set-snapshot-ref')
+    // JSON.parse rounds to a double, so compare against the same rounding to
+    // prove the digits on the wire were exact rather than pre-truncated.
+    expect(ref['snapshot-id']).toBe(Number(BIG_ID))
+    expect(update['snapshot-id']).toBe(Number(BIG_ID))
   })
 })
