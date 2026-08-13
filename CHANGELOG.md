@@ -1,5 +1,8 @@
 # Icebird Changelog
 
+## [0.8.22]
+ - Pushed-down `where` filters now match SQL three-valued logic on null cells: negated OR uses De Morgan instead of `$nor` (which also restores row-group pruning under negation), negated comparisons push their flipped operator bare, `NOT IN` carries a null guard, and NULL members of an IN list convert to a never-match / are dropped
+
 ## [0.8.21]
  - Fix pushed-down `where` filters returning wrong rows on nullable columns: negated and not-equal comparisons now fall back to the engine so null cells are handled consistently
 
