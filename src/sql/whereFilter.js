@@ -93,17 +93,16 @@ function convertBinary({ op, left, right }, negate) {
  *
  * squirreling's `applyBinaryOp` returns false for any comparison with a null
  * operand, so a null cell never satisfies a bare comparison, and always
- * satisfies a negated one. hyparquet's `matchFilter` instead evaluates
- * $lt/$lte/$gt/$gte with raw JavaScript operators, where a null cell coerces
- * to 0 and can satisfy the bound (`null <= new Date()` is true), and it
- * evaluates $ne as `!equals(null, target)`, which is true. Since a converted
- * filter replaces engine-side WHERE rather than pre-filtering for it, those
- * rows would be returned by a query that excludes them.
+ * satisfies a negated one. hyparquet (>= 1.28.2) agrees on bare comparisons:
+ * $eq is false on a null cell and $lt/$lte/$gt/$gte never match one. The two
+ * disagreements left are MongoDB semantics, not bugs:
  *
- * The two operators that already agree are left alone, so the common
- * `col = value` predicate keeps its bare shape: $eq is false on a null cell,
- * which is what a bare comparison needs, and $ne is true on one, which is what
- * a negated comparison needs.
+ * - $ne is true on a null cell, so a bare `col != value` would return null
+ *   rows the engine excludes. Guard with `col $ne null`.
+ * - A negated comparison flips the operator (`NOT (n < 7)` becomes $gte),
+ *   which is false on a null cell, but the engine's NOT over a false
+ *   comparison keeps null rows. Guard with `col $eq null` in an $or. $ne is
+ *   the exception: it is true on a null cell, which is what negation needs.
  *
  * @param {ParquetQueryFilter} predicate
  * @param {string} column
@@ -116,8 +115,8 @@ function guardNull(predicate, column, mongoOp, negate) {
     if (mongoOp === '$ne') return predicate
     return { $or: [{ [column]: { $eq: null } }, predicate] }
   }
-  if (mongoOp === '$eq') return predicate
-  return { $and: [{ [column]: { $ne: null } }, predicate] }
+  if (mongoOp === '$ne') return { $and: [{ [column]: { $ne: null } }, predicate] }
+  return predicate
 }
 
 /**

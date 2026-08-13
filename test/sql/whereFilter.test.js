@@ -70,36 +70,33 @@ describe.concurrent('whereToParquetFilter', () => {
 
   it('flips literal = identifier into a column-first predicate', () => {
     const where = bin('<', lit(5), id('rank'))
-    expect(whereToParquetFilter(where)).toEqual({
-      $and: [{ rank: { $ne: null } }, { rank: { $gt: 5 } }],
-    })
+    expect(whereToParquetFilter(where)).toEqual({ rank: { $gt: 5 } })
   })
 
   it('maps all comparison operators', () => {
     /** @type {Array<[string, string]>} */
     const cases = [
-      ['!=', '$ne'], ['<>', '$ne'],
+      ['=', '$eq'], ['==', '$eq'],
       ['<', '$lt'], ['<=', '$lte'],
       ['>', '$gt'], ['>=', '$gte'],
     ]
     for (const [op, mongo] of cases) {
       const where = bin(op, id('x'), lit(3))
-      expect(whereToParquetFilter(where)).toEqual({
-        $and: [{ x: { $ne: null } }, { x: { [mongo]: 3 } }],
-      })
+      expect(whereToParquetFilter(where)).toEqual({ x: { [mongo]: 3 } })
     }
-    // $eq is already false on a null cell, so it needs no guard
-    expect(whereToParquetFilter(bin('=', id('x'), lit(3)))).toEqual({ x: { $eq: 3 } })
-    expect(whereToParquetFilter(bin('==', id('x'), lit(3)))).toEqual({ x: { $eq: 3 } })
+    // $ne is true on a null cell (mongodb semantics), so it is guarded
+    expect(whereToParquetFilter(bin('!=', id('x'), lit(3)))).toEqual({
+      $and: [{ x: { $ne: null } }, { x: { $ne: 3 } }],
+    })
+    expect(whereToParquetFilter(bin('<>', id('x'), lit(3)))).toEqual({
+      $and: [{ x: { $ne: null } }, { x: { $ne: 3 } }],
+    })
   })
 
   it('combines AND/OR', () => {
     const where = bin('AND', bin('=', id('a'), lit(1)), bin('>', id('b'), lit(2)))
     expect(whereToParquetFilter(where)).toEqual({
-      $and: [
-        { a: { $eq: 1 } },
-        { $and: [{ b: { $ne: null } }, { b: { $gt: 2 } }] },
-      ],
+      $and: [{ a: { $eq: 1 } }, { b: { $gt: 2 } }],
     })
   })
 
@@ -113,10 +110,10 @@ describe.concurrent('whereToParquetFilter', () => {
   it('guards comparisons so null cells match the engine', () => {
     // The engine's applyBinaryOp returns false for any comparison with a null
     // operand, so a null cell never satisfies a bare comparison and always
-    // satisfies a negated one. hyparquet's raw JS comparisons disagree.
-    expect(whereToParquetFilter(bin('<=', id('a'), lit(5)))).toEqual({
-      $and: [{ a: { $ne: null } }, { a: { $lte: 5 } }],
-    })
+    // satisfies a negated one. hyparquet agrees except where mongodb
+    // semantics differ: $ne is true on a null cell, and a negated comparison
+    // flips to an operator that is false on one.
+    expect(whereToParquetFilter(bin('<=', id('a'), lit(5)))).toEqual({ a: { $lte: 5 } })
     expect(whereToParquetFilter(bin('!=', id('a'), lit(5)))).toEqual({
       $and: [{ a: { $ne: null } }, { a: { $ne: 5 } }],
     })
@@ -200,17 +197,14 @@ describe.concurrent('whereToParquetFilter', () => {
   it('converts a TIMESTAMP typed literal into a Date predicate', () => {
     const where = bin('>=', id('message_created_at'), cast('TIMESTAMP', lit('2026-08-06T00:00:00Z')))
     expect(whereToParquetFilter(where)).toEqual({
-      $and: [
-        { message_created_at: { $ne: null } },
-        { message_created_at: { $gte: new Date('2026-08-06T00:00:00Z') } },
-      ],
+      message_created_at: { $gte: new Date('2026-08-06T00:00:00Z') },
     })
   })
 
   it('flips a TIMESTAMP literal on the left of the comparison', () => {
     const where = bin('>', cast('TIMESTAMP', lit('2026-08-06T00:00:00Z')), id('ts'))
     expect(whereToParquetFilter(where)).toEqual({
-      $and: [{ ts: { $ne: null } }, { ts: { $lt: new Date('2026-08-06T00:00:00Z') } }],
+      ts: { $lt: new Date('2026-08-06T00:00:00Z') },
     })
   })
 
