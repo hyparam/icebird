@@ -3,6 +3,10 @@
  * Returns undefined when any sub-expression can't be converted, so callers
  * can fall back to engine-side filtering.
  *
+ * A converted filter replaces engine-side WHERE rather than pre-filtering for
+ * it, so it must select exactly the rows the engine selects - including on
+ * null cells, where the two evaluators disagree by default (see `guardNull`).
+ *
  * Filter keys are the SQL identifier names (iceberg field names as exposed by
  * the data source). Per-file mapping to physical parquet column names happens
  * downstream in `readDataFile`.
@@ -74,10 +78,45 @@ function convertBinary({ op, left, right }, negate) {
 
   const { column, value, flipped } = extractColumnAndValue(left, right)
   if (!column || value === undefined) return undefined
+  // A comparison against a NULL literal is false for every row in the engine
+  // (`applyBinaryOp` short-circuits on a null operand), but {$eq: null} means
+  // "is null" to hyparquet. Let the engine answer it.
+  if (value === null) return undefined
 
   const mongoOp = mapOperator(op, flipped, negate)
   if (!mongoOp) return undefined
-  return { [column]: { [mongoOp]: value } }
+  return guardNull({ [column]: { [mongoOp]: value } }, column, mongoOp, negate)
+}
+
+/**
+ * Make a comparison agree with the engine on null cells.
+ *
+ * squirreling's `applyBinaryOp` returns false for any comparison with a null
+ * operand, so a null cell never satisfies a bare comparison, and always
+ * satisfies a negated one. hyparquet (>= 1.28.2) agrees on bare comparisons:
+ * $eq is false on a null cell and $lt/$lte/$gt/$gte never match one. The two
+ * disagreements left are MongoDB semantics, not bugs:
+ *
+ * - $ne is true on a null cell, so a bare `col != value` would return null
+ *   rows the engine excludes. Guard with `col $ne null`.
+ * - A negated comparison flips the operator (`NOT (n < 7)` becomes $gte),
+ *   which is false on a null cell, but the engine's NOT over a false
+ *   comparison keeps null rows. Guard with `col $eq null` in an $or. $ne is
+ *   the exception: it is true on a null cell, which is what negation needs.
+ *
+ * @param {ParquetQueryFilter} predicate
+ * @param {string} column
+ * @param {string} mongoOp
+ * @param {boolean} negate
+ * @returns {ParquetQueryFilter}
+ */
+function guardNull(predicate, column, mongoOp, negate) {
+  if (negate) {
+    if (mongoOp === '$ne') return predicate
+    return { $or: [{ [column]: { $eq: null } }, predicate] }
+  }
+  if (mongoOp === '$ne') return { $and: [{ [column]: { $ne: null } }, predicate] }
+  return predicate
 }
 
 /**
@@ -131,6 +170,10 @@ function staticLiteral(node) {
 function foldCast(toType, val) {
   if (val === null || val === undefined) return undefined
   if (toType === 'TEXT' || toType === 'STRING' || toType === 'VARCHAR') {
+    // The engine JSON-stringifies objects here rather than using String(), so
+    // CAST(TIMESTAMP '...' AS TEXT) would fold to a different string. Its
+    // stringify helper is not exported, so fall back rather than copy it.
+    if (typeof val === 'object') return undefined
     return { value: String(val) }
   }
   if (toType === 'INTEGER' || toType === 'INT') {
