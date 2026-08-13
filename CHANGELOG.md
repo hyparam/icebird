@@ -1,5 +1,8 @@
 # Icebird Changelog
 
+## [0.8.20]
+ - Update squirreling to 0.15.2
+
 ## [0.8.19]
  - Fix REST catalog commits crashing with "Do not know how to serialize a BigInt" for snapshot ids above 2^53
  - Read `current-snapshot-id: -1` as "no current snapshot", so the first append to a table created by Java/Spark no longer fails with a ref assertion error
