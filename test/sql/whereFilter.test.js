@@ -101,27 +101,25 @@ describe.concurrent('whereToParquetFilter', () => {
   })
 
   it('negates by inverting operator under NOT', () => {
+    // NOT (a < 5) is a >= 5 in three-valued logic too: a null cell is UNKNOWN
+    // either way and stays excluded, so the flipped operator pushes bare
     const where = un('NOT', bin('<', id('a'), lit(5)))
-    expect(whereToParquetFilter(where)).toEqual({
-      $or: [{ a: { $eq: null } }, { a: { $gte: 5 } }],
-    })
+    expect(whereToParquetFilter(where)).toEqual({ a: { $gte: 5 } })
   })
 
-  it('guards comparisons so null cells match the engine', () => {
-    // The engine's applyBinaryOp returns false for any comparison with a null
-    // operand, so a null cell never satisfies a bare comparison and always
-    // satisfies a negated one. hyparquet agrees except where mongodb
-    // semantics differ: $ne is true on a null cell, and a negated comparison
-    // flips to an operator that is false on one.
+  it('guards comparisons so null cells match SQL', () => {
+    // A null cell satisfies no comparison in three-valued logic, negated or
+    // not. hyparquet agrees for every operator except $ne, which is true on a
+    // null cell (mongodb semantics), so $ne carries a $ne: null guard however
+    // it was spelled.
     expect(whereToParquetFilter(bin('<=', id('a'), lit(5)))).toEqual({ a: { $lte: 5 } })
     expect(whereToParquetFilter(bin('!=', id('a'), lit(5)))).toEqual({
       $and: [{ a: { $ne: null } }, { a: { $ne: 5 } }],
     })
-    expect(whereToParquetFilter(un('NOT', bin('!=', id('a'), lit(5))))).toEqual({
-      $or: [{ a: { $eq: null } }, { a: { $eq: 5 } }],
+    expect(whereToParquetFilter(un('NOT', bin('!=', id('a'), lit(5))))).toEqual({ a: { $eq: 5 } })
+    expect(whereToParquetFilter(un('NOT', bin('=', id('a'), lit(5))))).toEqual({
+      $and: [{ a: { $ne: null } }, { a: { $ne: 5 } }],
     })
-    // $ne under NOT is already true on a null cell, so it needs no guard
-    expect(whereToParquetFilter(un('NOT', bin('=', id('a'), lit(5))))).toEqual({ a: { $ne: 5 } })
   })
 
   it('falls back for a comparison against a NULL literal', () => {
@@ -163,10 +161,23 @@ describe.concurrent('whereToParquetFilter', () => {
     })
   })
 
-  it('turns NOT (a AND b) into ($or)', () => {
+  it('turns NOT (a AND b) into ($or) with guarded leaves', () => {
     const where = un('NOT', bin('AND', bin('=', id('a'), lit(1)), bin('=', id('b'), lit(2))))
     expect(whereToParquetFilter(where)).toEqual({
-      $or: [{ a: { $ne: 1 } }, { b: { $ne: 2 } }],
+      $or: [
+        { $and: [{ a: { $ne: null } }, { a: { $ne: 1 } }] },
+        { $and: [{ b: { $ne: null } }, { b: { $ne: 2 } }] },
+      ],
+    })
+  })
+
+  it('turns NOT (a OR b) into ($and) of negated children, never $nor', () => {
+    // hyparquet evaluates $nor as a two-valued complement, so a row that is
+    // UNKNOWN for every disjunct would match; De Morgan keeps negation at the
+    // leaves where the null guards live, and $and prunes where $nor cannot
+    const where = un('NOT', bin('OR', bin('<', id('a'), lit(1)), bin('>', id('a'), lit(2))))
+    expect(whereToParquetFilter(where)).toEqual({
+      $and: [{ a: { $gte: 1 } }, { a: { $lte: 2 } }],
     })
   })
 
@@ -174,8 +185,22 @@ describe.concurrent('whereToParquetFilter', () => {
     const where = inList(id('a'), [lit(1), lit(2), lit(3)])
     expect(whereToParquetFilter(where)).toEqual({ a: { $in: [1, 2, 3] } })
 
+    // $nin, like $ne, is true on a null cell; SQL's NOT IN is UNKNOWN there
     const negated = un('NOT', where)
-    expect(whereToParquetFilter(negated)).toEqual({ a: { $nin: [1, 2, 3] } })
+    expect(whereToParquetFilter(negated)).toEqual({
+      $and: [{ a: { $ne: null } }, { a: { $nin: [1, 2, 3] } }],
+    })
+  })
+
+  it('handles NULL members of an IN list', () => {
+    // NOT IN over a list holding NULL matches no row: FALSE on a listed
+    // value, UNKNOWN everywhere else. $in: [] is hyparquet's never-match.
+    const withNull = inList(id('a'), [lit(1), lit(null)])
+    expect(whereToParquetFilter(un('NOT', withNull))).toEqual({ a: { $in: [] } })
+    // A NULL member of a plain IN can never make the disjunction TRUE, and
+    // dropping it keeps row-group statistics pruning decidable
+    expect(whereToParquetFilter(withNull)).toEqual({ a: { $in: [1] } })
+    expect(whereToParquetFilter(inList(id('a'), [lit(null)]))).toEqual({ a: { $in: [] } })
   })
 
   it('passes CAST(expr) through', () => {
@@ -211,7 +236,7 @@ describe.concurrent('whereToParquetFilter', () => {
   it('negates a TIMESTAMP comparison under NOT', () => {
     const where = un('NOT', bin('<', id('ts'), cast('TIMESTAMP', lit('2026-08-06T00:00:00Z'))))
     expect(whereToParquetFilter(where)).toEqual({
-      $or: [{ ts: { $eq: null } }, { ts: { $gte: new Date('2026-08-06T00:00:00Z') } }],
+      ts: { $gte: new Date('2026-08-06T00:00:00Z') },
     })
   })
 

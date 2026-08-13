@@ -69,52 +69,47 @@ function convertBinary({ op, left, right }, negate) {
     return negate ? { $or: [l, r] } : { $and: [l, r] }
   }
   if (op === 'OR') {
-    const l = convertExpr(left, false)
-    const r = convertExpr(right, false)
+    // De Morgan: NOT (a OR b) === (NOT a) AND (NOT b), which also holds in
+    // SQL's three-valued logic. `$nor` does not: hyparquet evaluates it as a
+    // two-valued complement, so a row that is UNKNOWN for every disjunct
+    // (null cell) would match. Pushing the negation into the children keeps
+    // it at the leaves, where each operator handles null cells itself, and
+    // `$and` prunes on row-group statistics where `$nor` never can.
+    const l = convertExpr(left, negate)
+    const r = convertExpr(right, negate)
     if (!l || !r) return undefined
-    return negate ? { $nor: [l, r] } : { $or: [l, r] }
+    return negate ? { $and: [l, r] } : { $or: [l, r] }
   }
   if (op === 'LIKE') return undefined
 
   const { column, value, flipped } = extractColumnAndValue(left, right)
   if (!column || value === undefined) return undefined
-  // A comparison against a NULL literal is false for every row in the engine
-  // (`applyBinaryOp` short-circuits on a null operand), but {$eq: null} means
-  // "is null" to hyparquet. Let the engine answer it.
+  // A comparison against a NULL literal is UNKNOWN for every row in SQL, so
+  // it matches nothing, but {$eq: null} means "is null" to hyparquet. Let the
+  // engine (squirreling >= 0.15.3, three-valued) answer it.
   if (value === null) return undefined
 
   const mongoOp = mapOperator(op, flipped, negate)
   if (!mongoOp) return undefined
-  return guardNull({ [column]: { [mongoOp]: value } }, column, mongoOp, negate)
+  return guardNull({ [column]: { [mongoOp]: value } }, column, mongoOp)
 }
 
 /**
- * Make a comparison agree with the engine on null cells.
- *
- * squirreling's `applyBinaryOp` returns false for any comparison with a null
- * operand, so a null cell never satisfies a bare comparison, and always
- * satisfies a negated one. hyparquet (>= 1.28.2) agrees on bare comparisons:
- * $eq is false on a null cell and $lt/$lte/$gt/$gte never match one. The two
- * disagreements left are MongoDB semantics, not bugs:
- *
- * - $ne is true on a null cell, so a bare `col != value` would return null
- *   rows the engine excludes. Guard with `col $ne null`.
- * - A negated comparison flips the operator (`NOT (n < 7)` becomes $gte),
- *   which is false on a null cell, but the engine's NOT over a false
- *   comparison keeps null rows. Guard with `col $eq null` in an $or. $ne is
- *   the exception: it is true on a null cell, which is what negation needs.
+ * Make a comparison agree with SQL three-valued logic on null cells: a null
+ * cell satisfies no comparison, negated or not (negation was already folded
+ * into the operator by `mapOperator`, so by this point there are only bare
+ * operators). hyparquet >= 1.28.2 agrees for every operator except `$ne`,
+ * which is MongoDB semantics rather than a bug: `$ne` is true on a null
+ * cell, so a bare `col != value` would return null rows SQL excludes. Guard
+ * it with `col $ne null`. (`$nin` has the same shape; `convertInValues`
+ * guards it the same way.)
  *
  * @param {ParquetQueryFilter} predicate
  * @param {string} column
  * @param {string} mongoOp
- * @param {boolean} negate
  * @returns {ParquetQueryFilter}
  */
-function guardNull(predicate, column, mongoOp, negate) {
-  if (negate) {
-    if (mongoOp === '$ne') return predicate
-    return { $or: [{ [column]: { $eq: null } }, predicate] }
-  }
+function guardNull(predicate, column, mongoOp) {
   if (mongoOp === '$ne') return { $and: [{ [column]: { $ne: null } }, predicate] }
   return predicate
 }
@@ -283,11 +278,25 @@ function flip(op) {
  */
 function convertInValues(node, negate) {
   if (node.expr.type !== 'identifier') return undefined
+  const column = node.expr.name
   const values = []
   for (const val of node.values) {
     const lit = staticLiteral(val)
     if (!lit) return undefined
     values.push(lit.value)
   }
-  return { [node.expr.name]: { [negate ? '$nin' : '$in']: values } }
+  // `col NOT IN (…, NULL)` matches no row in SQL: FALSE for a row equal to a
+  // listed value, UNKNOWN for every other (nothing is provably distinct from
+  // NULL). `$in: []` is hyparquet's never-match, and it prunes every row
+  // group on statistics alone.
+  if (negate && values.some(value => value === null)) return { [column]: { $in: [] } }
+  // A NULL member of a non-negated list can never make the disjunction TRUE,
+  // so dropping it is row-identical, and carrying it would cost pruning:
+  // stats skipping bails when any member fails to compare against the chunk
+  // bounds. An all-NULL list drops to `$in: []`, which is what it means.
+  const pushed = values.filter(value => value !== null)
+  if (!negate) return { [column]: { $in: pushed } }
+  // `$nin`, like `$ne`, is true on a null cell in hyparquet; SQL's NOT IN is
+  // UNKNOWN there. Guard the same way guardNull does.
+  return { $and: [{ [column]: { $ne: null } }, { [column]: { $nin: pushed } }] }
 }
