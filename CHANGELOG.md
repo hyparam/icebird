@@ -1,5 +1,8 @@
 # Icebird Changelog
 
+## [0.8.21]
+ - Fix pushed-down `where` filters returning wrong rows on nullable columns: negated and not-equal comparisons now fall back to the engine so null cells are handled consistently
+
 ## [0.8.20]
  - Update squirreling to 0.15.2
 
