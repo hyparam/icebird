@@ -478,6 +478,90 @@ describe('icebergStageDeletionVector', () => {
     expect(ids).toEqual([2n, 3n])
   })
 
+  it('carries over a position delete entry decoded by the reader', async () => {
+    // A v2 table can accumulate position delete files across two partitions,
+    // putting two entries in one delete manifest, each carrying the stat maps
+    // stage-position-delete writes. Upgrading the table to v3 leaves those
+    // files in place, so the next deletion vector delete obsoletes one entry
+    // and has to carry the other over as EXISTING. The reader decodes Iceberg
+    // stat maps as {key, value} record arrays rather than plain objects, so
+    // that write has to accept the shape the reader produced.
+    const tableUrl = 'http://test/dv-carry-over-decoded'
+    const { resolver } = memResolver()
+
+    /** @type {Schema} */
+    const partitioned = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        { id: 2, name: 'part', required: true, type: 'string' },
+      ],
+    }
+    const partitionSpec = {
+      'spec-id': 0,
+      fields: [{ 'source-id': 2, 'field-id': 1000, name: 'part', transform: 'identity' }],
+    }
+    const created = await icebergCreate({ tableUrl, resolver, schema: partitioned, partitionSpec })
+
+    // One append per partition, so each partition's data file is named by its
+    // own staging result rather than looked up by partition value.
+    const appendX = await icebergStageAppend({
+      tableUrl, metadata: created, resolver,
+      records: [{ id: 1n, part: 'x' }, { id: 2n, part: 'x' }],
+    })
+    const afterX = await fileCatalogCommit({ tableUrl, metadata: created, staged: appendX, resolver })
+    const appendY = await icebergStageAppend({
+      tableUrl, metadata: afterX, resolver,
+      records: [{ id: 3n, part: 'y' }, { id: 4n, part: 'y' }],
+    })
+    const afterAppend = await fileCatalogCommit({ tableUrl, metadata: afterX, staged: appendY, resolver })
+    const fileX = appendX.writtenFiles[0]
+    const fileY = appendY.writtenFiles[0]
+
+    // One position-delete op touching both partitions: two delete files, one
+    // manifest. A single-partition delete would leave nothing to carry over.
+    const deletes = await icebergStagePositionDelete({
+      tableUrl,
+      metadata: afterAppend,
+      deletes: [{ file_path: fileX, pos: 0n }, { file_path: fileY, pos: 0n }],
+      resolver,
+    })
+    const afterDeletes = await fileCatalogCommit({ tableUrl, metadata: afterAppend, staged: deletes, resolver })
+    const deleteManifest = deletes.writtenFiles.find(f => f.endsWith('.avro') && !f.includes('snap-'))
+    if (!deleteManifest) throw new Error('expected a delete manifest')
+    expect(await fetchAvroRecords(deleteManifest, resolver)).toHaveLength(2)
+
+    const upgraded = { ...afterDeletes, 'format-version': /** @type {3} */ (3), 'next-row-id': 0 }
+
+    // Targets partition x only, so its position delete entry goes obsolete
+    // and partition y's entry is carried over.
+    const staged = await icebergStageDeletionVector({
+      tableUrl,
+      metadata: upgraded,
+      deletes: [{ file_path: fileX, pos: 1n }],
+      resolver,
+    })
+
+    const afterDv = await fileCatalogCommit({ tableUrl, metadata: upgraded, staged, resolver })
+    const carried = (await currentManifestEntries(afterDv, resolver))
+      .filter(e => e.data_file.content === 1 && e.status === 0)
+    expect(carried).toHaveLength(1)
+    // The stats came through the carry-over intact rather than being dropped
+    // or re-encoded. The retained delete file covers position 0 of partition
+    // y's data file, so both `pos` bounds (reserved field id 2147483545) are
+    // the 8-byte little-endian encoding of 0.
+    expect(carried[0].data_file.lower_bounds).toContainEqual({
+      key: 2147483545, value: new Uint8Array(8),
+    })
+    expect(carried[0].data_file.upper_bounds).toContainEqual({
+      key: 2147483545, value: new Uint8Array(8),
+    })
+
+    const read = await icebergRead({ tableUrl, metadata: afterDv, resolver })
+    expect(read.map(r => r.id).sort((a, b) => Number(a - b))).toEqual([4n])
+  })
+
   it('preserves v3 next-row-id and emits added-rows=0', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
     const tableUrl = 'http://test/dv-nextrow'
