@@ -1,5 +1,8 @@
 # Icebird Changelog
 
+## [0.8.23]
+ - `icebergDataSource` implements squirreling's prepared scan API, returning native parquet batches (with pruning and filter push-down) instead of row-by-row objects, and exposes a `schema` with field ids
+
 ## [0.8.22]
  - Pushed-down `where` filters now match SQL three-valued logic on null cells: negated OR uses De Morgan instead of `$nor` (which also restores row-group pruning under negation), negated comparisons push their flipped operator bare, `NOT IN` carries a null guard, and NULL members of an IN list convert to a never-match / are dropped
 
