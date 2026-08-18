@@ -56,7 +56,7 @@
     "hyparquet": "1.28.2",
     "hyparquet-compressors": "1.1.1",
     "hyparquet-writer": "0.16.6",
-    "squirreling": "0.15.3"
+    "squirreling": "0.16.1"
   },
   "peerDependencies": {
     "@aws-sdk/credential-providers": "^3.0.0"

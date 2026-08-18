@@ -1,15 +1,29 @@
-import { asyncRow } from 'squirreling'
+import { asyncRow, rowsToBatches } from 'squirreling'
 import { fetchDeleteMaps, urlResolver } from '../fetch.js'
 import { icebergManifests, splitManifestEntries } from '../manifest.js'
 import { icebergMetadata } from '../metadata.js'
-import { readDataFile } from '../read.js'
+import { readDataFile, readDataFileBatches } from '../read.js'
 import { fileMightMatch, partitionMightMatch } from '../prune.js'
 import { whereToParquetFilter } from './whereFilter.js'
 
 /**
- * @import {AsyncDataSource, ExprNode, SqlPrimitive} from 'squirreling'
+ * @import {AsyncDataSource, ExprNode, PrepareScan, RelationSchema, ScanResults, SqlPrimitive} from 'squirreling'
  * @import {ScanColumnResults} from 'squirreling/src/types.js'
  * @import {Lister, Resolver, TableMetadata} from '../../src/types.js'
+ */
+
+/**
+ * Icebird keeps the legacy scan surface alongside prepared batches so callers
+ * written against older squirreling releases retain a statically callable
+ * `scan()` method.
+ *
+ * @typedef {object} IcebergAsyncDataSource
+ * @property {number} [numRows]
+ * @property {string[]} columns
+ * @property {RelationSchema} schema
+ * @property {(options: import('squirreling').ScanOptions) => ScanResults} scan
+ * @property {PrepareScan} prepareScan
+ * @property {NonNullable<AsyncDataSource['scanColumn']>} scanColumn
  */
 
 /**
@@ -47,7 +61,7 @@ import { whereToParquetFilter } from './whereFilter.js'
  * @param {number | bigint} [options.snapshotId] - Optional snapshot id for time travel; defaults to the current snapshot.
  * @param {Resolver} [options.resolver] - I/O resolver (defaults to `urlResolver()`).
  * @param {Lister} [options.lister] - Directory lister, used to discover the latest metadata.
- * @returns {Promise<AsyncDataSource>}
+ * @returns {Promise<IcebergAsyncDataSource>}
  */
 export async function icebergDataSource({ tableUrl, metadataFileName, metadata, snapshotId, resolver, lister }) {
   if (!tableUrl) throw new Error('tableUrl is required')
@@ -64,6 +78,15 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
   const schema = tableMetadata.schemas.find(s => s['schema-id'] === schemaId)
   if (!schema) throw new Error('schema not found in metadata')
   const columns = schema.fields.map(f => f.name)
+  /** @type {RelationSchema} */
+  const relationSchema = {
+    fields: schema.fields.map(field => ({
+      id: field.id,
+      name: field.name,
+      dataType: { type: 'unknown' },
+      nullable: !field.required,
+    })),
+  }
   const rowLineage = tableMetadata['format-version'] >= 3
 
   const manifestList = await icebergManifests({ metadata: tableMetadata, resolver: fetchResolver, snapshotId })
@@ -85,9 +108,59 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
     }
   }
 
-  return {
+  /** @type {IcebergAsyncDataSource} */
+  const thisSource = {
     numRows,
     columns,
+    schema: relationSchema,
+    prepareScan(request) {
+      const requestedFields = request.columns.map(demand => {
+        const field = relationSchema.fields.find(candidate => candidate.id === demand.field)
+        if (!field) throw new Error(`Prepared scan requested unknown field id ${demand.field}`)
+        return field
+      })
+      const requestedNames = requestedFields.map(field => field.name)
+      const filter = whereToParquetFilter(request.filter)
+      const scanEntries = filter
+        ? dataEntries.filter(entry =>
+          partitionMightMatch(filter, entry, schema, tableMetadata) &&
+            fileMightMatch(filter, entry, schema))
+        : dataEntries
+      let maxRows = 0
+      for (const entry of scanEntries) maxRows += Number(entry.data_file.record_count)
+
+      return {
+        schema: { fields: requestedFields },
+        residual: {
+          filter: request.filter,
+          limit: request.limit,
+          offset: request.offset,
+        },
+        properties: {
+          exactRows: request.filter || hasDeletes ? undefined : maxRows,
+          maxRows,
+        },
+        async *batches({ signal } = {}) {
+          signal?.throwIfAborted()
+          if (hasDeletes) {
+            const legacy = thisSource.scan({ columns: requestedNames, signal })
+            yield* rowsToBatches(legacy.rows(), requestedNames, { signal })
+            return
+          }
+          for (const entry of scanEntries) {
+            signal?.throwIfAborted()
+            yield* readDataFileBatches({
+              dataEntry: entry,
+              schema,
+              metadata: tableMetadata,
+              resolver: fetchResolver,
+              fields: requestedFields,
+              signal,
+            })
+          }
+        },
+      }
+    },
     scan({ columns: scanColumns, where, limit, offset, signal }) {
       const rowColumns = scanColumns ?? columns
       // Convert the WHERE AST to a hyparquet filter; undefined means the
@@ -317,4 +390,5 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
       }
     },
   }
+  return thisSource
 }
