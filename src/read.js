@@ -1,5 +1,7 @@
-import { cachedAsyncBuffer, parquetMetadataAsync, parquetReadObjects } from 'hyparquet'
+import { cachedAsyncBuffer, flatten, parquetMetadataAsync, parquetReadObjects, parquetSchema } from 'hyparquet'
 import { compressors } from 'hyparquet-compressors'
+import { parquetReadAsync } from 'hyparquet/src/read.js'
+import { assembleAsync } from 'hyparquet/src/rowgroup.js'
 import { fetchDeleteMaps, urlResolver } from './fetch.js'
 import { icebergMetadata } from './metadata.js'
 import { icebergManifests, splitManifestEntries } from './manifest.js'
@@ -459,6 +461,232 @@ export async function* readDataFile({
     if (result.batch && result.batch.length > 0) yield result.batch
     nextYield++
   }
+}
+
+/**
+ * Stream native squirreling batches from one delete-free parquet data file.
+ * The batch envelope follows parquet row-group boundaries, while every
+ * requested column remains deferred until the engine asks for it. Deferred
+ * reads receive the engine's effective row selection, allowing a selective
+ * predicate and LIMIT to avoid decoding unused values from wide columns.
+ *
+ * Delete-bearing tables intentionally use the legacy row scanner in
+ * `icebergDataSource`: position and equality deletes need coordinated access
+ * to multiple columns and row positions, which this independent-column reader
+ * does not attempt to reproduce.
+ *
+ * @import {AsyncBatch, Field as BatchField, RowSelection, SqlPrimitive} from 'squirreling'
+ * @param {object} options
+ * @param {ManifestEntry} options.dataEntry
+ * @param {Schema} options.schema
+ * @param {TableMetadata} options.metadata
+ * @param {Resolver} options.resolver
+ * @param {readonly BatchField[]} options.fields - Requested fields in batch-column order.
+ * @param {AbortSignal} [options.signal]
+ * @returns {AsyncGenerator<AsyncBatch>}
+ */
+export async function* readDataFileBatches({
+  dataEntry,
+  schema,
+  metadata,
+  resolver,
+  fields,
+  signal,
+}) {
+  const { data_file, partition_spec_id } = dataEntry
+  signal?.throwIfAborted()
+
+  const partitionSpec = metadata['partition-specs'].find(s => s['spec-id'] === partition_spec_id)
+  const resolved = await resolver.reader(data_file.file_path, Number(data_file.file_size_in_bytes))
+  const file = cachedAsyncBuffer(resolved)
+  const parquetMetadata = await parquetMetadataAsync(file)
+  signal?.throwIfAborted()
+
+  const kv = parquetMetadata.key_value_metadata?.find(k => k.key === 'iceberg.schema')
+  /** @type {Schema} */
+  let parquetIcebergSchema
+  if (kv?.value) {
+    parquetIcebergSchema = JSON.parse(kv.value)
+  } else if (parquetMetadata.schema.some(s => s.field_id !== undefined)) {
+    parquetIcebergSchema = parquetSchemaToIceberg(parquetMetadata.schema)
+  } else {
+    parquetIcebergSchema = schema
+  }
+
+  const physicalNames = new Set(parquetSchema(parquetMetadata).children.map(child => child.element.name))
+  /** @type {NameMapping[]} */
+  const nameMappings = metadata.properties?.['schema.name-mapping.default']
+    ? JSON.parse(metadata.properties['schema.name-mapping.default'])
+    : []
+
+  /** @type {Map<number, {name?: string, constant?: SqlPrimitive}>} */
+  const fieldSources = new Map()
+  for (const requested of fields) {
+    const field = schema.fields.find(candidate => candidate.id === requested.id)
+    if (!field) throw new Error(`Iceberg field id ${requested.id} not found`)
+    const parquetField = parquetIcebergSchema.fields.find(candidate => candidate.id === field.id)
+    let physicalName = parquetField && field.type !== 'unknown'
+      ? sanitize(parquetField.name)
+      : undefined
+    if (physicalName && !physicalNames.has(physicalName)) physicalName = undefined
+
+    if (!physicalName) {
+      const mapping = nameMappingById(nameMappings, field.id)
+      physicalName = mapping?.names
+        .map(name => sanitize(name))
+        .find(name => physicalNames.has(name))
+    }
+    if (physicalName) {
+      fieldSources.set(requested.id, { name: physicalName })
+      continue
+    }
+
+    const partitionField = partitionSpec?.fields.find(
+      candidate => candidate['source-id'] === field.id && candidate.transform === 'identity')
+    let constant
+    if (partitionField && Object.hasOwn(data_file.partition, partitionField.name)) {
+      constant = data_file.partition[partitionField.name] ?? null
+    } else if (field['initial-default'] !== undefined) {
+      constant = field['initial-default']
+    } else {
+      constant = null
+    }
+    fieldSources.set(requested.id, { constant: /** @type {SqlPrimitive} */ (constant) })
+  }
+
+  const schemaTree = parquetSchema(parquetMetadata)
+  let groupStart = 0
+  for (const rowGroup of parquetMetadata.row_groups) {
+    signal?.throwIfAborted()
+    const groupRows = Number(rowGroup.num_rows)
+    if (groupRows === 0) continue
+    const batchStart = groupStart
+    /** @type {AsyncBatch} */
+    const batch = {
+      selection: { type: 'all', length: groupRows },
+      columns: fields.map(function batchColumn(field) {
+        const source = fieldSources.get(field.id)
+        if (!source) throw new Error(`Iceberg field id ${field.id} has no read source`)
+        if (!source.name) {
+          return {
+            type: 'constant',
+            value: source.constant ?? null,
+            length: groupRows,
+          }
+        }
+        const columnName = source.name
+        return {
+          async read({ selection, signal: readSignal }) {
+            readSignal?.throwIfAborted()
+            const count = selectedRows(selection)
+            if (count === 0) return { type: 'values', values: [], length: 0 }
+            const range = selectionRange(selection)
+            const values = await readParquetColumnRange({
+              file,
+              parquetMetadata,
+              schemaTree,
+              columnName,
+              rowStart: batchStart + range.start,
+              rowEnd: batchStart + range.end,
+              signal: readSignal,
+            })
+            if (selection.type !== 'indices') {
+              return { type: 'values', values, length: values.length }
+            }
+            /** @type {SqlPrimitive[]} */
+            const selected = []
+            for (const index of selection.indices) {
+              selected.push(values[index - range.start])
+            }
+            return { type: 'values', values: selected, length: selected.length }
+          },
+        }
+      }),
+    }
+    yield batch
+    groupStart += groupRows
+  }
+}
+
+/**
+ * Read one physical top-level parquet column over an absolute file row range.
+ * Offset indexes are used when available so a narrowed selection can skip
+ * unrelated data pages.
+ *
+ * @import {AsyncBuffer, FileMetaData, SchemaTree} from 'hyparquet'
+ * @param {object} options
+ * @param {AsyncBuffer} options.file
+ * @param {FileMetaData} options.parquetMetadata
+ * @param {SchemaTree} options.schemaTree
+ * @param {string} options.columnName
+ * @param {number} options.rowStart
+ * @param {number} options.rowEnd
+ * @param {AbortSignal} [options.signal]
+ * @returns {Promise<SqlPrimitive[]>}
+ */
+async function readParquetColumnRange({
+  file,
+  parquetMetadata,
+  schemaTree,
+  columnName,
+  rowStart,
+  rowEnd,
+  signal,
+}) {
+  const asyncGroups = parquetReadAsync({
+    file,
+    metadata: parquetMetadata,
+    columns: [columnName],
+    rowStart,
+    rowEnd,
+    compressors,
+    utf8: false,
+    useOffsetIndex: true,
+  }).map(group => assembleAsync(group, schemaTree))
+  /** @type {SqlPrimitive[]} */
+  const values = []
+  for (const group of asyncGroups) {
+    signal?.throwIfAborted()
+    const column = group.asyncColumns.find(candidate => candidate.pathInSchema[0] === columnName)
+    if (!column) throw new Error(`parquet column not found: ${columnName}`)
+    const result = await column.data
+    const data = flatten(result.data)
+    const start = group.selectStart ?? Math.max(rowStart - group.groupStart, 0)
+    const end = group.selectEnd ?? Math.min(rowEnd - group.groupStart, group.groupRows)
+    for (let index = start; index < end; index++) {
+      values.push(/** @type {SqlPrimitive} */ (data[index - result.skipped]))
+    }
+  }
+  signal?.throwIfAborted()
+  return values
+}
+
+/**
+ * @param {RowSelection} selection
+ * @returns {number}
+ */
+function selectedRows(selection) {
+  if (selection.type === 'all') return selection.length
+  if (selection.type === 'range') return selection.end - selection.start
+  return selection.indices.length
+}
+
+/**
+ * Return the smallest local row range covering a selection.
+ *
+ * @param {RowSelection} selection
+ * @returns {{start: number, end: number}}
+ */
+function selectionRange(selection) {
+  if (selection.type === 'all') return { start: 0, end: selection.length }
+  if (selection.type === 'range') return { start: selection.start, end: selection.end }
+  let start = Infinity
+  let end = 0
+  for (const index of selection.indices) {
+    start = Math.min(start, index)
+    end = Math.max(end, index + 1)
+  }
+  return selection.indices.length === 0 ? { start: 0, end: 0 } : { start, end }
 }
 
 /**

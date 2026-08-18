@@ -1,4 +1,4 @@
-import { collect, executeSql } from 'squirreling'
+import { collect, executeSql, readBatchColumn, valueAt } from 'squirreling'
 import { describe, expect, it } from 'vitest'
 import { icebergDataSource } from '../../src/sql/icebergDataSource.js'
 import { localResolver } from '../helpers.js'
@@ -38,6 +38,64 @@ describe.concurrent('icebergDataSource', () => {
       'Temperament',
       'Popularity Rank',
     ])
+    expect(source.schema.fields.map(field => field.name)).toEqual(source.columns)
+  })
+
+  it('keeps parquet columns deferred and reads only a requested selection', async () => {
+    const source = await icebergDataSource({
+      tableUrl,
+      resolver,
+      metadataFileName: 'v2.metadata.json',
+    })
+    const prepared = source.prepareScan({
+      columns: [
+        { field: 1, phase: 1, purpose: 'output', mode: 'deferred' },
+        { field: 8, phase: 0, purpose: 'filter', mode: 'required' },
+      ],
+    })
+    const iterator = prepared.batches()[Symbol.asyncIterator]()
+    const first = await iterator.next()
+    expect(first.done).toBe(false)
+    if (first.done) throw new Error('expected a parquet batch')
+    const batch = first.value
+    expect(batch.columns.every(column => 'read' in column)).toBe(true)
+
+    const allNames = await readBatchColumn({ batch, columnIndex: 0 })
+    const last = batch.selection.length - 1
+    const selection = {
+      type: /** @type {const} */ ('indices'),
+      indices: new Uint32Array([1, last]),
+      length: batch.selection.length,
+    }
+    const selectedNames = await readBatchColumn({ batch, columnIndex: 0, selection })
+    expect(selectedNames.length).toBe(2)
+    expect(valueAt(selectedNames, 0)).toEqual(valueAt(allNames, 1))
+    expect(valueAt(selectedNames, 1)).toEqual(valueAt(allNames, last))
+    await iterator.return?.()
+  })
+
+  it('executes through native prepared batches without calling legacy scan hooks', async () => {
+    const source = await icebergDataSource({
+      tableUrl,
+      resolver,
+      metadataFileName: 'v2.metadata.json',
+    })
+    /** @type {AsyncDataSource} */
+    const preparedOnly = {
+      ...source,
+      scan() {
+        throw new Error('legacy scan should not run')
+      },
+      scanColumn() {
+        throw new Error('legacy scanColumn should not run')
+      },
+    }
+    const result = await collect(executeSql({
+      tables: { bunnies: preparedOnly },
+      query: 'SELECT "Breed Name" FROM bunnies WHERE "Popularity Rank" > 18 LIMIT 2',
+    }))
+    expect(result).toHaveLength(2)
+    expect(result.every(row => typeof row['Breed Name'] === 'string')).toBe(true)
   })
 
   it('streams all rows via scan()', async () => {
@@ -504,7 +562,7 @@ describe.concurrent('icebergDataSource scanColumn', () => {
    * Read a single column's full value list via the row `scan()` path, the
    * oracle scanColumn must agree with.
    *
-   * @param {AsyncDataSource} source
+   * @param {Awaited<ReturnType<typeof icebergDataSource>>} source
    * @param {string} column
    * @returns {Promise<any[]>}
    */
@@ -653,7 +711,7 @@ describe.concurrent('icebergDataSource scanColumn', () => {
    * Filtered oracle: the same single column read via scan() with a WHERE, which
    * icebird already prunes and matches per row. scanColumn's pushdown must agree.
    *
-   * @param {AsyncDataSource} source
+   * @param {Awaited<ReturnType<typeof icebergDataSource>>} source
    * @param {string} column
    * @param {ExprNode} where
    * @returns {Promise<any[]>}
@@ -763,9 +821,9 @@ describe.concurrent('icebergDataSource scanColumn', () => {
   })
 
   it('serves a plain single-column SELECT with LIMIT/OFFSET through the hook', async () => {
-    // execute.js takes the scanColumn fast path for any single-column,
-    // WHERE-free scan, not just aggregates. Prove the hook is invoked and the
-    // streamed rows match the ordinary scan() path (hook removed).
+    // Prepared scans supersede the legacy scanColumn hook. Disable prepareScan
+    // explicitly here to retain coverage of the backwards-compatible path and
+    // prove its streamed rows still match ordinary scan().
     const source = await icebergDataSource({ tableUrl, resolver, metadataFileName: 'v2.metadata.json' })
     const baseScanColumn = source.scanColumn
     if (!baseScanColumn) throw new Error('scanColumn not implemented')
@@ -774,6 +832,7 @@ describe.concurrent('icebergDataSource scanColumn', () => {
     /** @type {AsyncDataSource} */
     const spied = {
       ...source,
+      prepareScan: undefined,
       /** @type {NonNullable<AsyncDataSource['scanColumn']>} */
       scanColumn(options) {
         scanColumnCalls++
@@ -782,7 +841,7 @@ describe.concurrent('icebergDataSource scanColumn', () => {
     }
     // Same source with the hook removed forces the ordinary row scan() path.
     /** @type {AsyncDataSource} */
-    const noHook = { ...source, scanColumn: undefined }
+    const noHook = { ...source, prepareScan: undefined, scanColumn: undefined }
 
     const query = 'SELECT "Popularity Rank" FROM bunnies LIMIT 5 OFFSET 2'
     const viaHook = await collect(executeSql({ tables: { bunnies: spied }, query }))
