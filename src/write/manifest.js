@@ -217,6 +217,53 @@ export function writeDeleteManifest({ writer, schema, partitionSpec, snapshotId,
 }
 
 /**
+ * Write a data manifest containing already-existing data entries. Used when
+ * manifests are rewritten without touching the data files they reference —
+ * merging many small manifests into one, for instance. Carried-over files
+ * must keep their original data and file sequence numbers rather than
+ * inheriting the rewriting snapshot's, which would misattribute their data
+ * sequence numbers and change which delete files apply to them.
+ *
+ * @param {object} options
+ * @param {Writer} options.writer
+ * @param {Schema} options.schema
+ * @param {PartitionSpec} options.partitionSpec
+ * @param {ManifestEntry[]} options.entries
+ * @param {2|3} [options.formatVersion]
+ * @returns {void | Promise<void>} resolves when the writer's `finish()` lands
+ */
+export function writeExistingDataManifest({ writer, schema, partitionSpec, entries, formatVersion = 2 }) {
+  const records = entries.map(entry => {
+    const dataFile = entry.data_file
+    if (dataFile.content !== 0) {
+      throw new Error(`writeExistingDataManifest expects data files (content=0), got content=${dataFile.content}`)
+    }
+    const record = manifestEntryRecord(dataFile, schema, partitionSpec, 0n, formatVersion, 0)
+    record.status = 0
+    record.snapshot_id = entry.snapshot_id ?? null
+    record.sequence_number = entry.sequence_number ?? null
+    record.file_sequence_number = entry.file_sequence_number ?? null
+    if (record.sequence_number == null || record.file_sequence_number == null) {
+      throw new Error('existing data manifest entry missing sequence numbers')
+    }
+    return record
+  })
+
+  return avroWrite({
+    writer,
+    schema: manifestEntrySchema(schema, partitionSpec, formatVersion, 0),
+    records,
+    metadata: {
+      'format-version': String(formatVersion),
+      content: 'data',
+      schema: icebergSchemaJson(schema),
+      'partition-spec': partitionSpecJson(partitionSpec),
+      'partition-spec-id': String(partitionSpec['spec-id']),
+    },
+  })
+}
+
+/**
  * Write a delete manifest containing already-existing delete entries. Used
  * when a v3 deletion vector replaces an older vector in a mixed manifest: the
  * retained entries must keep their original data/file sequence numbers rather
