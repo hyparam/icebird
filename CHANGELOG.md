@@ -1,5 +1,11 @@
 # Icebird Changelog
 
+## [0.8.24]
+ - Add `writeExistingDataManifest` for rewriting manifests that carry data files forward as EXISTING entries, preserving their snapshot id and sequence numbers so the delete files that apply to them do not change
+ - Fix carrying over manifest entries that have stats: `writeExistingDeleteManifest` threw "expected bigint value" when an entry's stat maps came back from the Avro reader as arrays of key/value records
+ - Manifest files now record the schema id in their Avro metadata
+ - Appends now preserve `total-delete-files`, `total-position-deletes`, and `total-equality-deletes` from the previous snapshot instead of resetting them to zero
+
 ## [0.8.23]
  - `icebergDataSource` implements squirreling's prepared scan API, returning native parquet batches (with pruning and filter push-down) instead of row-by-row objects, and exposes a `schema` with field ids
 

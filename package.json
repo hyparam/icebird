@@ -1,6 +1,6 @@
 {
   "name": "icebird",
-  "version": "0.8.23",
+  "version": "0.8.24",
   "description": "Apache Iceberg client for javascript",
   "author": "Hyperparam",
   "homepage": "https://hyperparam.app",
@@ -67,7 +67,7 @@
     }
   },
   "devDependencies": {
-    "@aws-sdk/credential-providers": "3.1113.0",
+    "@aws-sdk/credential-providers": "3.1114.0",
     "@types/node": "26.2.0",
     "@vitest/coverage-v8": "4.1.11",
     "eslint": "9.39.4",
