@@ -39,6 +39,12 @@ function manifestEntrySchema(schema, partitionSpec, formatVersion, manifestConte
     mapField('nan_value_counts', 137, 'k138_v139', 138, 139, 'long'),
     mapField('lower_bounds', 125, 'k126_v127', 126, 127, 'bytes'),
     mapField('upper_bounds', 128, 'k129_v130', 129, 130, 'bytes'),
+    {
+      name: 'split_offsets',
+      type: ['null', { type: 'array', items: 'long', 'element-id': 133 }],
+      default: null,
+      'field-id': 132,
+    },
     { name: 'sort_order_id', type: ['null', 'int'], default: null, 'field-id': 140 },
   ]
   if (manifestContent === 1) {
@@ -217,6 +223,63 @@ export function writeDeleteManifest({ writer, schema, partitionSpec, snapshotId,
 }
 
 /**
+ * Write a data manifest containing already-existing data entries. Used when
+ * manifests are rewritten without touching the data files they reference —
+ * merging many small manifests into one, for instance. Carried-over files
+ * must keep their original data and file sequence numbers rather than
+ * inheriting the rewriting snapshot's, which would misattribute their data
+ * sequence numbers and change which delete files apply to them. All entries
+ * must belong to the supplied partition spec.
+ *
+ * @param {object} options
+ * @param {Writer} options.writer
+ * @param {Schema} options.schema
+ * @param {PartitionSpec} options.partitionSpec
+ * @param {ManifestEntry[]} options.entries
+ * @param {2|3} [options.formatVersion]
+ * @returns {void | Promise<void>} resolves when the writer's `finish()` lands
+ */
+export function writeExistingDataManifest({ writer, schema, partitionSpec, entries, formatVersion = 2 }) {
+  const records = entries.map(entry => {
+    const dataFile = entry.data_file
+    if (entry.status === 2) {
+      throw new Error('writeExistingDataManifest cannot rewrite deleted entries as existing')
+    }
+    if (dataFile.content !== 0) {
+      throw new Error(`writeExistingDataManifest expects data files (content=0), got content=${dataFile.content}`)
+    }
+    if (entry.partition_spec_id !== partitionSpec['spec-id']) {
+      throw new Error(`existing data entry partition spec ${entry.partition_spec_id} does not match ${partitionSpec['spec-id']}`)
+    }
+    const record = manifestEntryRecord(dataFile, schema, partitionSpec, 0n, formatVersion, 0)
+    record.status = 0
+    record.snapshot_id = entry.snapshot_id ?? null
+    record.sequence_number = entry.sequence_number ?? null
+    record.file_sequence_number = entry.file_sequence_number ?? null
+    if (record.snapshot_id == null) {
+      throw new Error('existing data manifest entry missing snapshot id')
+    }
+    if (record.sequence_number == null || record.file_sequence_number == null) {
+      throw new Error('existing data manifest entry missing sequence numbers')
+    }
+    return record
+  })
+
+  return avroWrite({
+    writer,
+    schema: manifestEntrySchema(schema, partitionSpec, formatVersion, 0),
+    records,
+    metadata: {
+      'format-version': String(formatVersion),
+      content: 'data',
+      schema: icebergSchemaJson(schema),
+      'partition-spec': partitionSpecJson(partitionSpec),
+      'partition-spec-id': String(partitionSpec['spec-id']),
+    },
+  })
+}
+
+/**
  * Write a delete manifest containing already-existing delete entries. Used
  * when a v3 deletion vector replaces an older vector in a mixed manifest: the
  * retained entries must keep their original data/file sequence numbers rather
@@ -292,6 +355,7 @@ function manifestEntryRecord(dataFile, schema, partitionSpec, snapshotId, format
     nan_value_counts: encodeMap(dataFile.nan_value_counts),
     lower_bounds: encodeMap(dataFile.lower_bounds),
     upper_bounds: encodeMap(dataFile.upper_bounds),
+    split_offsets: dataFile.split_offsets?.length ? dataFile.split_offsets : null,
     sort_order_id: dataFile.content === 1 ? null : dataFile.sort_order_id ?? 0,
   }
   if (manifestContent === 1) {
