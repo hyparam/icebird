@@ -39,6 +39,12 @@ function manifestEntrySchema(schema, partitionSpec, formatVersion, manifestConte
     mapField('nan_value_counts', 137, 'k138_v139', 138, 139, 'long'),
     mapField('lower_bounds', 125, 'k126_v127', 126, 127, 'bytes'),
     mapField('upper_bounds', 128, 'k129_v130', 129, 130, 'bytes'),
+    {
+      name: 'split_offsets',
+      type: ['null', { type: 'array', items: 'long', 'element-id': 133 }],
+      default: null,
+      'field-id': 132,
+    },
     { name: 'sort_order_id', type: ['null', 'int'], default: null, 'field-id': 140 },
   ]
   if (manifestContent === 1) {
@@ -236,6 +242,9 @@ export function writeDeleteManifest({ writer, schema, partitionSpec, snapshotId,
 export function writeExistingDataManifest({ writer, schema, partitionSpec, entries, formatVersion = 2 }) {
   const records = entries.map(entry => {
     const dataFile = entry.data_file
+    if (entry.status === 2) {
+      throw new Error('writeExistingDataManifest cannot rewrite deleted entries as existing')
+    }
     if (dataFile.content !== 0) {
       throw new Error(`writeExistingDataManifest expects data files (content=0), got content=${dataFile.content}`)
     }
@@ -346,6 +355,7 @@ function manifestEntryRecord(dataFile, schema, partitionSpec, snapshotId, format
     nan_value_counts: encodeMap(dataFile.nan_value_counts),
     lower_bounds: encodeMap(dataFile.lower_bounds),
     upper_bounds: encodeMap(dataFile.upper_bounds),
+    split_offsets: dataFile.split_offsets?.length ? dataFile.split_offsets : null,
     sort_order_id: dataFile.content === 1 ? null : dataFile.sort_order_id ?? 0,
   }
   if (manifestContent === 1) {

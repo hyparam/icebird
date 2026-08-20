@@ -210,6 +210,7 @@ describe('writeExistingDataManifest', () => {
         ...dataFile,
         value_counts: { 1: 3n, 2: 3n },
         lower_bounds: { 1: new Uint8Array([1, 0, 0, 0, 0, 0, 0, 0]) },
+        split_offsets: [4n, 100n],
       }],
     })
     const firstBuffer = first.getBuffer()
@@ -245,7 +246,17 @@ describe('writeExistingDataManifest', () => {
     })
     expect(records[0].data_file.value_counts).toEqual(decoded.data_file.value_counts)
     expect(records[0].data_file.lower_bounds).toEqual(decoded.data_file.lower_bounds)
+    expect(records[0].data_file.split_offsets).toEqual(decoded.data_file.split_offsets)
     expect(records[0].data_file.record_count).toBe(3n)
+  })
+
+  it('rejects deleted entries', () => {
+    expect(() => writeExistingDataManifest({
+      writer: new ByteWriter(),
+      schema,
+      partitionSpec: unpartitioned,
+      entries: [{ ...entry, status: 2 }],
+    })).toThrow('writeExistingDataManifest cannot rewrite deleted entries as existing')
   })
 
   it('rejects delete files', () => {
