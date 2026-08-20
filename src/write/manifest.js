@@ -124,14 +124,18 @@ function icebergSchemaJson(schema) {
 
 /**
  * Encode an Iceberg stat map as an Avro array of {key, value} records,
- * or null if the input has no entries.
+ * or null if the input has no entries. Entries decoded by the reader already
+ * carry that array form (see `boundForField` in prune.js), so the carry-over
+ * writers pass one straight back through; hand-built entries use a plain
+ * `Record<fieldId, value>`.
  *
  * @template V
- * @param {Record<number, V>|undefined} m
+ * @param {Record<number, V>|{key: number, value: V}[]|undefined} m
  * @returns {{key: number, value: V}[]|null}
  */
 function encodeMap(m) {
   if (!m) return null
+  if (Array.isArray(m)) return m.length ? m : null
   const entries = Object.entries(m)
   if (!entries.length) return null
   return entries.map(([k, value]) => ({ key: Number(k), value }))
