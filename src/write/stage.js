@@ -201,6 +201,9 @@ export async function stageSnapshotForAppend({ tableUrl, metadata, prepared, res
     records: BigInt(prevSummary?.['total-records'] ?? '0'),
     size: BigInt(prevSummary?.['total-files-size'] ?? '0'),
     files: BigInt(prevSummary?.['total-data-files'] ?? '0'),
+    deleteFiles: BigInt(prevSummary?.['total-delete-files'] ?? '0'),
+    positionDeletes: BigInt(prevSummary?.['total-position-deletes'] ?? '0'),
+    equalityDeletes: BigInt(prevSummary?.['total-equality-deletes'] ?? '0'),
   }
   /** @type {Snapshot['summary']} */
   const summary = {
@@ -212,9 +215,9 @@ export async function stageSnapshotForAppend({ tableUrl, metadata, prepared, res
     'total-records': String(prevTotals.records + BigInt(prepared.recordsCount)),
     'total-files-size': String(prevTotals.size + prepared.addedFilesSize),
     'total-data-files': String(prevTotals.files + BigInt(prepared.addedDataFilesCount)),
-    'total-delete-files': '0',
-    'total-position-deletes': '0',
-    'total-equality-deletes': '0',
+    'total-delete-files': String(prevTotals.deleteFiles),
+    'total-position-deletes': String(prevTotals.positionDeletes),
+    'total-equality-deletes': String(prevTotals.equalityDeletes),
   }
   return await buildSnapshotUpdate({
     tableUrl, metadata, resolver,

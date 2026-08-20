@@ -264,19 +264,29 @@ describe('icebergDelete', () => {
     ]
     await icebergAppend({ catalog, tableUrl, records })
     const dataPath = [...findDataFiles({ files })][0]
-    const committed = await icebergDelete({
+    const afterDelete = await icebergDelete({
       catalog, tableUrl,
       deletes: [{ file_path: dataPath, pos: 1 }],
     })
 
-    expect(committed.snapshots).toHaveLength(2)
-    expect(committed.snapshots?.[1].summary.operation).toBe('delete')
-    expect(committed.snapshots?.[1].summary['added-position-deletes']).toBe('1')
+    expect(afterDelete.snapshots).toHaveLength(2)
+    expect(afterDelete.snapshots?.[1].summary.operation).toBe('delete')
+    expect(afterDelete.snapshots?.[1].summary['added-position-deletes']).toBe('1')
+
+    const committed = await icebergAppend({
+      catalog, tableUrl,
+      records: [{ id: 4n, name: 'dave' }],
+    })
+    const summary = committed.snapshots?.[2].summary
+    expect(summary?.['total-delete-files']).toBe('1')
+    expect(summary?.['total-position-deletes']).toBe('1')
+    expect(summary?.['total-equality-deletes']).toBe('0')
 
     const read = await icebergRead({ tableUrl, metadata: committed, resolver })
     expect(read).toEqual([
       { id: 1n, name: 'alice' },
       { id: 3n, name: 'carol' },
+      { id: 4n, name: 'dave' },
     ])
   })
 
