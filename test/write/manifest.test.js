@@ -45,6 +45,7 @@ describe('writeDataManifest', () => {
     const reader = { view: new DataView(buffer), offset: 0 }
     const { metadata, syncMarker } = await avroMetadata(reader)
     expect(metadata['format-version']).toBe('2')
+    expect(metadata['schema-id']).toBe('0')
     expect(metadata.content).toBe('data')
     expect(metadata['partition-spec']).toBe('[]')
     expect(metadata['partition-spec-id']).toBe('0')
@@ -94,6 +95,7 @@ describe('writeDataManifest', () => {
     const reader = { view: new DataView(buffer), offset: 0 }
     const { metadata, syncMarker } = await avroMetadata(reader)
     expect(metadata['format-version']).toBe('3')
+    expect(metadata['schema-id']).toBe('0')
 
     const records = await avroRead({ reader, metadata, syncMarker })
     expect(records[0].data_file.first_row_id).toBeUndefined()
@@ -163,6 +165,7 @@ describe('writeExistingDataManifest', () => {
     const reader = { view: new DataView(buffer), offset: 0 }
     const { metadata, syncMarker } = await avroMetadata(reader)
     expect(metadata.content).toBe('data')
+    expect(metadata['schema-id']).toBe('0')
 
     const records = await avroRead({ reader, metadata, syncMarker })
     expect(records).toHaveLength(1)
@@ -191,6 +194,7 @@ describe('writeExistingDataManifest', () => {
 
     const reader = { view: new DataView(buffer), offset: 0 }
     const { metadata, syncMarker } = await avroMetadata(reader)
+    expect(metadata['schema-id']).toBe('0')
     const records = await avroRead({ reader, metadata, syncMarker })
     expect(records[0].data_file.first_row_id).toBe(1000n)
   })

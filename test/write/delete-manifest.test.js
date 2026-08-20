@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { ByteWriter } from 'hyparquet-writer'
-import { writeDataManifest, writeDeleteManifest } from '../../src/write/manifest.js'
+import { writeDataManifest, writeDeleteManifest, writeExistingDeleteManifest } from '../../src/write/manifest.js'
 import { avroMetadata } from '../../src/avro/avro.metadata.js'
 import { avroRead } from '../../src/avro/avro.read.js'
 
 /**
- * @import {DataFile, PartitionSpec, Schema} from '../../src/types.js'
+ * @import {DataFile, ManifestEntry, PartitionSpec, Schema} from '../../src/types.js'
  */
 
 describe('writeDeleteManifest', () => {
@@ -49,6 +49,7 @@ describe('writeDeleteManifest', () => {
     const reader = { view: new DataView(buffer), offset: 0 }
     const { metadata, syncMarker } = await avroMetadata(reader)
     expect(metadata['format-version']).toBe('2')
+    expect(metadata['schema-id']).toBe('0')
     expect(metadata.content).toBe('deletes')
     expect(metadata['partition-spec']).toBe('[]')
 
@@ -108,6 +109,7 @@ describe('writeDeleteManifest', () => {
     const reader = { view: new DataView(writer.getBuffer()), offset: 0 }
     const { metadata, syncMarker } = await avroMetadata(reader)
     expect(metadata['format-version']).toBe('3')
+    expect(metadata['schema-id']).toBe('0')
     const records = await avroRead({ reader, metadata, syncMarker })
     expect(records[0].data_file.content_offset).toBe(4n)
     expect(records[0].data_file.content_size_in_bytes).toBe(64n)
@@ -169,5 +171,76 @@ describe('writeDeleteManifest', () => {
       snapshotId: 6n,
       dataFiles: [positionDeleteFile],
     })).toThrow('writeDataManifest expects data files')
+  })
+
+  it('writes required metadata for existing v2 delete entries', async () => {
+    const writer = new ByteWriter()
+    /** @type {ManifestEntry} */
+    const entry = {
+      status: 1,
+      snapshot_id: 111n,
+      sequence_number: 7n,
+      file_sequence_number: 7n,
+      partition_spec_id: 0,
+      data_file: positionDeleteFile,
+    }
+    writeExistingDeleteManifest({
+      writer,
+      schema,
+      partitionSpec: unpartitioned,
+      entries: [entry],
+    })
+    const reader = { view: new DataView(writer.getBuffer()), offset: 0 }
+    const { metadata, syncMarker } = await avroMetadata(reader)
+    expect(metadata['format-version']).toBe('2')
+    expect(metadata['schema-id']).toBe('0')
+    expect(metadata.content).toBe('deletes')
+
+    const records = await avroRead({ reader, metadata, syncMarker })
+    expect(records[0]).toMatchObject({
+      status: 0,
+      snapshot_id: 111n,
+      sequence_number: 7n,
+      file_sequence_number: 7n,
+    })
+  })
+
+  it('writes required metadata for existing v3 delete entries', async () => {
+    const writer = new ByteWriter()
+    /** @type {ManifestEntry} */
+    const entry = {
+      status: 1,
+      snapshot_id: 111n,
+      sequence_number: 7n,
+      file_sequence_number: 7n,
+      partition_spec_id: 0,
+      data_file: {
+        ...positionDeleteFile,
+        file_format: 'puffin',
+        file_path: 's3://bucket/table/data/abc.puffin',
+        content_offset: 4n,
+        content_size_in_bytes: 64n,
+      },
+    }
+    writeExistingDeleteManifest({
+      writer,
+      schema,
+      partitionSpec: unpartitioned,
+      entries: [entry],
+      formatVersion: 3,
+    })
+    const reader = { view: new DataView(writer.getBuffer()), offset: 0 }
+    const { metadata, syncMarker } = await avroMetadata(reader)
+    expect(metadata['format-version']).toBe('3')
+    expect(metadata['schema-id']).toBe('0')
+    expect(metadata.content).toBe('deletes')
+
+    const records = await avroRead({ reader, metadata, syncMarker })
+    expect(records[0]).toMatchObject({
+      status: 0,
+      snapshot_id: 111n,
+      sequence_number: 7n,
+      file_sequence_number: 7n,
+    })
   })
 })

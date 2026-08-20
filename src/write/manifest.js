@@ -174,6 +174,7 @@ export function writeDataManifest({ writer, schema, partitionSpec, snapshotId, d
     records,
     metadata: {
       'format-version': String(formatVersion),
+      'schema-id': String(schema['schema-id']),
       content: 'data',
       schema: icebergSchemaJson(schema),
       'partition-spec': partitionSpecJson(partitionSpec),
@@ -214,6 +215,7 @@ export function writeDeleteManifest({ writer, schema, partitionSpec, snapshotId,
     records,
     metadata: {
       'format-version': String(formatVersion),
+      'schema-id': String(schema['schema-id']),
       content: 'deletes',
       schema: icebergSchemaJson(schema),
       'partition-spec': partitionSpecJson(partitionSpec),
@@ -271,6 +273,7 @@ export function writeExistingDataManifest({ writer, schema, partitionSpec, entri
     records,
     metadata: {
       'format-version': String(formatVersion),
+      'schema-id': String(schema['schema-id']),
       content: 'data',
       schema: icebergSchemaJson(schema),
       'partition-spec': partitionSpecJson(partitionSpec),
@@ -316,6 +319,7 @@ export function writeExistingDeleteManifest({ writer, schema, partitionSpec, ent
     records,
     metadata: {
       'format-version': String(formatVersion),
+      'schema-id': String(schema['schema-id']),
       content: 'deletes',
       schema: icebergSchemaJson(schema),
       'partition-spec': partitionSpecJson(partitionSpec),
