@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import fs from 'fs'
 import { icebergManifests } from '../src/manifest.js'
 import { icebergMetadata } from '../src/metadata.js'
-import { localResolver } from './helpers.js'
+import { writeDataManifest } from '../src/write/manifest.js'
+import { localResolver, memResolver } from './helpers.js'
 
 describe('Iceberg Manifests', () => {
   const tableUrl = 's3://hyperparam-iceberg/spark/bunnies'
@@ -90,5 +91,44 @@ describe('Iceberg Manifests', () => {
 
     expect(manifests).toHaveLength(1)
     expect(calls).toEqual([{ url: manifestPath, byteLength: manifestLength }])
+  })
+
+  it('inherits a null entry snapshot id from the manifest list', async () => {
+    const { resolver: memory } = memResolver()
+    const manifestPath = 'http://test/inherited-snapshot-id.avro'
+    const writer = memory.writer?.(manifestPath)
+    if (!writer) throw new Error('expected resolver.writer')
+    await writeDataManifest({
+      writer,
+      schema: { type: 'struct', 'schema-id': 0, fields: [] },
+      partitionSpec: { 'spec-id': 0, fields: [] },
+      snapshotId: /** @type {any} */ (null),
+      dataFiles: [{
+        content: 0,
+        file_path: 'http://test/data.parquet',
+        file_format: 'parquet',
+        partition: {},
+        record_count: 1n,
+        file_size_in_bytes: 1n,
+      }],
+    })
+
+    const metadata = /** @type {any} */ ({
+      'current-snapshot-id': 77,
+      snapshots: [{
+        'snapshot-id': 77,
+        manifests: [{
+          manifest_path: manifestPath,
+          manifest_length: BigInt(writer.offset),
+          partition_spec_id: 0,
+          content: 0,
+          sequence_number: 5n,
+          added_snapshot_id: 77n,
+        }],
+      }],
+    })
+
+    const manifests = await icebergManifests({ metadata, resolver: memory })
+    expect(manifests[0].entries[0].snapshot_id).toBe(77n)
   })
 })

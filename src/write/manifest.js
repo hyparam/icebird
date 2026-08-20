@@ -222,7 +222,8 @@ export function writeDeleteManifest({ writer, schema, partitionSpec, snapshotId,
  * merging many small manifests into one, for instance. Carried-over files
  * must keep their original data and file sequence numbers rather than
  * inheriting the rewriting snapshot's, which would misattribute their data
- * sequence numbers and change which delete files apply to them.
+ * sequence numbers and change which delete files apply to them. All entries
+ * must belong to the supplied partition spec.
  *
  * @param {object} options
  * @param {Writer} options.writer
@@ -238,11 +239,17 @@ export function writeExistingDataManifest({ writer, schema, partitionSpec, entri
     if (dataFile.content !== 0) {
       throw new Error(`writeExistingDataManifest expects data files (content=0), got content=${dataFile.content}`)
     }
+    if (entry.partition_spec_id !== partitionSpec['spec-id']) {
+      throw new Error(`existing data entry partition spec ${entry.partition_spec_id} does not match ${partitionSpec['spec-id']}`)
+    }
     const record = manifestEntryRecord(dataFile, schema, partitionSpec, 0n, formatVersion, 0)
     record.status = 0
     record.snapshot_id = entry.snapshot_id ?? null
     record.sequence_number = entry.sequence_number ?? null
     record.file_sequence_number = entry.file_sequence_number ?? null
+    if (record.snapshot_id == null) {
+      throw new Error('existing data manifest entry missing snapshot id')
+    }
     if (record.sequence_number == null || record.file_sequence_number == null) {
       throw new Error('existing data manifest entry missing sequence numbers')
     }

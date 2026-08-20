@@ -63,6 +63,7 @@ async function fetchManifests(manifests, resolver) {
     // Inherit sequence number from manifest if not present in entry
     for (const entry of entries) {
       entry.partition_spec_id = manifest.partition_spec_id ?? 0
+      if (entry.snapshot_id == null) entry.snapshot_id = manifest.added_snapshot_id
 
       if (entry.sequence_number === undefined) {
         // When reading v1 manifests with no sequence number column,

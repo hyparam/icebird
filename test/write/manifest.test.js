@@ -151,6 +151,7 @@ describe('writeExistingDataManifest', () => {
     snapshot_id: 111n,
     sequence_number: 7n,
     file_sequence_number: 7n,
+    partition_spec_id: 0,
     data_file: dataFile,
   }
 
@@ -226,7 +227,12 @@ describe('writeExistingDataManifest', () => {
       writer: second,
       schema,
       partitionSpec: unpartitioned,
-      entries: [/** @type {ManifestEntry} */ ({ ...decoded, sequence_number: 7n, file_sequence_number: 7n })],
+      entries: [/** @type {ManifestEntry} */ ({
+        ...decoded,
+        sequence_number: 7n,
+        file_sequence_number: 7n,
+        partition_spec_id: 0,
+      })],
     })
     const secondBuffer = second.getBuffer()
 
@@ -258,5 +264,23 @@ describe('writeExistingDataManifest', () => {
       partitionSpec: unpartitioned,
       entries: [{ ...entry, file_sequence_number: undefined }],
     })).toThrow('existing data manifest entry missing sequence numbers')
+  })
+
+  it('rejects entries without a materialized snapshot id', () => {
+    expect(() => writeExistingDataManifest({
+      writer: new ByteWriter(),
+      schema,
+      partitionSpec: unpartitioned,
+      entries: [{ ...entry, snapshot_id: undefined }],
+    })).toThrow('existing data manifest entry missing snapshot id')
+  })
+
+  it('rejects entries from another partition spec', () => {
+    expect(() => writeExistingDataManifest({
+      writer: new ByteWriter(),
+      schema,
+      partitionSpec: unpartitioned,
+      entries: [{ ...entry, partition_spec_id: 1 }],
+    })).toThrow('existing data entry partition spec 1 does not match 0')
   })
 })
