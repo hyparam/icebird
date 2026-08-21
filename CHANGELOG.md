@@ -1,5 +1,9 @@
 # Icebird Changelog
 
+## [0.8.25]
+ - Reads now push row ranges down into hyparquet's scan candidates, so only the byte ranges that survive filter and delete pruning are fetched, while Iceberg position and equality deletes are still applied
+ - Footer fetches adapt to small parquet files instead of over-requesting
+
 ## [0.8.24]
  - Add `writeExistingDataManifest` for rewriting manifests that carry data files forward as EXISTING entries, preserving their snapshot id and sequence numbers so the delete files that apply to them do not change
  - Fix carrying over manifest entries that have stats: `writeExistingDeleteManifest` threw "expected bigint value" when an entry's stat maps came back from the Avro reader as arrays of key/value records
