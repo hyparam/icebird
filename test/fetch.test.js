@@ -1,7 +1,9 @@
+import { readFile } from 'node:fs/promises'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cachingResolver, s3ParseUrl, urlResolver } from '../src/fetch.js'
+import { cachingResolver, readParquetMetadata, s3ParseUrl, urlResolver } from '../src/fetch.js'
 
 /**
+ * @import {AsyncBuffer} from 'hyparquet'
  * @import {Resolver} from '../src/types.js'
  */
 
@@ -30,6 +32,41 @@ function requireWriter(resolver) {
   if (!resolver.writer) throw new Error('resolver.writer is required')
   return resolver.writer
 }
+
+describe('readParquetMetadata', () => {
+  it('uses a smaller initial footer fetch below 8 MiB', async () => {
+    const parquet = await readFile(new URL(
+      './files/hyperparam-iceberg/athena/example/data/sNoYhg/20250401_023623_00108_u4nkm-ee75816e-a3dd-4356-97b3-1c6d0128a41f.parquet',
+      import.meta.url
+    ))
+    const tail = new Uint8Array(512 * 1024)
+    tail.set(parquet, tail.byteLength - parquet.byteLength)
+
+    /**
+     * @param {number} byteLength
+     * @returns {Promise<number>}
+     */
+    async function initialFetchSize(byteLength) {
+      /** @type {[number, number][]} */
+      const slices = []
+      /** @type {AsyncBuffer} */
+      const file = {
+        byteLength,
+        slice(start, end = byteLength) {
+          slices.push([start, end])
+          const tailStart = byteLength - tail.byteLength
+          const bytes = tail.subarray(start - tailStart, end - tailStart)
+          return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+        },
+      }
+      await readParquetMetadata(file)
+      return slices[0][1] - slices[0][0]
+    }
+
+    await expect(initialFetchSize(8 * 1024 * 1024 - 1)).resolves.toBe(128 * 1024)
+    await expect(initialFetchSize(8 * 1024 * 1024)).resolves.toBe(512 * 1024)
+  })
+})
 
 describe('urlResolver.deleter', () => {
   afterEach(() => {

@@ -1,4 +1,4 @@
-import { asyncRow, rowsToBatches } from 'squirreling'
+import { asyncRow } from 'squirreling'
 import { fetchDeleteMaps, urlResolver } from '../fetch.js'
 import { icebergManifests, splitManifestEntries } from '../manifest.js'
 import { icebergMetadata } from '../metadata.js'
@@ -27,9 +27,9 @@ import { whereToParquetFilter } from './whereFilter.js'
  */
 
 /**
- * Creates a squirreling AsyncDataSource backed by an Iceberg table that streams
- * rows lazily from the underlying parquet data files (row group by row group,
- * row by row) instead of materializing everything up front.
+ * Creates a squirreling AsyncDataSource backed by an Iceberg table. Prepared
+ * scans expose lazy native column batches; legacy scan hooks stream materialized
+ * rows for compatibility.
  *
  * Metadata, manifests, schema, and delete maps are resolved once at
  * construction; each `scan()` walks the data files in record-count order and
@@ -39,11 +39,12 @@ import { whereToParquetFilter } from './whereFilter.js'
  *   lineage columns are read regardless when needed.
  * - WHERE prunes whole data files before they are opened, using each manifest
  *   entry's partition tuple and per-column `lower_bounds`/`upper_bounds`, and
- *   is pushed down to hyparquet (row-group pruning via statistics and bloom
- *   filters, plus per-row matching) when the expression can be fully converted
- *   to a parquet filter (comparisons, IN, AND/OR/NOT on identifier vs literal).
- *   Unsupported nodes (LIKE, functions, arithmetic, identifier vs identifier)
- *   leave WHERE for the engine to apply.
+ *   is passed to hyparquet for conservative row-group, bloom-filter, and page-
+ *   index pruning when the expression can be fully converted to a parquet
+ *   filter (comparisons, IN, AND/OR/NOT on identifier vs literal). Prepared
+ *   scans leave exact matching to the engine; legacy scans match retained rows
+ *   after recovering their physical positions. Unsupported nodes (LIKE,
+ *   functions, arithmetic, identifier vs identifier) stay in the engine.
  * - When WHERE is resolved at scan time (either absent or fully pushed) we
  *   cap the scan at `offset + limit` rows so the source terminates early.
  *   OFFSET is also pushed into the parquet seek, and the per-file read bounded
@@ -119,7 +120,6 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
         if (!field) throw new Error(`Prepared scan requested unknown field id ${demand.field}`)
         return field
       })
-      const requestedNames = requestedFields.map(field => field.name)
       const filter = whereToParquetFilter(request.filter)
       const scanEntries = filter
         ? dataEntries.filter(entry =>
@@ -142,11 +142,7 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
         },
         async *batches({ signal } = {}) {
           signal?.throwIfAborted()
-          if (hasDeletes) {
-            const legacy = thisSource.scan({ columns: requestedNames, signal })
-            yield* rowsToBatches(legacy.rows(), requestedNames, { signal })
-            return
-          }
+          const { positionDeletesMap, equalityDeleteGroups } = await deleteMapsPromise
           for (const entry of scanEntries) {
             signal?.throwIfAborted()
             yield* readDataFileBatches({
@@ -155,6 +151,9 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
               metadata: tableMetadata,
               resolver: fetchResolver,
               fields: requestedFields,
+              positionDeletesMap,
+              equalityDeleteGroups,
+              filter,
               signal,
             })
           }

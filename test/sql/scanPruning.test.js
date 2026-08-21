@@ -1,9 +1,9 @@
-import { collect } from 'squirreling'
+import { collect, readBatchColumn, valueAt } from 'squirreling'
 import { describe, expect, it, vi } from 'vitest'
 import { ByteWriter, parquetWrite } from 'hyparquet-writer'
 import { fileCatalogCommit } from '../../src/write/commit.js'
 import { icebergCreate } from '../../src/create.js'
-import { readDataFile } from '../../src/read.js'
+import { readDataFile, readDataFileBatches } from '../../src/read.js'
 import { icebergStageAppend } from '../../src/write/stage.js'
 import { icebergDataSource } from '../../src/sql/icebergDataSource.js'
 import { icebergQuery } from '../../src/sql/icebergQuery.js'
@@ -265,6 +265,29 @@ describe('#21 row-group pruning (readDataFile)', () => {
     return rows
   }
 
+  /**
+   * @param {{ resolver: Resolver, dataEntry: ManifestEntry, metadata: TableMetadata, schema: Schema }} f
+   * @param {any} filter
+   * @returns {Promise<any[]>}
+   */
+  async function readPreparedPayload(f, filter) {
+    const values = []
+    for await (const batch of readDataFileBatches({
+      dataEntry: f.dataEntry,
+      schema: f.schema,
+      metadata: f.metadata,
+      resolver: f.resolver,
+      fields: [{ id: 2, name: 'payload', dataType: { type: 'unknown' }, nullable: true }],
+      positionDeletesMap: new Map(),
+      equalityDeleteGroups: [],
+      filter,
+    })) {
+      const vector = await readBatchColumn({ batch, columnIndex: 0 })
+      for (let index = 0; index < vector.length; index++) values.push(valueAt(vector, index))
+    }
+    return values
+  }
+
   it('reads fewer bytes for a selective predicate on a multi-row-group file', async () => {
     // 8 single-row groups, each carrying a ~100KB payload so the file exceeds
     // the 512KB whole-file prefetch threshold; v ranges are [0]..[7].
@@ -280,6 +303,17 @@ describe('#21 row-group pruning (readDataFile)', () => {
     expect(selRows.length).toBe(1)
     expect(selRows[0].v).toBe(7)
     // Reads roughly one row group instead of eight.
+    expect(selective.dataBytes()).toBeLessThan(full.dataBytes() / 2)
+  })
+
+  it('prunes prepared ranges before decoding a deferred payload column', async () => {
+    const full = writeFile({ count: 8, rowGroupSize: 1, statistics: true, payloadBytes: 100_000 })
+    expect(await readPreparedPayload(full, undefined)).toHaveLength(8)
+
+    const selective = writeFile({ count: 8, rowGroupSize: 1, statistics: true, payloadBytes: 100_000 })
+    const payloads = await readPreparedPayload(selective, { v: { $eq: 7 } })
+    expect(payloads).toHaveLength(1)
+    expect(payloads[0]).toMatch(/^7x/)
     expect(selective.dataBytes()).toBeLessThan(full.dataBytes() / 2)
   })
 
