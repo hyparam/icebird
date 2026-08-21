@@ -121,6 +121,51 @@ describe.concurrent('icebergDataSource', () => {
     expect(result.every(row => typeof row['Breed Name'] === 'string')).toBe(true)
   })
 
+  it('applies position and equality deletes without falling back to legacy scan hooks', async () => {
+    const fixtures = [
+      {
+        tableUrl: sparkTableUrl,
+        metadataFileName: 'v3.metadata.json',
+        query: 'SELECT "Breed Name", "Popularity Rank" FROM bunnies',
+      },
+      {
+        tableUrl,
+        metadataFileName: 'v5.metadata.json',
+        query: 'SELECT "Breed Name", "Popularity Rank" FROM bunnies WHERE "Popularity Rank" > 10',
+      },
+    ]
+    for (const fixture of fixtures) {
+      const { query, ...sourceOptions } = fixture
+      const source = await icebergDataSource({ ...sourceOptions, resolver })
+      const where = fixture.metadataFileName === 'v5.metadata.json' ? /** @type {ExprNode} */ ({
+        type: 'binary',
+        op: '>',
+        left: { type: 'identifier', name: 'Popularity Rank' },
+        right: { type: 'literal', value: 10n },
+      }) : undefined
+      const expected = []
+      for await (const row of source.scan({
+        columns: ['Breed Name', 'Popularity Rank'],
+        where,
+      }).rows()) expected.push(row.resolved)
+      /** @type {AsyncDataSource} */
+      const preparedOnly = {
+        ...source,
+        scan() {
+          throw new Error('legacy scan should not run')
+        },
+        scanColumn() {
+          throw new Error('legacy scanColumn should not run')
+        },
+      }
+      const result = await collect(executeSql({
+        tables: { bunnies: preparedOnly },
+        query,
+      }))
+      expect(result).toEqual(expected)
+    }
+  })
+
   it('streams all rows via scan()', async () => {
     const source = await icebergDataSource({
       tableUrl,
@@ -279,6 +324,31 @@ describe.concurrent('icebergDataSource', () => {
     for await (const row of rows()) collected.push(row.resolved)
     // v4 has 15 rows after deletes; the predicate covers them all.
     expect(collected).toHaveLength(15)
+  })
+
+  it('retains physical positions while filtering a file with position deletes', async () => {
+    const source = await icebergDataSource({
+      tableUrl: sparkTableUrl,
+      resolver,
+      metadataFileName: 'v3.metadata.json',
+    })
+    const all = []
+    for await (const row of source.scan({}).rows()) all.push(row.resolved)
+    const expected = all.filter(row => /** @type {bigint} */ (row?.['Popularity Rank']) > 10n)
+    const where = /** @type {ExprNode} */ ({
+      type: 'binary',
+      op: '>',
+      left: { type: 'identifier', name: 'Popularity Rank' },
+      right: { type: 'literal', value: 10n },
+    })
+    const plan = source.scan({ where })
+    expect(plan.appliedWhere).toBe(true)
+    const filtered = []
+    for await (const row of plan.rows()) filtered.push(row.resolved)
+
+    // The deleted physical row precedes every match. Filtering first used to
+    // compact the matches and make the first surviving row look like pos 0.
+    expect(filtered).toEqual(expected)
   })
 
   it('respects row-level deletes (v4 has 15 rows after deletes)', async () => {

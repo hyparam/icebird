@@ -1,14 +1,13 @@
-import { cachedAsyncBuffer, flatten, parquetMetadataAsync, parquetReadObjects, parquetSchema } from 'hyparquet'
+import { cachedAsyncBuffer, parquetReadObjects, parquetScan, parquetSchema } from 'hyparquet'
 import { compressors } from 'hyparquet-compressors'
-import { parquetReadAsync } from 'hyparquet/src/read.js'
-import { assembleAsync } from 'hyparquet/src/rowgroup.js'
+import { columnsNeededForFilter, matchFilter } from 'hyparquet/src/filter.js'
+import { concat } from 'hyparquet/src/utils.js'
 import { selectVector } from 'squirreling'
-import { fetchDeleteMaps, urlResolver } from './fetch.js'
+import { fetchDeleteMaps, readParquetMetadata, urlResolver } from './fetch.js'
 import { icebergMetadata } from './metadata.js'
 import { icebergManifests, splitManifestEntries } from './manifest.js'
 import { deleteFileAppliesToDataEntry } from './delete.js'
 import { equalityMatch, sanitize } from './utils.js'
-import { concat } from 'hyparquet/src/utils.js'
 
 const DEFAULT_ROW_GROUP_CONCURRENCY = 4
 
@@ -16,7 +15,7 @@ const DEFAULT_ROW_GROUP_CONCURRENCY = 4
  * Reads data from the Iceberg table with optional row-level delete processing.
  * Row indices are zero-based and rowEnd is exclusive.
  *
- * @import {ParquetQueryFilter} from 'hyparquet'
+ * @import {DecodedArray, ParquetQueryFilter, ParquetScan} from 'hyparquet'
  * @import {Field, Lister, NameMapping, Resolver, Schema, TableMetadata} from '../src/types.js'
  * @param {object} options
  * @param {string} options.tableUrl - Base URL or path of the table.
@@ -27,7 +26,7 @@ const DEFAULT_ROW_GROUP_CONCURRENCY = 4
  * @param {number | bigint} [options.snapshotId] - Optional snapshot id for time travel; defaults to the current snapshot.
  * @param {Resolver} [options.resolver] - Resolves a path to an AsyncBuffer.
  * @param {Lister} [options.lister] - Lists files in a directory.
- * @param {number} [options.rowGroupConcurrency] - Per-file row-group read concurrency for materialized reads. Defaults to 4.
+ * @param {number} [options.rowGroupConcurrency] - Per-file retained-range read concurrency for materialized reads. Defaults to 4.
  * @returns {Promise<Array<Record<string, any>>>} Array of data records.
  */
 export async function icebergRead({
@@ -146,13 +145,13 @@ export async function icebergRead({
  * @param {TableMetadata} options.metadata
  * @param {Resolver} options.resolver
  * @param {boolean} options.rowLineage
- * @param {Map<string, Array<{deleteEntry: ManifestEntry, positions: Set<bigint>}>>} options.positionDeletesMap
- * @param {Array<{deleteEntry: ManifestEntry, rows: Record<string, any>[]}>} options.equalityDeleteGroups
+ * @param {Map<string, Array<{deleteEntry: ManifestEntry, positions: Set<bigint>}>>} [options.positionDeletesMap]
+ * @param {Array<{deleteEntry: ManifestEntry, rows: Record<string, any>[]}>} [options.equalityDeleteGroups]
  * @param {string[]} [options.wantedColumns] - iceberg field names to emit; if undefined, emit all current-schema fields
- * @param {number} [options.rowGroupConcurrency] - Number of row groups to read concurrently while preserving yield order. Defaults to 1.
+ * @param {number} [options.rowGroupConcurrency] - Number of retained parquet ranges to read concurrently while preserving yield order. Defaults to 1.
  * @param {ParquetQueryFilter} [options.filter] - Predicate keyed by iceberg field name. Column names are remapped to physical parquet names per-file; the filter is dropped for this file if any referenced column has no parquet column (e.g. iceberg-added column with a default value).
  * @param {AbortSignal} [options.signal]
- * @returns {AsyncGenerator<Array<Record<string, any>>>} batches of rows, one per parquet row group
+ * @returns {AsyncGenerator<Array<Record<string, any>>>} batches of rows, one per retained parquet range
  */
 export async function* readDataFile({
   dataEntry,
@@ -162,8 +161,8 @@ export async function* readDataFile({
   metadata,
   resolver,
   rowLineage,
-  positionDeletesMap,
-  equalityDeleteGroups,
+  positionDeletesMap = new Map(),
+  equalityDeleteGroups = [],
   wantedColumns,
   rowGroupConcurrency = 1,
   filter,
@@ -186,7 +185,7 @@ export async function* readDataFile({
   const asyncBuffer = cachedAsyncBuffer(resolved)
 
   // Read iceberg schema from parquet metadata
-  const parquetMetadata = await parquetMetadataAsync(asyncBuffer)
+  const parquetMetadata = await readParquetMetadata(asyncBuffer)
   const kv = parquetMetadata.key_value_metadata?.find(k => k.key === 'iceberg.schema')
   /** @type {Schema} */
   let parquetIcebergSchema
@@ -296,25 +295,45 @@ export async function* readDataFile({
   }
   const parquetFilter = filter ? remapFilterColumns(filter, icebergToParquet) : undefined
 
+  // Keep pruning and exact matching separate. parquetScan retains absolute
+  // physical ranges after row-group, bloom-filter, and page-index pruning;
+  // reading those ranges without a filter preserves the row positions needed
+  // by Iceberg position deletes. Exact matching happens below after `pos` has
+  // been recovered.
+  const readColumns = [...parquetColumns]
+  if (parquetFilter) {
+    for (const column of columnsNeededForFilter(parquetFilter)) {
+      if (!readColumns.includes(column)) readColumns.push(column)
+    }
+  }
+  const scan = await parquetScan({
+    file: asyncBuffer,
+    metadata: parquetMetadata,
+    columns: readColumns,
+    pruningFilter: parquetFilter,
+    rowStart: fileRowStart,
+    rowEnd: fileRowEnd,
+    compressors,
+    filterStrict: false,
+    useBloomFilters: true,
+    usePageIndex: true,
+    utf8: false,
+  })
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+
   /**
    * @param {{readStart: number, readEnd: number}} range
    * @returns {Promise<Array<Record<string, any>>>}
    */
-  async function readRowGroupRange({ readStart, readEnd }) {
+  async function readCandidateRange({ readStart, readEnd }) {
     const rows = await parquetReadObjects({
       file: asyncBuffer,
       metadata: parquetMetadata,
-      columns: parquetColumns,
+      columns: readColumns,
       rowStart: readStart,
       rowEnd: readEnd,
       compressors,
-      filter: parquetFilter,
-      // filterStrict:false matches the squirreling/parquet convention used
-      // elsewhere: hyparquet uses the filter for row-group/page pruning and
-      // per-row matching, but is permissive on edge cases (mixed bigint
-      // /number, nulls). The engine re-checks unless we set appliedWhere.
-      filterStrict: false,
-      useBloomFilters: true,
+      useOffsetIndex: true,
       // Iceberg `binary`/`fixed[N]` columns are plain BYTE_ARRAY/FIXED_LEN_BYTE_ARRAY
       // with no UTF8/STRING annotation; hyparquet's default would silently decode
       // them as strings. Disabling its global utf8 fallback preserves bytes.
@@ -328,6 +347,7 @@ export async function* readDataFile({
     for (let idx = 0; idx < rows.length; idx++) {
       const row = rows[idx]
       const pos = BigInt(readStart + idx)
+      if (parquetFilter && !matchFilter(row, parquetFilter, false)) continue
       if (positionDeletes.has(pos)) continue
       if (applicableEqualityGroups.some(group =>
         group.rows.some(predicate => equalityMatch(row, predicate, dataColumnNamesById))
@@ -404,31 +424,20 @@ export async function* readDataFile({
     return batch
   }
 
-  // Stream row groups, intersecting each with [fileRowStart, fileRowEnd)
+  // Stream retained scan candidates. These normally follow row-group
+  // boundaries, but page-index pruning can narrow them to smaller physical
+  // ranges while retaining absolute file coordinates.
   /** @type {{readStart: number, readEnd: number}[]} */
-  const rowGroupRanges = []
-  let groupStart = 0
-  for (const rowGroup of parquetMetadata.row_groups) {
-    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
-    const rowCount = Number(rowGroup.num_rows)
-    const groupEnd = groupStart + rowCount
-    if (groupEnd <= fileRowStart) {
-      groupStart = groupEnd
-      continue
-    }
-    if (groupStart >= fileRowEnd) break
-    const readStart = Math.max(groupStart, fileRowStart)
-    const readEnd = Math.min(groupEnd, fileRowEnd)
-    rowGroupRanges.push({ readStart, readEnd })
-
-    groupStart = groupEnd
-  }
+  const candidateRanges = scan.ranges.map(({ rowStart, rowEnd }) => ({
+    readStart: rowStart,
+    readEnd: rowEnd,
+  }))
 
   const concurrency = normalizeRowGroupConcurrency(rowGroupConcurrency)
-  if (concurrency === 1 || rowGroupRanges.length <= 1) {
-    for (const range of rowGroupRanges) {
+  if (concurrency === 1 || candidateRanges.length <= 1) {
+    for (const range of candidateRanges) {
       if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
-      const batch = await readRowGroupRange(range)
+      const batch = await readCandidateRange(range)
       if (batch.length > 0) yield batch
     }
     return
@@ -440,22 +449,22 @@ export async function* readDataFile({
   let nextYield = 0
   /** @param {number} index */
   function startTask(index) {
-    const task = readRowGroupRange(rowGroupRanges[index])
+    const task = readCandidateRange(candidateRanges[index])
       .then(batch => ({ batch }), error => ({ error }))
     tasks.set(index, task)
   }
-  while (nextStart < rowGroupRanges.length && tasks.size < concurrency) {
+  while (nextStart < candidateRanges.length && tasks.size < concurrency) {
     startTask(nextStart)
     nextStart++
   }
-  while (nextYield < rowGroupRanges.length) {
+  while (nextYield < candidateRanges.length) {
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
     const task = tasks.get(nextYield)
     if (!task) throw new Error('internal row group scheduling error')
     const result = await task
     tasks.delete(nextYield)
     if (result.error) throw result.error
-    while (nextStart < rowGroupRanges.length && tasks.size < concurrency) {
+    while (nextStart < candidateRanges.length && tasks.size < concurrency) {
       startTask(nextStart)
       nextStart++
     }
@@ -465,16 +474,12 @@ export async function* readDataFile({
 }
 
 /**
- * Stream native squirreling batches from one delete-free parquet data file.
- * The batch envelope follows parquet row-group boundaries, while every
- * requested column remains deferred until the engine asks for it. Deferred
- * reads receive the engine's effective row selection, allowing a selective
- * predicate and LIMIT to avoid decoding unused values from wide columns.
- *
- * Delete-bearing tables intentionally use the legacy row scanner in
- * `icebergDataSource`: position and equality deletes need coordinated access
- * to multiple columns and row positions, which this independent-column reader
- * does not attempt to reproduce.
+ * Stream native squirreling batches from one parquet data file. Each batch is
+ * a physical candidate range retained by parquet row-group/page pruning.
+ * Position and equality deletes become the batch's initial row selection,
+ * while requested payload columns remain deferred until the engine asks for
+ * them. Later WHERE and LIMIT selections compose over that delete selection
+ * without losing absolute file positions.
  *
  * @import {AsyncBatch, ColumnVector, Field as BatchField, RowSelection, SqlPrimitive} from 'squirreling'
  * @param {object} options
@@ -483,6 +488,9 @@ export async function* readDataFile({
  * @param {TableMetadata} options.metadata
  * @param {Resolver} options.resolver
  * @param {readonly BatchField[]} options.fields - Requested fields in batch-column order.
+ * @param {Map<string, Array<{deleteEntry: ManifestEntry, positions: Set<bigint>}>>} [options.positionDeletesMap]
+ * @param {Array<{deleteEntry: ManifestEntry, rows: Record<string, any>[]}>} [options.equalityDeleteGroups]
+ * @param {ParquetQueryFilter} [options.filter] - Conservative pruning predicate keyed by Iceberg field name. Exact matching remains in the query engine.
  * @param {AbortSignal} [options.signal]
  * @returns {AsyncGenerator<AsyncBatch>}
  */
@@ -492,6 +500,9 @@ export async function* readDataFileBatches({
   metadata,
   resolver,
   fields,
+  positionDeletesMap = new Map(),
+  equalityDeleteGroups = [],
+  filter,
   signal,
 }) {
   const { data_file, partition_spec_id } = dataEntry
@@ -500,7 +511,7 @@ export async function* readDataFileBatches({
   const partitionSpec = metadata['partition-specs'].find(s => s['spec-id'] === partition_spec_id)
   const resolved = await resolver.reader(data_file.file_path, Number(data_file.file_size_in_bytes))
   const file = cachedAsyncBuffer(resolved)
-  const parquetMetadata = await parquetMetadataAsync(file)
+  const parquetMetadata = await readParquetMetadata(file)
   signal?.throwIfAborted()
 
   const kv = parquetMetadata.key_value_metadata?.find(k => k.key === 'iceberg.schema')
@@ -520,23 +531,41 @@ export async function* readDataFileBatches({
     ? JSON.parse(metadata.properties['schema.name-mapping.default'])
     : []
 
-  /** @type {Map<number, {name?: string, constant?: SqlPrimitive}>} */
-  const fieldSources = new Map()
-  for (const requested of fields) {
-    const field = schema.fields.find(candidate => candidate.id === requested.id)
-    if (!field) throw new Error(`Iceberg field id ${requested.id} not found`)
+  /** @type {Record<number, string>} */
+  const dataColumnNamesById = {}
+  for (const parquetField of parquetIcebergSchema.fields) {
+    const name = sanitize(parquetField.name)
+    if (physicalNames.has(name)) dataColumnNamesById[parquetField.id] = name
+  }
+
+  /** @type {Map<number, string>} */
+  const physicalNamesById = new Map()
+  /** @type {Record<string, string>} */
+  const icebergToParquet = {}
+  for (const field of schema.fields) {
     const parquetField = parquetIcebergSchema.fields.find(candidate => candidate.id === field.id)
     let physicalName = parquetField && field.type !== 'unknown'
       ? sanitize(parquetField.name)
       : undefined
     if (physicalName && !physicalNames.has(physicalName)) physicalName = undefined
-
     if (!physicalName) {
       const mapping = nameMappingById(nameMappings, field.id)
       physicalName = mapping?.names
         .map(name => sanitize(name))
         .find(name => physicalNames.has(name))
     }
+    if (!physicalName) continue
+    physicalNamesById.set(field.id, physicalName)
+    dataColumnNamesById[field.id] = physicalName
+    icebergToParquet[field.name] = physicalName
+  }
+
+  /** @type {Map<number, {name?: string, constant?: SqlPrimitive}>} */
+  const fieldSources = new Map()
+  for (const requested of fields) {
+    const field = schema.fields.find(candidate => candidate.id === requested.id)
+    if (!field) throw new Error(`Iceberg field id ${requested.id} not found`)
+    const physicalName = physicalNamesById.get(field.id)
     if (physicalName) {
       fieldSources.set(requested.id, { name: physicalName })
       continue
@@ -555,16 +584,67 @@ export async function* readDataFileBatches({
     fieldSources.set(requested.id, { constant: /** @type {SqlPrimitive} */ (constant) })
   }
 
-  const schemaTree = parquetSchema(parquetMetadata)
-  let groupStart = 0
-  for (const rowGroup of parquetMetadata.row_groups) {
+  /** @type {Set<bigint>} */
+  const positionDeletes = new Set()
+  const positionDeleteGroups = positionDeletesMap.get(data_file.file_path)
+  if (positionDeleteGroups) {
+    for (const group of positionDeleteGroups) {
+      if (!deleteFileAppliesToDataEntry(dataEntry, group.deleteEntry, metadata, 'position')) continue
+      for (const position of group.positions) positionDeletes.add(position)
+    }
+  }
+  const applicableEqualityGroups = equalityDeleteGroups.filter(group =>
+    deleteFileAppliesToDataEntry(dataEntry, group.deleteEntry, metadata, 'equality'))
+
+  const scanColumns = new Set()
+  const equalityDeleteColumns = new Set()
+  for (const source of fieldSources.values()) {
+    if (source.name) scanColumns.add(source.name)
+  }
+  for (const group of applicableEqualityGroups) {
+    for (const predicate of group.rows) {
+      for (const key of Object.keys(predicate)) {
+        const name = dataColumnNamesById[Number(key)] ?? key
+        if (physicalNames.has(name)) {
+          scanColumns.add(name)
+          equalityDeleteColumns.add(name)
+        }
+      }
+    }
+  }
+  const parquetFilter = filter ? remapFilterColumns(filter, icebergToParquet) : undefined
+  const scan = await parquetScan({
+    file,
+    metadata: parquetMetadata,
+    columns: [...scanColumns],
+    pruningFilter: parquetFilter,
+    compressors,
+    filterStrict: false,
+    useBloomFilters: true,
+    usePageIndex: true,
+    utf8: false,
+  })
+  signal?.throwIfAborted()
+  const positionDeletesByRange = groupPositionDeletes(scan.ranges, positionDeletes)
+
+  for (let rangeIndex = 0; rangeIndex < scan.ranges.length; rangeIndex++) {
+    const { rowStart: batchStart, rowEnd: batchEnd } = scan.ranges[rangeIndex]
     signal?.throwIfAborted()
-    const groupRows = Number(rowGroup.num_rows)
-    if (groupRows === 0) continue
-    const batchStart = groupStart
+    const batchRows = batchEnd - batchStart
+    const selection = await deleteSelection({
+      scan,
+      rowStart: batchStart,
+      rowEnd: batchEnd,
+      positionDeletes: positionDeletesByRange.get(rangeIndex),
+      equalityDeleteGroups: applicableEqualityGroups,
+      equalityColumnNames: [...equalityDeleteColumns],
+      dataColumnNamesById,
+      signal,
+    })
+    if (selectedRows(selection) === 0) continue
     /** @type {AsyncBatch} */
     const batch = {
-      selection: { type: 'all', length: groupRows },
+      selection,
       columns: fields.map(function batchColumn(field) {
         const source = fieldSources.get(field.id)
         if (!source) throw new Error(`Iceberg field id ${field.id} has no read source`)
@@ -572,7 +652,7 @@ export async function* readDataFileBatches({
           return {
             type: 'constant',
             value: source.constant ?? null,
-            length: groupRows,
+            length: batchRows,
           }
         }
         const columnName = source.name
@@ -589,14 +669,10 @@ export async function* readDataFileBatches({
               readSignal?.throwIfAborted()
               return selectDecodedVector(vector, selection, cachedRange.start)
             }
-            const values = readParquetColumnRange({
-              file,
-              parquetMetadata,
-              schemaTree,
-              columnName,
+            const values = scan.readColumn({
+              column: columnName,
               rowStart: batchStart + range.start,
               rowEnd: batchStart + range.end,
-              signal: readSignal,
             })
             const vector = values.then(decodedColumnVector)
             cachedRange = { ...range, vector }
@@ -606,63 +682,107 @@ export async function* readDataFileBatches({
       }),
     }
     yield batch
-    groupStart += groupRows
   }
 }
 
 /**
- * Read one physical top-level parquet column over an absolute file row range.
- * Offset indexes are used when available so a narrowed selection can skip
- * unrelated data pages.
+ * Assign absolute position deletes to retained scan ranges in one sorted pass.
+ * Ranges pruned by the query never receive a delete selection.
  *
- * @import {AsyncBuffer, DecodedArray, FileMetaData, SchemaTree} from 'hyparquet'
+ * @param {readonly {rowStart: number, rowEnd: number}[]} ranges
+ * @param {Set<bigint>} positions
+ * @returns {Map<number, Set<number>>} range index to local row offsets
+ */
+function groupPositionDeletes(ranges, positions) {
+  if (positions.size === 0 || ranges.length === 0) return new Map()
+  const sorted = []
+  for (const position of positions) {
+    if (position >= 0n && position <= BigInt(Number.MAX_SAFE_INTEGER)) {
+      sorted.push(Number(position))
+    }
+  }
+  sorted.sort((a, b) => a - b)
+
+  /** @type {Map<number, Set<number>>} */
+  const grouped = new Map()
+  let positionIndex = 0
+  for (let rangeIndex = 0; rangeIndex < ranges.length; rangeIndex++) {
+    const { rowStart, rowEnd } = ranges[rangeIndex]
+    while (positionIndex < sorted.length && sorted[positionIndex] < rowStart) positionIndex++
+    let current = positionIndex
+    while (current < sorted.length && sorted[current] < rowEnd) {
+      let offsets = grouped.get(rangeIndex)
+      if (!offsets) {
+        offsets = new Set()
+        grouped.set(rangeIndex, offsets)
+      }
+      offsets.add(sorted[current] - rowStart)
+      current++
+    }
+    positionIndex = current
+    if (positionIndex >= sorted.length) break
+  }
+  return grouped
+}
+
+/**
+ * Build the visible-row selection for one retained physical parquet range.
+ * Equality-delete key columns are the only columns decoded eagerly; position
+ * deletes need no parquet data at all.
+ *
  * @param {object} options
- * @param {AsyncBuffer} options.file
- * @param {FileMetaData} options.parquetMetadata
- * @param {SchemaTree} options.schemaTree
- * @param {string} options.columnName
+ * @param {ParquetScan} options.scan
  * @param {number} options.rowStart
  * @param {number} options.rowEnd
+ * @param {Set<number>} [options.positionDeletes] - Local row offsets deleted in this range.
+ * @param {Array<{deleteEntry: ManifestEntry, rows: Record<string, any>[]}>} options.equalityDeleteGroups
+ * @param {string[]} options.equalityColumnNames
+ * @param {Record<number, string>} options.dataColumnNamesById
  * @param {AbortSignal} [options.signal]
- * @returns {Promise<DecodedArray>}
+ * @returns {Promise<RowSelection>}
  */
-async function readParquetColumnRange({
-  file,
-  parquetMetadata,
-  schemaTree,
-  columnName,
+async function deleteSelection({
+  scan,
   rowStart,
   rowEnd,
+  positionDeletes,
+  equalityDeleteGroups,
+  equalityColumnNames,
+  dataColumnNamesById,
   signal,
 }) {
-  const asyncGroups = parquetReadAsync({
-    file,
-    metadata: parquetMetadata,
-    columns: [columnName],
-    rowStart,
-    rowEnd,
-    compressors,
-    utf8: false,
-    useOffsetIndex: true,
-  }).map(group => assembleAsync(group, schemaTree))
-  /** @type {DecodedArray[]} */
-  const chunks = []
-  for (const group of asyncGroups) {
-    signal?.throwIfAborted()
-    const column = group.asyncColumns.find(candidate => candidate.pathInSchema[0] === columnName)
-    if (!column) throw new Error(`parquet column not found: ${columnName}`)
-    const result = await column.data
-    const data = flatten(result.data)
-    const start = group.selectStart ?? Math.max(rowStart - group.groupStart, 0)
-    const end = group.selectEnd ?? Math.min(rowEnd - group.groupStart, group.groupRows)
-    const localStart = start - result.skipped
-    const localEnd = end - result.skipped
-    chunks.push(localStart === 0 && localEnd === data.length
-      ? data
-      : data.slice(localStart, localEnd))
+  const length = rowEnd - rowStart
+  if (!positionDeletes?.size && equalityDeleteGroups.length === 0) {
+    return { type: 'all', length }
   }
+
+  /** @type {Record<string, DecodedArray>} */
+  const equalityColumns = {}
+  await Promise.all(equalityColumnNames.map(async column => {
+    equalityColumns[column] = await scan.readColumn({ column, rowStart, rowEnd })
+  }))
   signal?.throwIfAborted()
-  return flatten(chunks)
+  const equalityColumnEntries = Object.entries(equalityColumns)
+
+  const indices = new Uint32Array(length)
+  let count = 0
+  for (let index = 0; index < length; index++) {
+    let deleted = positionDeletes?.has(index) ?? false
+    if (!deleted && equalityDeleteGroups.length > 0) {
+      /** @type {Record<string, any>} */
+      const row = {}
+      for (const [name, values] of equalityColumnEntries) row[name] = values[index]
+      deleted = equalityDeleteGroups.some(group =>
+        group.rows.some(predicate => equalityMatch(row, predicate, dataColumnNamesById)))
+    }
+    if (!deleted) indices[count++] = index
+  }
+
+  if (count === length) return { type: 'all', length }
+  if (count > 0 && indices[count - 1] - indices[0] + 1 === count) {
+    return { type: 'range', start: indices[0], end: indices[count - 1] + 1, length }
+  }
+  return { type: 'indices', indices: indices.subarray(0, count), length }
 }
 
 /**

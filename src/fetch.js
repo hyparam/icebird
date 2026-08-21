@@ -6,10 +6,26 @@ import { avroMetadata } from './avro/avro.metadata.js'
 import { puffinReadDeletionVector } from './puffin/puffin.js'
 import { sanitize } from './utils.js'
 
+const SMALL_PARQUET_FILE_SIZE = 8 * 1024 * 1024
+const SMALL_PARQUET_FOOTER_SIZE = 128 * 1024
+
 /**
- * @import {FileMetaData} from 'hyparquet'
+ * @import {AsyncBuffer, FileMetaData} from 'hyparquet'
  * @import {ManifestEntry, Lister, Resolver} from '../src/types.js'
  */
+
+/**
+ * Read parquet metadata with a smaller initial footer fetch for small files.
+ * Larger files keep hyparquet's default to accommodate large multi-row-group
+ * footers without another request.
+ *
+ * @param {AsyncBuffer} file
+ * @returns {Promise<FileMetaData>}
+ */
+export function readParquetMetadata(file) {
+  if (file.byteLength >= SMALL_PARQUET_FILE_SIZE) return parquetMetadataAsync(file)
+  return parquetMetadataAsync(file, { initialFetchSize: SMALL_PARQUET_FOOTER_SIZE })
+}
 
 /**
  * Translates an S3A URL to an HTTPS URL for direct access to the object.
@@ -252,7 +268,8 @@ export async function fetchDeleteMaps(deleteEntries, resolver) {
         }
         addPositionDeleteGroup(positionDeletesMap, referenced_data_file, deleteEntry, set)
       } else {
-        const deleteRows = await parquetReadObjects({ file, compressors })
+        const metadata = await readParquetMetadata(file)
+        const deleteRows = await parquetReadObjects({ file, metadata, compressors })
         /** @type {Map<string, Set<bigint>>} */
         const positionsByPath = new Map()
         for (const deleteRow of deleteRows) {
@@ -281,7 +298,7 @@ export async function fetchDeleteMaps(deleteEntries, resolver) {
         throw new Error('equality delete missing equality_ids')
       }
 
-      const metadata = await parquetMetadataAsync(file)
+      const metadata = await readParquetMetadata(file)
       const columnNamesById = equalityColumnNamesById(metadata, equalityIds)
       const columns = equalityIds.map(id => columnNamesById[id])
       const deleteRows = await parquetReadObjects({ file, metadata, columns, compressors })
