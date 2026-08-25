@@ -1,5 +1,8 @@
 # Icebird Changelog
 
+## [0.8.26]
+ - `icebergRewrite` takes an optional `files` argument to compact only the named data files: every other data file is carried forward untouched with its original sequence numbers, so cost scales with the bytes rewritten instead of with the table
+
 ## [0.8.25]
  - Reads now push row ranges down into hyparquet's scan candidates, so only the byte ranges that survive filter and delete pruning are fetched, while Iceberg position and equality deletes are still applied
  - Footer fetches adapt to small parquet files instead of over-requesting
