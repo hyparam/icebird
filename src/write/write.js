@@ -60,9 +60,12 @@ export async function icebergAppend({ catalog, namespace, table, tableUrl, resol
 }
 
 /**
- * Compact / rewrite a table in one call: load metadata, read every live row
- * (deletes applied), rewrite the data sorted by the declared sort order under
- * the target partition spec, and commit a `replace` snapshot.
+ * Compact / rewrite a table in one call: load metadata, read the live rows of
+ * the files being rewritten (deletes applied), rewrite them sorted by the
+ * declared sort order under the target partition spec, and commit a `replace`
+ * snapshot. By default every data file is rewritten; pass `files` to compact
+ * only that subset, carrying every other data file forward untouched, so cost
+ * scales with the bytes in `files` rather than with the table.
  *
  * Unlike {@link icebergAppend}, a rewrite is NOT retried on a concurrent-commit
  * conflict: it only rewrote the rows it read, so blindly retrying could drop
@@ -76,17 +79,19 @@ export async function icebergAppend({ catalog, namespace, table, tableUrl, resol
  * @param {string} [options.table] - REST catalog only.
  * @param {string} [options.tableUrl] - File catalog only.
  * @param {Resolver} [options.resolver]
+ * @param {string[]} [options.files] - `file_path`s of the live data files to rewrite, exactly as recorded in the current snapshot's manifests; every data file when omitted.
  * @param {number} [options.sortOrderId] - Sort order id to apply; defaults to the table default.
  * @param {number} [options.partitionSpecId] - Target partition spec id; defaults to `default-spec-id`.
  * @param {number} [options.targetFileRows] - Max rows per output file.
  * @returns {Promise<TableMetadata>}
  */
-export async function icebergRewrite({ catalog, namespace, table, tableUrl, resolver, sortOrderId, partitionSpecId, targetFileRows }) {
+export async function icebergRewrite({ catalog, namespace, table, tableUrl, resolver, files, sortOrderId, partitionSpecId, targetFileRows }) {
   const ctx = await loadTable({ catalog, namespace, table, tableUrl, resolver })
   const staged = await icebergStageRewrite({
     tableUrl: ctx.tableUrl,
     metadata: ctx.metadata,
     resolver: requireResolver(ctx.resolver, 'icebergRewrite'),
+    files,
     sortOrderId,
     partitionSpecId,
     targetFileRows,
