@@ -1,5 +1,11 @@
 # Icebird Changelog
 
+## [0.8.27]
+ - Nested fields are projected by field id, and `schema.name-mapping.default` is applied to parquet files written without field ids, so structs and lists survive renames and id-less files
+ - Position delete files are ignored for a data file when a deletion vector applies to it, per the v3 spec
+ - Staging a deletion vector for a data file covered by shared position deletes now replaces those deletes instead of layering on top of them
+ - Appends to v1 tables now carry forward manifests that were stored inline in the table metadata
+
 ## [0.8.26]
  - `icebergRewrite` takes an optional `files` argument to compact only the named data files: every other data file is carried forward untouched with its original sequence numbers, so cost scales with the bytes rewritten instead of with the table
 
