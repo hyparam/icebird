@@ -1,4 +1,4 @@
-import { deleteFileAppliesToDataEntry } from '../delete.js'
+import { deleteFileAppliesToDataEntry, isDeletionVector } from '../delete.js'
 import { fetchDeleteMaps } from '../fetch.js'
 import { writeDeletionVector } from '../puffin/deletion-vector.js'
 import { writePuffinFile } from '../puffin/puffin.js'
@@ -126,28 +126,54 @@ export async function icebergStageDeletionVector({ tableUrl, metadata, deletes, 
         targets.add(targetPath)
       }
     }
+
+    // A position-delete manifest entry represents the whole delete file. If
+    // that file applies to any target receiving a DV, the entry must be
+    // removed in full. Convert every other live data file it applies to as
+    // well, so those deletes are preserved instead of retaining a shared
+    // position-delete file that would overlap the new DV. Repeat to a fixed
+    // point because a newly included target may be covered by another shared
+    // position-delete file.
+    let expandedTargets = true
+    while (expandedTargets) {
+      expandedTargets = false
+      for (const [entry, coveredTargets] of positionDeleteTargets) {
+        if (isDeletionVector(entry) || obsoletePositionDeleteEntries.has(entry)) continue
+        let appliesToTarget = false
+        for (const targetPath of coveredTargets) {
+          const info = byFile.get(targetPath)
+          if (info && deleteFileAppliesToDataEntry(info.dataEntry, entry, metadata, 'position')) {
+            appliesToTarget = true
+            break
+          }
+        }
+        if (!appliesToTarget) continue
+
+        obsoletePositionDeleteEntries.add(entry)
+        for (const targetPath of coveredTargets) {
+          const found = dataFileMap.get(targetPath)
+          if (!found || !deleteFileAppliesToDataEntry(found.entry, entry, metadata, 'position')) continue
+          if (byFile.has(targetPath)) continue
+          byFile.set(targetPath, {
+            positions: new Set(),
+            partition: found.partition,
+            partitionSpecId: found.partitionSpecId,
+            dataEntry: found.entry,
+          })
+          targetPaths.add(targetPath)
+          expandedTargets = true
+        }
+      }
+    }
+
+    // Merge applicable prior DVs and all position deletes being replaced into
+    // the vectors for the complete, expanded target set.
     for (const [targetPath, info] of byFile) {
       const groups = positionDeletesMap.get(targetPath) ?? []
       for (const group of groups) {
         if (!deleteFileAppliesToDataEntry(info.dataEntry, group.deleteEntry, metadata, 'position')) continue
         for (const pos of group.positions) info.positions.add(pos)
       }
-    }
-    for (const [entry, coveredTargets] of positionDeleteTargets) {
-      if (isDeletionVectorForTarget(entry, targetPaths)) continue
-      let allTargetsCovered = true
-      let appliesToTarget = false
-      for (const targetPath of coveredTargets) {
-        if (!targetPaths.has(targetPath)) {
-          allTargetsCovered = false
-          break
-        }
-        const info = byFile.get(targetPath)
-        if (info && deleteFileAppliesToDataEntry(info.dataEntry, entry, metadata, 'position')) {
-          appliesToTarget = true
-        }
-      }
-      if (allTargetsCovered && appliesToTarget) obsoletePositionDeleteEntries.add(entry)
     }
   }
 
