@@ -460,22 +460,58 @@ function validateAssignedId(id, kind, path, priorAssignedIds, priorLastColumnId)
  * @param {number} priorLastColumnId
  */
 function validateNewRequiredFields(schema, priorLastColumnId) {
-  for (const field of schema.fields) {
-    if (field.id > priorLastColumnId && field.required) {
+  validateNewRequiredFieldsIn(schema.fields, '', priorLastColumnId)
+}
+
+/**
+ * A required field added to an existing struct (or to a new struct whose
+ * initial-default is a non-null struct, so existing rows materialize it)
+ * needs non-null defaults. Children of a new field defaulting to null never
+ * need to be filled in for existing rows, so they are not checked.
+ *
+ * @param {Field[]} fields
+ * @param {string} prefix
+ * @param {number} priorLastColumnId
+ */
+function validateNewRequiredFieldsIn(fields, prefix, priorLastColumnId) {
+  for (const field of fields) {
+    const path = prefix ? `${prefix}.${field.name}` : field.name
+    const isNew = field.id > priorLastColumnId
+    if (isNew && field.required) {
       if (field['initial-default'] == null) {
-        throw new Error(`add-schema: required field ${field.name} (id ${field.id}) needs a non-null initial-default`)
+        throw new Error(`add-schema: required field ${path} (id ${field.id}) needs a non-null initial-default`)
       }
       if (field['write-default'] == null) {
-        throw new Error(`add-schema: required field ${field.name} (id ${field.id}) needs a non-null write-default`)
+        throw new Error(`add-schema: required field ${path} (id ${field.id}) needs a non-null write-default`)
       }
     }
+    if (isNew && field['initial-default'] == null) continue
+    validateNewRequiredTypeFields(field.type, path, priorLastColumnId)
+  }
+}
+
+/**
+ * @param {IcebergType} type
+ * @param {string} path
+ * @param {number} priorLastColumnId
+ */
+function validateNewRequiredTypeFields(type, path, priorLastColumnId) {
+  if (typeof type === 'string') return
+  if (type.type === 'struct') {
+    validateNewRequiredFieldsIn(type.fields, path, priorLastColumnId)
+  } else if (type.type === 'list') {
+    validateNewRequiredTypeFields(type.element, `${path}.element`, priorLastColumnId)
+  } else if (type.type === 'map') {
+    validateNewRequiredTypeFields(type.value, `${path}.value`, priorLastColumnId)
   }
 }
 
 /**
  * Validate schema evolution rules that require comparing the new schema with
  * prior schemas: existing field ids may be renamed/reordered, but their
- * immutable defaults and types must remain valid.
+ * immutable defaults and types must remain valid. Nested fields are compared
+ * by id at every level, so renaming a struct member or promoting a list
+ * element is allowed while changing a type's shape is not.
  *
  * @param {Schema[]} schemas
  * @param {Schema} newSchema
@@ -483,29 +519,105 @@ function validateNewRequiredFields(schema, priorLastColumnId) {
  * @param {number} formatVersion
  */
 function validateSchemaEvolution(schemas, newSchema, priorLastColumnId, formatVersion) {
-  for (const field of newSchema.fields) {
-    if (field.id > priorLastColumnId) continue
-    const prior = latestFieldById(schemas, field.id)
-    if (!prior) continue
-    if (!canPromoteType(prior.type, field.type, formatVersion)) {
-      throw new Error(`add-schema: cannot promote field ${field.name} from ${typeToString(prior.type)} to ${typeToString(field.type)}`)
-    }
-    if (!defaultsEqual(prior['initial-default'], field['initial-default'])) {
-      throw new Error(`add-schema: initial-default for field ${field.name} cannot change`)
-    }
+  /** @type {Map<number, PriorType>} */
+  const priorTypes = new Map()
+  for (const schema of schemas) indexPriorFields(schema.fields, priorTypes)
+  validateFieldsEvolution(newSchema.fields, '', priorTypes, priorLastColumnId, formatVersion)
+}
+
+/**
+ * @typedef {{type: IcebergType, 'initial-default'?: any}} PriorType
+ */
+
+/**
+ * Index every field, list element, and map key/value by id. Later schemas
+ * overwrite earlier ones so the most recent definition wins.
+ *
+ * @param {Field[]} fields
+ * @param {Map<number, PriorType>} index
+ */
+function indexPriorFields(fields, index) {
+  for (const field of fields) {
+    index.set(field.id, { type: field.type, 'initial-default': field['initial-default'] })
+    indexPriorType(field.type, index)
   }
 }
 
 /**
- * @param {Schema[]} schemas
- * @param {number} id
- * @returns {Field|undefined}
+ * @param {IcebergType} type
+ * @param {Map<number, PriorType>} index
  */
-function latestFieldById(schemas, id) {
-  for (let i = schemas.length - 1; i >= 0; i--) {
-    const field = schemas[i].fields.find(f => f.id === id)
-    if (field) return field
+function indexPriorType(type, index) {
+  if (typeof type === 'string') return
+  if (type.type === 'struct') {
+    indexPriorFields(type.fields, index)
+  } else if (type.type === 'list') {
+    index.set(type['element-id'], { type: type.element })
+    indexPriorType(type.element, index)
+  } else if (type.type === 'map') {
+    index.set(type['key-id'], { type: type.key })
+    index.set(type['value-id'], { type: type.value })
+    indexPriorType(type.key, index)
+    indexPriorType(type.value, index)
   }
+}
+
+/**
+ * @param {Field[]} fields
+ * @param {string} prefix
+ * @param {Map<number, PriorType>} priorTypes
+ * @param {number} priorLastColumnId
+ * @param {number} formatVersion
+ */
+function validateFieldsEvolution(fields, prefix, priorTypes, priorLastColumnId, formatVersion) {
+  for (const field of fields) {
+    const path = prefix ? `${prefix}.${field.name}` : field.name
+    const prior = field.id > priorLastColumnId ? undefined : priorTypes.get(field.id)
+    if (prior) {
+      if (!canPromoteType(prior.type, field.type, formatVersion)) {
+        throw new Error(`add-schema: cannot promote field ${path} from ${typeToString(prior.type)} to ${typeToString(field.type)}`)
+      }
+      if (!defaultsEqual(prior['initial-default'], field['initial-default'])) {
+        throw new Error(`add-schema: initial-default for field ${path} cannot change`)
+      }
+    }
+    validateTypeEvolution(field.type, path, priorTypes, priorLastColumnId, formatVersion)
+  }
+}
+
+/**
+ * @param {IcebergType} type
+ * @param {string} path
+ * @param {Map<number, PriorType>} priorTypes
+ * @param {number} priorLastColumnId
+ * @param {number} formatVersion
+ */
+function validateTypeEvolution(type, path, priorTypes, priorLastColumnId, formatVersion) {
+  if (typeof type === 'string') return
+  if (type.type === 'struct') {
+    validateFieldsEvolution(type.fields, path, priorTypes, priorLastColumnId, formatVersion)
+  } else if (type.type === 'list') {
+    validateChildEvolution(type['element-id'], type.element, `${path}.element`, priorTypes, priorLastColumnId, formatVersion)
+  } else if (type.type === 'map') {
+    validateChildEvolution(type['key-id'], type.key, `${path}.key`, priorTypes, priorLastColumnId, formatVersion)
+    validateChildEvolution(type['value-id'], type.value, `${path}.value`, priorTypes, priorLastColumnId, formatVersion)
+  }
+}
+
+/**
+ * @param {number} id
+ * @param {IcebergType} type
+ * @param {string} path
+ * @param {Map<number, PriorType>} priorTypes
+ * @param {number} priorLastColumnId
+ * @param {number} formatVersion
+ */
+function validateChildEvolution(id, type, path, priorTypes, priorLastColumnId, formatVersion) {
+  const prior = id > priorLastColumnId ? undefined : priorTypes.get(id)
+  if (prior && !canPromoteType(prior.type, type, formatVersion)) {
+    throw new Error(`add-schema: cannot promote ${path} from ${typeToString(prior.type)} to ${typeToString(type)}`)
+  }
+  validateTypeEvolution(type, path, priorTypes, priorLastColumnId, formatVersion)
 }
 
 /**
@@ -525,13 +637,17 @@ function canPromoteType(from, to, formatVersion) {
 }
 
 /**
+ * Primitive types must match exactly. Nested types only need the same shape
+ * (struct/list/map); their children are validated separately by id, which is
+ * what allows nested renames and promotions.
+ *
  * @param {IcebergType} a
  * @param {IcebergType} b
  * @returns {boolean}
  */
 function typesEqual(a, b) {
   if (typeof a === 'string' || typeof b === 'string') return a === b
-  return JSON.stringify(a) === JSON.stringify(b)
+  return a.type === b.type
 }
 
 /**

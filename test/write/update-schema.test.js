@@ -174,3 +174,121 @@ describe('icebergStageUpdateSchema', () => {
       .toThrow(/cannot promote/)
   })
 })
+
+describe('icebergUpdateSchema nested fields', () => {
+  /** @type {Schema} */
+  const nestedSchema = {
+    type: 'struct',
+    'schema-id': 0,
+    fields: [
+      { id: 1, name: 'id', required: true, type: 'long' },
+      {
+        id: 2, name: 'location', required: false, type: {
+          type: 'struct',
+          'schema-id': 0,
+          fields: [
+            { id: 3, name: 'lat', required: false, type: 'double' },
+            { id: 4, name: 'lon', required: false, type: 'double' },
+          ],
+        },
+      },
+    ],
+  }
+
+  it('renames a nested struct field: old data reads under the new name via field id', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/update-schema-nested1'
+    const { resolver } = memResolver()
+    const catalog = fileCatalog({ resolver })
+
+    await icebergCreate({ tableUrl, resolver, schema: nestedSchema, formatVersion: 3 })
+    await icebergAppend({ catalog, tableUrl, records: [{ id: 1n, location: { lat: 1.5, lon: -2.5 } }] })
+
+    /** @type {Schema} */
+    const renamed = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        {
+          id: 2, name: 'position', required: false, type: {
+            type: 'struct',
+            'schema-id': 0,
+            fields: [
+              { id: 4, name: 'longitude', required: false, type: 'double' },
+              { id: 3, name: 'latitude', required: false, type: 'double' },
+              { id: 5, name: 'alt', required: false, type: 'double', 'initial-default': 0 },
+            ],
+          },
+        },
+      ],
+    }
+    const updated = await icebergUpdateSchema({ catalog, tableUrl, schema: renamed })
+    expect(updated['last-column-id']).toBe(5)
+
+    const read = await icebergRead({ tableUrl, metadata: updated, resolver })
+    expect(read).toEqual([{
+      id: 1n,
+      position: { longitude: -2.5, latitude: 1.5, alt: 0 },
+      _row_id: 0n,
+      _last_updated_sequence_number: 1n,
+    }])
+  })
+
+  it('rejects an incompatible nested type promotion', async () => {
+    const tableUrl = 'http://test/update-schema-nested2'
+    const { resolver } = memResolver()
+    const catalog = fileCatalog({ resolver })
+    await icebergCreate({ tableUrl, resolver, schema: nestedSchema })
+
+    /** @type {Schema} */
+    const bad = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        {
+          id: 2, name: 'location', required: false, type: {
+            type: 'struct',
+            'schema-id': 0,
+            fields: [
+              { id: 3, name: 'lat', required: false, type: 'string' },
+              { id: 4, name: 'lon', required: false, type: 'double' },
+            ],
+          },
+        },
+      ],
+    }
+    await expect(icebergUpdateSchema({ catalog, tableUrl, schema: bad }))
+      .rejects.toThrow(/cannot promote field location.lat from double to string/)
+  })
+
+  it('rejects a new required nested field without defaults', async () => {
+    const tableUrl = 'http://test/update-schema-nested3'
+    const { resolver } = memResolver()
+    const catalog = fileCatalog({ resolver })
+    await icebergCreate({ tableUrl, resolver, schema: nestedSchema })
+
+    /** @type {Schema} */
+    const bad = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        {
+          id: 2, name: 'location', required: false, type: {
+            type: 'struct',
+            'schema-id': 0,
+            fields: [
+              { id: 3, name: 'lat', required: false, type: 'double' },
+              { id: 4, name: 'lon', required: false, type: 'double' },
+              { id: 5, name: 'alt', required: true, type: 'double' },
+            ],
+          },
+        },
+      ],
+    }
+    await expect(icebergUpdateSchema({ catalog, tableUrl, schema: bad }))
+      .rejects.toThrow(/required field location.alt \(id 5\) needs a non-null initial-default/)
+  })
+})

@@ -1,6 +1,7 @@
 import { cachedAsyncBuffer, parquetReadObjects, parquetScan, parquetSchema } from 'hyparquet'
 import { compressors } from 'hyparquet-compressors'
 import { columnsNeededForFilter, matchFilter } from 'hyparquet/src/filter.js'
+import { isListLike, isMapLike } from 'hyparquet/src/schema.js'
 import { concat } from 'hyparquet/src/utils.js'
 import { selectVector } from 'squirreling'
 import { fetchDeleteMaps, readParquetMetadata, urlResolver } from './fetch.js'
@@ -15,8 +16,8 @@ const DEFAULT_ROW_GROUP_CONCURRENCY = 4
  * Reads data from the Iceberg table with optional row-level delete processing.
  * Row indices are zero-based and rowEnd is exclusive.
  *
- * @import {DecodedArray, ParquetQueryFilter, ParquetScan} from 'hyparquet'
- * @import {Field, Lister, NameMapping, Resolver, Schema, TableMetadata} from '../src/types.js'
+ * @import {DecodedArray, FileMetaData, ParquetQueryFilter, ParquetScan, SchemaTree} from 'hyparquet'
+ * @import {Field, IcebergType, Lister, NameMapping, Resolver, Schema, TableMetadata} from '../src/types.js'
  * @param {object} options
  * @param {string} options.tableUrl - Base URL or path of the table.
  * @param {number} [options.rowStart] - The starting global row index to fetch (inclusive).
@@ -186,35 +187,22 @@ export async function* readDataFile({
 
   // Read iceberg schema from parquet metadata
   const parquetMetadata = await readParquetMetadata(asyncBuffer)
-  const kv = parquetMetadata.key_value_metadata?.find(k => k.key === 'iceberg.schema')
-  /** @type {Schema} */
-  let parquetIcebergSchema
-  if (kv?.value) {
-    parquetIcebergSchema = JSON.parse(kv.value)
-  } else if (parquetMetadata.schema.some(s => s.field_id !== undefined)) {
-    // No `iceberg.schema` kv, but the parquet schema carries field_ids
-    // (iceberg-rust, iceberg-java, pyiceberg all set these). Build a
-    // parquet-shaped schema so columns added later in the iceberg schema
-    // correctly fall through to the initial-default / name-mapping chain
-    // instead of silently looking up a name that isn't in the row.
-    parquetIcebergSchema = parquetSchemaToIceberg(parquetMetadata.schema)
-  } else {
-    // AWS Athena tables: no kv and no field_ids. Fall back to the current
-    // iceberg schema and rely on `schema.name-mapping.default` to map
-    // physical column names back to ids.
-    parquetIcebergSchema = schema
-  }
+  const parquetIcebergSchema = fileIcebergSchema(parquetMetadata, schema, tableNameMappings(metadata))
 
   // Determine which columns to read based on field ids
   /** @type {(string | undefined)[]} */
   const parquetColumnNames = []
+  /** @type {(((value: any) => any) | undefined)[]} */
+  const projectors = []
   for (const field of schema.fields) {
     const parquetField = parquetIcebergSchema.fields.find(f => f.id === field.id)
     // May be undefined if the field was added later
     if (parquetField && field.type !== 'unknown') {
       parquetColumnNames.push(sanitize(parquetField.name))
+      projectors.push(nestedProjector(field.type, parquetField.type))
     } else {
       parquetColumnNames.push(undefined)
+      projectors.push(undefined)
     }
   }
   const lineageColumns = rowLineage ? rowLineageColumnNames(parquetIcebergSchema) : {}
@@ -361,21 +349,15 @@ export async function* readDataFile({
         if (wantedSet && !wantedSet.has(field.name)) continue
         const parquetColumnName = parquetColumnNames[i]
         if (parquetColumnName) {
-          mapped[field.name] = row[parquetColumnName]
+          const project = projectors[i]
+          const value = row[parquetColumnName]
+          mapped[field.name] = project ? project(value) : value
         } else {
           // A source column may have multiple partition fields (e.g. bucket +
           // identity). Match the identity field specifically so its value is
           // projected regardless of field order in the spec.
           const partitionField = partitionSpec?.fields.find(
             pf => pf['source-id'] === field.id && pf.transform === 'identity')
-
-          /** @type {NameMapping | undefined} */
-          let nameMapping
-          if (metadata.properties?.['schema.name-mapping.default']) {
-            /** @type {NameMapping[]} */
-            const mapping = JSON.parse(metadata.properties['schema.name-mapping.default'])
-            nameMapping = nameMappingById(mapping, field.id)
-          }
 
           // Values for field ids which are not present in a data file must
           // be resolved according the following rules:
@@ -389,15 +371,9 @@ export async function* readDataFile({
             // A null partition value decodes as `undefined`; normalize it to
             // `null` so it matches every other null in the output.
             mapped[field.name] = data_file.partition[partitionField.name] ?? null
-          } else if (nameMapping) {
-            // 2. Use schema.name-mapping.default metadata to map field id to columns
-            for (const name of nameMapping.names) {
-              const matchedIdx = parquetColumnNames.indexOf(name)
-              if (matchedIdx !== -1) {
-                mapped[field.name] = row[name]
-                break
-              }
-            }
+          // 2. schema.name-mapping.default was already applied to id-less
+          // columns when resolving parquetIcebergSchema, so a field that is
+          // still unmatched here has no column in this file.
           } else if (field['initial-default'] !== undefined) {
             // 3. Return the default value if it has a defined initial-default.
             mapped[field.name] = field['initial-default']
@@ -514,22 +490,8 @@ export async function* readDataFileBatches({
   const parquetMetadata = await readParquetMetadata(file)
   signal?.throwIfAborted()
 
-  const kv = parquetMetadata.key_value_metadata?.find(k => k.key === 'iceberg.schema')
-  /** @type {Schema} */
-  let parquetIcebergSchema
-  if (kv?.value) {
-    parquetIcebergSchema = JSON.parse(kv.value)
-  } else if (parquetMetadata.schema.some(s => s.field_id !== undefined)) {
-    parquetIcebergSchema = parquetSchemaToIceberg(parquetMetadata.schema)
-  } else {
-    parquetIcebergSchema = schema
-  }
-
+  const parquetIcebergSchema = fileIcebergSchema(parquetMetadata, schema, tableNameMappings(metadata))
   const physicalNames = new Set(parquetSchema(parquetMetadata).children.map(child => child.element.name))
-  /** @type {NameMapping[]} */
-  const nameMappings = metadata.properties?.['schema.name-mapping.default']
-    ? JSON.parse(metadata.properties['schema.name-mapping.default'])
-    : []
 
   /** @type {Record<number, string>} */
   const dataColumnNamesById = {}
@@ -538,36 +500,31 @@ export async function* readDataFileBatches({
     if (physicalNames.has(name)) dataColumnNamesById[parquetField.id] = name
   }
 
-  /** @type {Map<number, string>} */
-  const physicalNamesById = new Map()
+  /** @type {Map<number, {name: string, project?: (value: any) => any}>} */
+  const physicalSourcesById = new Map()
   /** @type {Record<string, string>} */
   const icebergToParquet = {}
   for (const field of schema.fields) {
     const parquetField = parquetIcebergSchema.fields.find(candidate => candidate.id === field.id)
-    let physicalName = parquetField && field.type !== 'unknown'
-      ? sanitize(parquetField.name)
-      : undefined
-    if (physicalName && !physicalNames.has(physicalName)) physicalName = undefined
-    if (!physicalName) {
-      const mapping = nameMappingById(nameMappings, field.id)
-      physicalName = mapping?.names
-        .map(name => sanitize(name))
-        .find(name => physicalNames.has(name))
-    }
-    if (!physicalName) continue
-    physicalNamesById.set(field.id, physicalName)
+    if (!parquetField || field.type === 'unknown') continue
+    const physicalName = sanitize(parquetField.name)
+    if (!physicalNames.has(physicalName)) continue
+    physicalSourcesById.set(field.id, {
+      name: physicalName,
+      project: nestedProjector(field.type, parquetField.type),
+    })
     dataColumnNamesById[field.id] = physicalName
     icebergToParquet[field.name] = physicalName
   }
 
-  /** @type {Map<number, {name?: string, constant?: SqlPrimitive}>} */
+  /** @type {Map<number, {name?: string, project?: (value: any) => any, constant?: SqlPrimitive}>} */
   const fieldSources = new Map()
   for (const requested of fields) {
     const field = schema.fields.find(candidate => candidate.id === requested.id)
     if (!field) throw new Error(`Iceberg field id ${requested.id} not found`)
-    const physicalName = physicalNamesById.get(field.id)
-    if (physicalName) {
-      fieldSources.set(requested.id, { name: physicalName })
+    const physicalSource = physicalSourcesById.get(field.id)
+    if (physicalSource) {
+      fieldSources.set(requested.id, physicalSource)
       continue
     }
 
@@ -656,6 +613,7 @@ export async function* readDataFileBatches({
           }
         }
         const columnName = source.name
+        const { project } = source
         /** @type {{start: number, end: number, vector: Promise<ColumnVector>} | undefined} */
         let cachedRange
         return {
@@ -674,7 +632,8 @@ export async function* readDataFileBatches({
               rowStart: batchStart + range.start,
               rowEnd: batchStart + range.end,
             })
-            const vector = values.then(decodedColumnVector)
+            const vector = values.then(decoded =>
+              decodedColumnVector(project && Array.isArray(decoded) ? decoded.map(project) : decoded))
             cachedRange = { ...range, vector }
             return selectDecodedVector(await vector, selection, range.start)
           },
@@ -913,23 +872,6 @@ function normalizeRowGroupConcurrency(value) {
 }
 
 /**
- * Recursively find the name mapping object that belongs to a particular field‑id.
- *
- * @param {NameMapping[]} mappings
- * @param {number} fieldId
- * @returns {NameMapping|undefined}
- */
-function nameMappingById(mappings, fieldId) {
-  for (const m of mappings) {
-    if (m['field-id'] === fieldId) return m
-    if (m.fields) {
-      const hit = nameMappingById(m.fields, fieldId)
-      if (hit) return hit
-    }
-  }
-}
-
-/**
  * @param {Schema} parquetIcebergSchema
  * @returns {{rowId?: string, lastUpdatedSequenceNumber?: string}}
  */
@@ -951,28 +893,182 @@ function columnNameByFieldId(schema, fieldId) {
 }
 
 /**
- * Synthesize a parquet-shaped iceberg schema from the parquet schema
- * elements when the file has no `iceberg.schema` kv but does carry
- * field_ids on each column. Only top-level leaf fields are included;
- * nested types fall through with an `unknown` type marker.
+ * @param {TableMetadata} metadata
+ * @returns {NameMapping[] | undefined}
+ */
+function tableNameMappings(metadata) {
+  const json = metadata.properties?.['schema.name-mapping.default']
+  return json ? JSON.parse(json) : undefined
+}
+
+/**
+ * Resolve the iceberg schema describing a parquet data file's physical layout,
+ * so current-schema fields can be projected onto it by field id.
  *
- * @import {SchemaElement} from 'hyparquet'
- * @param {SchemaElement[]} parquetSchema
+ * Prefers the `iceberg.schema` kv the writer embedded. Otherwise the schema is
+ * synthesized from the parquet schema tree: field ids come from the parquet
+ * `field_id`s when the file carries any (iceberg-rust, iceberg-java, pyiceberg
+ * all set these), else from `schema.name-mapping.default` (column projection
+ * rule 2), else, when the table has no name mapping, from the current schema
+ * by name (AWS Athena tables). Columns that cannot be identified are omitted
+ * so the fields they would have fed fall through to the initial-default chain.
+ *
+ * @param {FileMetaData} parquetMetadata
+ * @param {Schema} schema current table schema
+ * @param {NameMapping[] | undefined} nameMappings
  * @returns {Schema}
  */
-function parquetSchemaToIceberg(parquetSchema) {
+function fileIcebergSchema(parquetMetadata, schema, nameMappings) {
+  const kv = parquetMetadata.key_value_metadata?.find(k => k.key === 'iceberg.schema')
+  if (kv?.value) return JSON.parse(kv.value)
+  const hasIds = parquetMetadata.schema.some(s => s.field_id !== undefined)
+  const mappings = hasIds ? undefined : nameMappings
+  const fallbackFields = hasIds || nameMappings ? undefined : schema.fields
+  return {
+    type: 'struct',
+    'schema-id': schema['schema-id'],
+    fields: parquetFieldsToIceberg(parquetSchema(parquetMetadata).children, mappings, fallbackFields),
+  }
+}
+
+/**
+ * @param {SchemaTree[]} nodes
+ * @param {NameMapping[] | undefined} mappings name mappings for this struct level
+ * @param {Field[] | undefined} fallbackFields current-schema fields to match by name
+ * @returns {Field[]}
+ */
+function parquetFieldsToIceberg(nodes, mappings, fallbackFields) {
   /** @type {Field[]} */
   const fields = []
-  for (const elem of parquetSchema) {
-    if (elem.field_id === undefined) continue
+  for (const node of nodes) {
+    const { name, field_id } = node.element
+    const mapping = mappings?.find(m => m.names.includes(name))
+    const fallback = fallbackFields?.find(f => f.name === name)
+    const id = field_id ?? mapping?.['field-id'] ?? fallback?.id
+    if (id === undefined) continue
     fields.push({
-      id: elem.field_id,
-      name: elem.name,
+      id,
+      name,
       required: false,
-      type: 'unknown',
+      type: parquetTypeToIceberg(node, mapping?.fields, fallback?.type),
     })
   }
-  return { type: 'struct', 'schema-id': 0, fields }
+  return fields
+}
+
+/**
+ * Nested ids follow the same precedence as fields: parquet field_id, then the
+ * child name mapping (`element` for lists, `key`/`value` for maps), then the
+ * same-named current-schema type. An id of -1 marks an unidentifiable child.
+ *
+ * @param {SchemaTree} node
+ * @param {NameMapping[] | undefined} mappings child name mappings
+ * @param {IcebergType | undefined} fallback current-schema type of the same-named field
+ * @returns {IcebergType}
+ */
+function parquetTypeToIceberg(node, mappings, fallback) {
+  if (isListLike(node)) {
+    const element = node.children[0].children[0]
+    const mapping = mappings?.find(m => m.names.includes('element'))
+    const fallbackList = typeof fallback === 'object' && fallback.type === 'list' ? fallback : undefined
+    return {
+      type: 'list',
+      'element-id': element.element.field_id ?? mapping?.['field-id'] ?? fallbackList?.['element-id'] ?? -1,
+      'element-required': false,
+      element: parquetTypeToIceberg(element, mapping?.fields, fallbackList?.element),
+    }
+  }
+  if (isMapLike(node)) {
+    const [key, value] = ['key', 'value'].map(childName => {
+      const child = node.children[0].children.find(c => c.element.name === childName)
+      if (!child) throw new Error(`parquet map column ${node.element.name} missing ${childName}`)
+      return child
+    })
+    const keyMapping = mappings?.find(m => m.names.includes('key'))
+    const valueMapping = mappings?.find(m => m.names.includes('value'))
+    const fallbackMap = typeof fallback === 'object' && fallback.type === 'map' ? fallback : undefined
+    return {
+      type: 'map',
+      'key-id': key.element.field_id ?? keyMapping?.['field-id'] ?? fallbackMap?.['key-id'] ?? -1,
+      key: parquetTypeToIceberg(key, keyMapping?.fields, fallbackMap?.key),
+      'value-id': value.element.field_id ?? valueMapping?.['field-id'] ?? fallbackMap?.['value-id'] ?? -1,
+      'value-required': false,
+      value: parquetTypeToIceberg(value, valueMapping?.fields, fallbackMap?.value),
+    }
+  }
+  if (node.children.length) {
+    const fallbackStruct = typeof fallback === 'object' && fallback.type === 'struct' ? fallback : undefined
+    return {
+      type: 'struct',
+      'schema-id': 0,
+      fields: parquetFieldsToIceberg(node.children, mappings, fallbackStruct?.fields),
+    }
+  }
+  return 'unknown'
+}
+
+/**
+ * Build a function that projects a nested parquet value onto the current
+ * iceberg type by field id: struct fields are renamed, dropped fields are
+ * omitted, and fields missing from the file resolve to their initial-default
+ * or null. Returns undefined when the file value can be used as is
+ * (primitives, or nested types whose layout already matches).
+ *
+ * @param {IcebergType} type current schema type
+ * @param {IcebergType} fileType type of the same field in the data file
+ * @returns {((value: any) => any) | undefined}
+ */
+function nestedProjector(type, fileType) {
+  if (typeof type === 'string' || typeof fileType === 'string') return undefined
+  if (type.type === 'struct' && fileType.type === 'struct') {
+    /** @type {{name: string, source?: string, project?: (value: any) => any, missing?: any}[]} */
+    const plan = []
+    let identity = type.fields.length === fileType.fields.length
+    for (const field of type.fields) {
+      const fileField = fileType.fields.find(f => f.id === field.id)
+      if (fileField) {
+        const source = sanitize(fileField.name)
+        const project = nestedProjector(field.type, fileField.type)
+        if (source !== field.name || project) identity = false
+        plan.push({ name: field.name, source, project })
+      } else {
+        identity = false
+        plan.push({ name: field.name, missing: field['initial-default'] ?? null })
+      }
+    }
+    if (identity) return undefined
+    return value => {
+      if (value == null) return value
+      /** @type {Record<string, any>} */
+      const out = {}
+      for (const { name, source, project, missing } of plan) {
+        if (source === undefined) {
+          out[name] = missing
+        } else {
+          const child = value[source]
+          out[name] = project ? project(child) : child ?? null
+        }
+      }
+      return out
+    }
+  }
+  if (type.type === 'list' && fileType.type === 'list') {
+    const project = nestedProjector(type.element, fileType.element)
+    if (!project) return undefined
+    return value => Array.isArray(value) ? value.map(project) : value
+  }
+  if (type.type === 'map' && fileType.type === 'map') {
+    const project = nestedProjector(type.value, fileType.value)
+    if (!project) return undefined
+    return value => {
+      if (value == null || typeof value !== 'object') return value
+      /** @type {Record<string, any>} */
+      const out = {}
+      for (const key of Object.keys(value)) out[key] = project(value[key])
+      return out
+    }
+  }
+  return undefined
 }
 
 /**
