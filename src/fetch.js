@@ -3,6 +3,7 @@ import { compressors } from 'hyparquet-compressors'
 import { ByteWriter } from 'hyparquet-writer'
 import { avroRead } from './avro/avro.read.js'
 import { avroMetadata } from './avro/avro.metadata.js'
+import { isDeletionVector } from './delete.js'
 import { puffinReadDeletionVector } from './puffin/puffin.js'
 import { sanitize } from './utils.js'
 
@@ -326,17 +327,6 @@ function addPositionDeleteGroup(positionDeletesMap, targetPath, deleteEntry, pos
     positionDeletesMap.set(targetPath, groups)
   }
   groups.push({ deleteEntry, positions })
-}
-
-/**
- * @param {ManifestEntry} deleteEntry
- * @returns {boolean}
- */
-function isDeletionVector(deleteEntry) {
-  const dataFile = deleteEntry.data_file
-  return dataFile.file_format.toLowerCase() === 'puffin' ||
-    dataFile.content_offset != null ||
-    dataFile.content_size_in_bytes != null
 }
 
 /**

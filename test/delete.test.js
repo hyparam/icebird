@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { deleteFileAppliesToDataEntry } from '../src/delete.js'
+import { applicablePositionDeletes, deleteFileAppliesToDataEntry } from '../src/delete.js'
 
 /**
  * @import {ManifestEntry, TableMetadata} from '../src/types.js'
@@ -71,15 +71,48 @@ describe('deleteFileAppliesToDataEntry', () => {
   })
 })
 
+describe('applicablePositionDeletes', () => {
+  const data = entry({ sequenceNumber: 1n, partitionSpecId: 1, partition: { 1000: 'books' } })
+
+  it('unions position delete files when no deletion vector applies', () => {
+    const groups = [
+      { deleteEntry: entry({ sequenceNumber: 2n, partitionSpecId: 1, content: 1, partition: { 1000: 'books' }, fileFormat: 'parquet' }), positions: new Set([1n]) },
+      { deleteEntry: entry({ sequenceNumber: 3n, partitionSpecId: 1, content: 1, partition: { 1000: 'books' }, fileFormat: 'parquet' }), positions: new Set([2n]) },
+    ]
+    expect(applicablePositionDeletes(data, groups, metadata)).toEqual(new Set([1n, 2n]))
+  })
+
+  it('ignores position delete files when a deletion vector applies', () => {
+    const groups = [
+      { deleteEntry: entry({ sequenceNumber: 2n, partitionSpecId: 1, content: 1, partition: { 1000: 'books' }, fileFormat: 'parquet' }), positions: new Set([1n]) },
+      { deleteEntry: entry({ sequenceNumber: 3n, partitionSpecId: 1, content: 1, partition: { 1000: 'books' } }), positions: new Set([2n]) },
+    ]
+    expect(applicablePositionDeletes(data, groups, metadata)).toEqual(new Set([2n]))
+  })
+
+  it('still applies position delete files when the deletion vector does not apply', () => {
+    const groups = [
+      { deleteEntry: entry({ sequenceNumber: 2n, partitionSpecId: 1, content: 1, partition: { 1000: 'books' }, fileFormat: 'parquet' }), positions: new Set([1n]) },
+      { deleteEntry: entry({ sequenceNumber: 3n, partitionSpecId: 1, content: 1, partition: { 1000: 'music' } }), positions: new Set([2n]) },
+    ]
+    expect(applicablePositionDeletes(data, groups, metadata)).toEqual(new Set([1n]))
+  })
+
+  it('returns an empty set with no groups', () => {
+    expect(applicablePositionDeletes(data, undefined, metadata)).toEqual(new Set())
+  })
+})
+
 /**
  * @param {object} options
  * @param {bigint} options.sequenceNumber
  * @param {number} options.partitionSpecId
  * @param {Record<number, unknown>} options.partition
  * @param {0|1|2} [options.content]
+ * @param {'parquet'|'puffin'} [options.fileFormat]
  * @returns {ManifestEntry}
  */
-function entry({ sequenceNumber, partitionSpecId, partition, content = 0 }) {
+function entry({ sequenceNumber, partitionSpecId, partition, content = 0, fileFormat }) {
   return {
     status: 1,
     sequence_number: sequenceNumber,
@@ -88,7 +121,7 @@ function entry({ sequenceNumber, partitionSpecId, partition, content = 0 }) {
     data_file: {
       content,
       file_path: 's3://bucket/table/data/a.parquet',
-      file_format: content === 1 ? 'puffin' : 'parquet',
+      file_format: fileFormat ?? (content === 1 ? 'puffin' : 'parquet'),
       partition,
       record_count: 1n,
       file_size_in_bytes: 1n,

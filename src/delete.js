@@ -32,6 +32,44 @@ export function deleteFileAppliesToDataEntry(dataEntry, deleteEntry, metadata, d
 }
 
 /**
+ * Whether a position delete entry is a deletion vector (puffin blob) rather
+ * than a position delete file.
+ *
+ * @param {ManifestEntry} deleteEntry
+ * @returns {boolean}
+ */
+export function isDeletionVector(deleteEntry) {
+  const dataFile = deleteEntry.data_file
+  return dataFile.file_format.toLowerCase() === 'puffin' ||
+    dataFile.content_offset != null ||
+    dataFile.content_size_in_bytes != null
+}
+
+/**
+ * Collect the row positions deleted from a data file by applicable position
+ * deletes. When a deletion vector applies to the data file, position delete
+ * files are ignored: the spec requires a newly added vector to contain all
+ * deletes from existing position delete files, so the vector replaces them.
+ *
+ * @param {ManifestEntry} dataEntry
+ * @param {Array<{deleteEntry: ManifestEntry, positions: Set<bigint>}> | undefined} positionDeleteGroups
+ * @param {TableMetadata} metadata
+ * @returns {Set<bigint>}
+ */
+export function applicablePositionDeletes(dataEntry, positionDeleteGroups, metadata) {
+  /** @type {Set<bigint>} */
+  const positions = new Set()
+  if (!positionDeleteGroups) return positions
+  const applicable = positionDeleteGroups.filter(group =>
+    deleteFileAppliesToDataEntry(dataEntry, group.deleteEntry, metadata, 'position'))
+  const vectors = applicable.filter(group => isDeletionVector(group.deleteEntry))
+  for (const group of vectors.length ? vectors : applicable) {
+    for (const pos of group.positions) positions.add(pos)
+  }
+  return positions
+}
+
+/**
  * @param {TableMetadata} metadata
  * @param {number|undefined} specId
  * @returns {boolean}

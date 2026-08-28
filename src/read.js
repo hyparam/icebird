@@ -7,7 +7,7 @@ import { selectVector } from 'squirreling'
 import { fetchDeleteMaps, readParquetMetadata, urlResolver } from './fetch.js'
 import { icebergMetadata } from './metadata.js'
 import { icebergManifests, splitManifestEntries } from './manifest.js'
-import { deleteFileAppliesToDataEntry } from './delete.js'
+import { applicablePositionDeletes, deleteFileAppliesToDataEntry } from './delete.js'
 import { equalityMatch, sanitize } from './utils.js'
 
 const DEFAULT_ROW_GROUP_CONCURRENCY = 4
@@ -209,15 +209,7 @@ export async function* readDataFile({
   const dataColumnNamesById = columnNamesById(parquetIcebergSchema)
 
   // Resolve which delete groups apply to this data file once.
-  const positionDeleteGroups = positionDeletesMap.get(data_file.file_path)
-  /** @type {Set<bigint>} */
-  const positionDeletes = new Set()
-  if (positionDeleteGroups) {
-    for (const group of positionDeleteGroups) {
-      if (!deleteFileAppliesToDataEntry(dataEntry, group.deleteEntry, metadata, 'position')) continue
-      for (const pos of group.positions) positionDeletes.add(pos)
-    }
-  }
+  const positionDeletes = applicablePositionDeletes(dataEntry, positionDeletesMap.get(data_file.file_path), metadata)
   // An equality delete file must be applied to a data file when all of the following are true:
   // - The data file's data sequence number is strictly less than the delete's data sequence number
   // - The data file's partition (both spec id and partition values) is equal to the delete file's
@@ -541,15 +533,7 @@ export async function* readDataFileBatches({
     fieldSources.set(requested.id, { constant: /** @type {SqlPrimitive} */ (constant) })
   }
 
-  /** @type {Set<bigint>} */
-  const positionDeletes = new Set()
-  const positionDeleteGroups = positionDeletesMap.get(data_file.file_path)
-  if (positionDeleteGroups) {
-    for (const group of positionDeleteGroups) {
-      if (!deleteFileAppliesToDataEntry(dataEntry, group.deleteEntry, metadata, 'position')) continue
-      for (const position of group.positions) positionDeletes.add(position)
-    }
-  }
+  const positionDeletes = applicablePositionDeletes(dataEntry, positionDeletesMap.get(data_file.file_path), metadata)
   const applicableEqualityGroups = equalityDeleteGroups.filter(group =>
     deleteFileAppliesToDataEntry(dataEntry, group.deleteEntry, metadata, 'equality'))
 
