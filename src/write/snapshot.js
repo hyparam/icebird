@@ -1,4 +1,5 @@
 import { fetchAvroRecords } from '../fetch.js'
+import { resolveInlineManifests } from '../manifest.js'
 import { writeManifestList } from './manifest-list.js'
 import { computeFieldSummary } from './stats.js'
 import { transformResultType } from './transform.js'
@@ -40,8 +41,13 @@ export function currentSnapshot(metadata) {
  */
 export async function loadPriorManifests(metadata, resolver) {
   const snap = currentSnapshot(metadata)
-  if (!snap?.['manifest-list']) return []
-  return /** @type {Manifest[]} */ (await fetchAvroRecords(snap['manifest-list'], resolver))
+  if (!snap) return []
+  if (snap['manifest-list']) {
+    return /** @type {Manifest[]} */ (await fetchAvroRecords(snap['manifest-list'], resolver))
+  }
+  // A table upgraded from v1 keeps snapshots that list manifests inline. Carry
+  // them forward, or the next snapshot silently drops all existing data.
+  return await resolveInlineManifests(snap, resolver)
 }
 
 /**

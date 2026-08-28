@@ -77,6 +77,34 @@ describe('icebergStageAppend', () => {
     expect(read).toEqual(records)
   })
 
+  it('carries forward v1 manifest locations when appending', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'http://test/stage-v1-manifest-paths'
+    const { resolver } = memResolver()
+
+    const created = await icebergCreate({ tableUrl, resolver, schema })
+    const first = [{ id: 1n, name: 'alice' }]
+    const staged1 = await icebergStageAppend({ tableUrl, metadata: created, records: first, resolver })
+    const committed1 = await fileCatalogCommit({ tableUrl, metadata: created, staged: staged1, resolver })
+
+    // The spec's v1 shape: `manifests` is a list of manifest file locations.
+    const snap = committed1.snapshots?.find(s => s['snapshot-id'] === committed1['current-snapshot-id'])
+    if (!snap) throw new Error('expected current snapshot')
+    const manifests = /** @type {any[]} */ (await fetchAvroRecords(snap['manifest-list'], resolver))
+    const inline = /** @type {any} */ ({ ...snap, manifests: manifests.map(m => m.manifest_path) })
+    delete inline['manifest-list']
+    /** @type {TableMetadata} */
+    const inherited = { ...committed1, snapshots: [inline] }
+    expect(await icebergRead({ tableUrl, metadata: inherited, resolver })).toEqual(first)
+
+    const second = [{ id: 2n, name: 'bob' }]
+    const staged2 = await icebergStageAppend({ tableUrl, metadata: inherited, records: second, resolver })
+    const committed2 = await fileCatalogCommit({ tableUrl, metadata: inherited, staged: staged2, resolver })
+
+    const read = await icebergRead({ tableUrl, metadata: committed2, resolver })
+    expect(read).toEqual([...first, ...second])
+  })
+
   it('assigns row lineage for v3 appends', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
     const tableUrl = 'http://test/stage-v3'

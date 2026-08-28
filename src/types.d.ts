@@ -201,7 +201,7 @@ export interface Snapshot {
   'sequence-number': number
   'timestamp-ms': number
   'manifest-list': string
-  manifests?: Manifest[]
+  manifests?: string[] // v1 only: manifest file locations
   summary: {
     // spec: "value of these fields should be of string type"
     operation: string

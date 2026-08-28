@@ -1,3 +1,5 @@
+import { avroMetadata } from './avro/avro.metadata.js'
+import { avroRead } from './avro/avro.read.js'
 import { fetchAvroRecords, urlResolver } from './fetch.js'
 
 /**
@@ -5,7 +7,7 @@ import { fetchAvroRecords, urlResolver } from './fetch.js'
  * pass `snapshotId` to time-travel to a prior snapshot in the metadata's
  * snapshot log.
  *
- * @import {Resolver, TableMetadata, Manifest, ManifestEntry} from '../src/types.js'
+ * @import {Resolver, TableMetadata, Manifest, ManifestEntry, Snapshot} from '../src/types.js'
  * @typedef {{ url: string, entries: ManifestEntry[] }[]} ManifestList
  * @param {object} options
  * @param {TableMetadata} options.metadata
@@ -36,13 +38,54 @@ export async function icebergManifests({ metadata, resolver, snapshotId }) {
     const manifestListUrl = snapshot['manifest-list']
     manifests = /** @type {Manifest[]} */ (await fetchAvroRecords(manifestListUrl, resolver))
   } else if (snapshot.manifests) {
-    // Use manifest URLs directly from snapshot
-    manifests = snapshot.manifests
+    // v1 snapshots list manifests inline instead of pointing at a manifest list
+    manifests = await resolveInlineManifests(snapshot, resolver)
   } else {
     throw new Error('No manifest information found in snapshot')
   }
 
   return await fetchManifests(manifests, resolver)
+}
+
+/**
+ * Turn a v1 snapshot's inline `manifests` (a list of manifest file locations)
+ * into manifest list records. Each manifest is read once to recover the
+ * length, spec id, and file counts a manifest list needs, so a table upgraded
+ * from v1 can still be read and appended to without rewriting its inherited
+ * metadata.
+ *
+ * @param {Snapshot} snapshot
+ * @param {Resolver} resolver
+ * @returns {Promise<Manifest[]>}
+ */
+export async function resolveInlineManifests(snapshot, resolver) {
+  const inline = snapshot.manifests ?? []
+  return await Promise.all(inline.map(async manifestPath => {
+    const ab = await resolver.reader(manifestPath)
+    const buffer = await ab.slice(0, ab.byteLength)
+    const reader = { view: new DataView(buffer), offset: 0 }
+    const { metadata, syncMarker } = await avroMetadata(reader)
+    const entries = /** @type {ManifestEntry[]} */ (await avroRead({ reader, metadata, syncMarker }))
+    const counts = [0, 0, 0]
+    const rows = [0n, 0n, 0n]
+    for (const entry of entries) {
+      counts[entry.status]++
+      rows[entry.status] += BigInt(entry.data_file.record_count)
+    }
+    return {
+      manifest_path: manifestPath,
+      manifest_length: BigInt(ab.byteLength),
+      partition_spec_id: Number(metadata['partition-spec-id'] ?? 0),
+      content: 0,
+      added_snapshot_id: BigInt(snapshot['snapshot-id']),
+      added_files_count: counts[1],
+      existing_files_count: counts[0],
+      deleted_files_count: counts[2],
+      added_rows_count: rows[1],
+      existing_rows_count: rows[0],
+      deleted_rows_count: rows[2],
+    }
+  }))
 }
 
 /**

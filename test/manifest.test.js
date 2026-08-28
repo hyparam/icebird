@@ -71,29 +71,22 @@ describe('Iceberg Manifests', () => {
         'timestamp-ms': 0,
         'manifest-list': '',
         summary: { operation: 'append' },
-        manifests: [{
-          manifest_path: manifestPath,
-          manifest_length: BigInt(manifestLength),
-          partition_spec_id: 0,
-          content: 1,
-          added_snapshot_id: 1n,
-          added_files_count: 1,
-          existing_files_count: 0,
-          deleted_files_count: 0,
-          added_rows_count: 1n,
-          existing_rows_count: 0n,
-          deleted_rows_count: 0n,
-        }],
+        // v1 shape: manifest file locations listed inline on the snapshot
+        manifests: [manifestPath],
       }],
     }
 
     const manifests = await icebergManifests({ metadata, resolver: countingResolver })
 
     expect(manifests).toHaveLength(1)
-    expect(calls).toEqual([{ url: manifestPath, byteLength: manifestLength }])
+    // first read recovers the manifest length, second read passes it through
+    expect(calls).toEqual([
+      { url: manifestPath, byteLength: undefined },
+      { url: manifestPath, byteLength: manifestLength },
+    ])
   })
 
-  it('inherits a null entry snapshot id from the manifest list', async () => {
+  it('inherits a null entry snapshot id from a v1 snapshot', async () => {
     const { resolver: memory } = memResolver()
     const manifestPath = 'http://test/inherited-snapshot-id.avro'
     const writer = memory.writer?.(manifestPath)
@@ -117,14 +110,7 @@ describe('Iceberg Manifests', () => {
       'current-snapshot-id': 77,
       snapshots: [{
         'snapshot-id': 77,
-        manifests: [{
-          manifest_path: manifestPath,
-          manifest_length: BigInt(writer.offset),
-          partition_spec_id: 0,
-          content: 0,
-          sequence_number: 5n,
-          added_snapshot_id: 77n,
-        }],
+        manifests: [manifestPath],
       }],
     })
 
