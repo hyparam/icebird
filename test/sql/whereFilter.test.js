@@ -311,3 +311,53 @@ describe.concurrent('whereToParquetFilter', () => {
     expect(whereToParquetFilter(where)).toBeUndefined()
   })
 })
+
+describe.concurrent('whereToParquetFilter with allowPartial', () => {
+  const bound = bin('>=', id('a'), lit(5))
+  const unsupported = bin('LIKE', id('b'), lit('x%'))
+
+  it('preserves exact conversions and declines unsupported leaves', () => {
+    expect(whereToParquetFilter(undefined, { allowPartial: true })).toBeUndefined()
+    expect(whereToParquetFilter(unsupported, { allowPartial: true })).toBeUndefined()
+    expect(whereToParquetFilter(bound, { allowPartial: true })).toEqual(whereToParquetFilter(bound))
+  })
+
+  it('retains either supported conjunct without changing the exact converter', () => {
+    for (const where of [bin('AND', bound, unsupported), bin('AND', unsupported, bound)]) {
+      expect(whereToParquetFilter(where)).toBeUndefined()
+      expect(whereToParquetFilter(where, {})).toBeUndefined()
+      expect(whereToParquetFilter(where, { allowPartial: false })).toBeUndefined()
+      expect(whereToParquetFilter(where, { allowPartial: true })).toEqual({ a: { $gte: 5 } })
+    }
+  })
+
+  it('does not drop unsupported disjuncts or negated conjuncts', () => {
+    expect(whereToParquetFilter(bin('OR', bound, unsupported), { allowPartial: true })).toBeUndefined()
+    expect(whereToParquetFilter(un('NOT', bin('AND', bound, unsupported)), { allowPartial: true })).toBeUndefined()
+  })
+
+  it('uses De Morgan to prune a negated OR and preserves double negation', () => {
+    expect(whereToParquetFilter(un('NOT', bin('OR', bound, unsupported)), { allowPartial: true }))
+      .toEqual({ a: { $lt: 5 } })
+    expect(whereToParquetFilter(un('NOT', un('NOT', bin('AND', bound, unsupported))), { allowPartial: true }))
+      .toEqual({ a: { $gte: 5 } })
+  })
+
+  it('combines conservative bounds from both OR branches', () => {
+    const where = bin('OR',
+      bin('AND', bound, unsupported),
+      bin('AND', bin('<', id('a'), lit(2)), unsupported)
+    )
+    expect(whereToParquetFilter(where)).toBeUndefined()
+    expect(whereToParquetFilter(where, { allowPartial: true }))
+      .toEqual({ $or: [{ a: { $gte: 5 } }, { a: { $lt: 2 } }] })
+  })
+
+  it('retains nullable comparisons and casts without dropping null guards', () => {
+    const where = cast('BOOL', bin('AND', bin('!=', id('a'), lit(5)), unsupported))
+    expect(whereToParquetFilter(where, { allowPartial: true }))
+      .toEqual({ $and: [{ a: { $ne: null } }, { a: { $ne: 5 } }] })
+    expect(whereToParquetFilter(bin('AND', bin('=', id('a'), lit(null)), bound), { allowPartial: true }))
+      .toEqual({ a: { $gte: 5 } })
+  })
+})

@@ -1,4 +1,4 @@
-import { collect, executeSql, readBatchColumn, valueAt } from 'squirreling'
+import { collect, executeSql, parseSql, readBatchColumn, valueAt } from 'squirreling'
 import { describe, expect, it } from 'vitest'
 import { icebergDataSource } from '../../src/sql/icebergDataSource.js'
 import { localResolver } from '../helpers.js'
@@ -163,6 +163,32 @@ describe.concurrent('icebergDataSource', () => {
         query,
       }))
       expect(result).toEqual(expected)
+    }
+  })
+
+  it('preserves deletes with mixed predicates through prepared and legacy scans', async () => {
+    for (const mode of ['prepared', 'legacy']) {
+      for (const fixture of [
+        { tableUrl: sparkTableUrl, metadataFileName: 'v3.metadata.json' },
+        { tableUrl, metadataFileName: 'v5.metadata.json' },
+      ]) {
+        const source = await icebergDataSource({ ...fixture, resolver })
+        const records = []
+        for await (const row of source.scan({}).rows()) {
+          if (!row.resolved) throw new Error('expected resolved Icebird row')
+          records.push(row.resolved)
+        }
+        const query = 'SELECT "Breed Name", "Popularity Rank" FROM t WHERE "Popularity Rank" > 5 AND "Breed Name" LIKE \'%a%\' ORDER BY "Popularity Rank" LIMIT 2 OFFSET 1'
+        const expected = await collect(executeSql({ tables: { t: records }, query }))
+        const table = mode === 'prepared' ? source : { columns: source.columns, scan: source.scan }
+        expect(await collect(executeSql({ tables: { t: table }, query }))).toEqual(expected)
+        expect(expected).toHaveLength(2)
+
+        // Empty projections must still count rows after position/equality deletes.
+        const emptyRows = []
+        for await (const row of source.scan({ columns: [] }).rows()) emptyRows.push(row)
+        expect(emptyRows).toHaveLength(records.length)
+      }
     }
   })
 
@@ -599,6 +625,63 @@ describe.concurrent('icebergDataSource partition pruning', () => {
 
     expect(out).toEqual([])
     expect(resolver.dataFilesRead()).toBe(0)
+  })
+
+  it('prunes mixed predicates through prepared and legacy scans and keeps residual limits', async () => {
+    for (const mode of ['prepared', 'legacy']) {
+      for (const [predicate, expected] of [
+        ['id IN (1, 2) AND name LIKE \'%Mopsy%\' LIMIT 1', [{ id: 2 }]],
+        ['id IN (1, 2) AND name LIKE \'%opsy%\' LIMIT 1 OFFSET 1', [{ id: 2 }]],
+        ['id = 1 AND name LIKE \'%missing%\' LIMIT 1', []],
+      ]) {
+        const resolver = countingResolver(localResolver('test/files'))
+        const source = await icebergDataSource({ tableUrl, resolver, metadataFileName: 'v2.metadata.json' })
+        const table = mode === 'prepared' ? source : { columns: source.columns, scan: source.scan }
+        const rows = await collect(executeSql({
+          tables: { t: table },
+          query: `SELECT id FROM t WHERE ${predicate}`,
+        }))
+        expect(rows).toEqual(expected)
+        expect(resolver.dataFilesRead()).toBe(1)
+      }
+    }
+  })
+
+  it('reports partial row and column scans honestly without capping candidates', async () => {
+    const statement = parseSql({ query: 'SELECT id FROM t WHERE id IN (1, 2) AND name LIKE \'%Mopsy%\'' })
+    if (statement.type !== 'select') throw new Error('expected SELECT')
+    for (const mode of ['rows', 'columns']) {
+      const resolver = countingResolver(localResolver('test/files'))
+      const source = await icebergDataSource({ tableUrl, resolver, metadataFileName: 'v2.metadata.json' })
+      const options = { where: statement.where, limit: 1, offset: 1 }
+      const values = []
+      if (mode === 'rows') {
+        const scan = source.scan({ ...options, columns: ['id'] })
+        expect(scan.appliedWhere).toBe(false)
+        expect(scan.appliedLimitOffset).toBe(false)
+        for await (const row of scan.rows()) values.push(await row.cells.id())
+      } else {
+        const scan = source.scanColumn({ ...options, column: 'id' })
+        if (!('chunks' in scan)) throw new Error('expected column scan hints')
+        expect(scan.appliedWhere).toBe(false)
+        expect(scan.appliedLimitOffset).toBe(false)
+        for await (const chunk of scan.chunks()) values.push(...Array.from(chunk))
+      }
+      expect(values).toEqual([1, 2])
+      expect(resolver.dataFilesRead()).toBe(1)
+    }
+  })
+
+  it('retains the full prepared predicate and bounds after partial pruning', async () => {
+    const source = await icebergDataSource({
+      tableUrl, resolver: localResolver('test/files'), metadataFileName: 'v2.metadata.json',
+    })
+    const statement = parseSql({ query: 'SELECT id FROM t WHERE id IN (1, 2) AND name LIKE \'%Mopsy%\'' })
+    if (statement.type !== 'select') throw new Error('expected SELECT')
+    const prepared = source.prepareScan({ columns: [], filter: statement.where, limit: 1, offset: 1 })
+    expect(prepared.residual).toEqual({ filter: statement.where, limit: 1, offset: 1 })
+    expect(prepared.properties.maxRows).toBe(2)
+    expect(prepared.properties.exactRows).toBeUndefined()
   })
 
   it('prunes a non-partition predicate via manifest column bounds', async () => {

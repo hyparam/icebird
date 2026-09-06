@@ -40,10 +40,11 @@ import { whereToParquetFilter } from './whereFilter.js'
  * - WHERE prunes whole data files before they are opened, using each manifest
  *   entry's partition tuple and per-column `lower_bounds`/`upper_bounds`, and
  *   is passed to hyparquet for conservative row-group, bloom-filter, and page-
- *   index pruning when the expression can be fully converted to a parquet
- *   filter (comparisons, IN, AND/OR/NOT on identifier vs literal). Prepared
- *   scans leave exact matching to the engine; legacy scans match retained rows
- *   after recovering their physical positions. Unsupported nodes (LIKE,
+ *   index pruning for supported parts of the expression (comparisons, IN,
+ *   AND/OR/NOT on identifier vs literal). Partial filters retain the full SQL
+ *   predicate and LIMIT/OFFSET in the engine. Prepared scans leave exact
+ *   matching to the engine; legacy scans match retained rows after recovering
+ *   their physical positions. Unsupported nodes (LIKE,
  *   functions, arithmetic, identifier vs identifier) stay in the engine.
  * - When WHERE is resolved at scan time (either absent or fully pushed) we
  *   cap the scan at `offset + limit` rows so the source terminates early.
@@ -120,7 +121,7 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
         if (!field) throw new Error(`Prepared scan requested unknown field id ${demand.field}`)
         return field
       })
-      const filter = whereToParquetFilter(request.filter)
+      const filter = whereToParquetFilter(request.filter, { allowPartial: true })
       const scanEntries = filter
         ? dataEntries.filter(entry =>
           partitionMightMatch(filter, entry, schema, tableMetadata) &&
@@ -162,11 +163,12 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
     },
     scan({ columns: scanColumns, where, limit, offset, signal }) {
       const rowColumns = scanColumns ?? columns
-      // Convert the WHERE AST to a hyparquet filter; undefined means the
-      // expression has parts we can't push down (LIKE, functions, etc.) and
-      // the engine must re-apply it.
-      const filter = whereToParquetFilter(where)
-      const appliedWhere = where !== undefined && filter !== undefined
+      // Only an exact conversion discharges WHERE. A partial filter still
+      // prunes files and rows, but leaves the full predicate and LIMIT/OFFSET
+      // to the engine so unsupported terms cannot admit or lose matches.
+      const exactFilter = whereToParquetFilter(where)
+      const filter = exactFilter ?? whereToParquetFilter(where, { allowPartial: true })
+      const appliedWhere = where !== undefined && exactFilter !== undefined
       // Scan pruning: drop data files whose partition tuple OR per-column
       // manifest bounds prove no row can match the filter. Manifest entries are
       // already in memory, so this is a cheap synchronous pre-filter that
@@ -278,15 +280,13 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
      * WHERE is pruned and pushed down exactly as in `scan`: whole data files
      * are dropped by partition tuple and per-column manifest bounds, and the
      * predicate is handed to hyparquet (row-group/page pruning plus per-row
-     * matching) when it fully converts to a parquet filter. Unsupported nodes
-     * (LIKE, functions, arithmetic) leave `appliedWhere: false` and the engine
-     * re-applies the predicate over the emitted values. `appliedLimitOffset`
-     * mirrors `scan`: OFFSET is pushed into the per-file seek and LIMIT bounds
-     * the read only when WHERE is fully resolved AND there is no WHERE, no
-     * deletes, and no pruning (position no longer tracks result rows
-     * otherwise); in every other case the source emits at most `offset+limit`
-     * values and the consumer applies the final slice. `signal` aborts between
-     * chunks, mirroring `scan`.
+     * matching) for supported parts of the predicate. Unsupported nodes
+     * (LIKE, functions, arithmetic) leave `appliedWhere: false` so the consumer
+     * must fall back to rows when it cannot evaluate the full predicate.
+     * `appliedLimitOffset` mirrors `scan`: position-based reads require no WHERE,
+     * deletes, or pruning. An exact WHERE can cap candidates at `offset+limit`;
+     * a partial WHERE cannot cap them before the engine applies the residual.
+     * `signal` aborts between chunks, mirroring `scan`.
      *
      * @param {object} options
      * @param {string} options.column - Name of the single column to stream.
@@ -301,8 +301,9 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
       // Mirror scan(): convert WHERE, prune files by manifest bounds, and only
       // treat LIMIT/OFFSET as position-pushable when no WHERE is matched
       // per-row, no deletes shift positions, and no file was pruned.
-      const filter = whereToParquetFilter(where)
-      const appliedWhere = where !== undefined && filter !== undefined
+      const exactFilter = whereToParquetFilter(where)
+      const filter = exactFilter ?? whereToParquetFilter(where, { allowPartial: true })
+      const appliedWhere = where !== undefined && exactFilter !== undefined
       const scanEntries = filter
         ? dataEntries.filter(entry =>
           partitionMightMatch(filter, entry, schema, tableMetadata) &&
