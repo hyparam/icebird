@@ -3,6 +3,7 @@ import { beforeAll, describe, expect, it } from 'vitest'
 import { fileCatalogCommit } from '../../src/write/commit.js'
 import { icebergCreate } from '../../src/create.js'
 import { icebergQuery } from '../../src/sql/icebergQuery.js'
+import { icebergDataSource } from '../../src/sql/icebergDataSource.js'
 import { icebergStageAppend } from '../../src/write/stage.js'
 import { memResolver } from '../helpers.js'
 
@@ -50,11 +51,15 @@ describe('pushed-down WHERE matches the engine on nullable columns', () => {
 
   /**
    * @param {string} predicate
+   * @param {boolean} [legacy]
    * @returns {Promise<{pushed: number[], engine: number[]}>}
    */
-  async function bothWays(predicate) {
+  async function bothWays(predicate, legacy = false) {
     const query = `SELECT id FROM t WHERE ${predicate}`
-    const results = await icebergQuery({ query, tables: { t: tableUrl }, resolver })
+    const source = legacy ? await icebergDataSource({ tableUrl, resolver }) : undefined
+    const results = source
+      ? executeSql({ query, tables: { t: { columns: source.columns, scan: source.scan } } })
+      : await icebergQuery({ query, tables: { t: tableUrl }, resolver })
     const pushed = (await collect(results)).map(row => Number(row.id))
     const engine = (await collect(await executeSql({ query, tables: { t: records } })))
       .map(row => Number(row.id))
@@ -83,6 +88,18 @@ describe('pushed-down WHERE matches the engine on nullable columns', () => {
     'NOT (n IN (5, 9))',
     // compound
     'n = 5 AND ts IS NOT NULL', 'n < 7 OR n > 8', 'NOT (n < 7 AND ts IS NOT NULL)',
+    // Partial filters must remain conservative through NULL, OR and NOT.
+    'n >= 5 AND s LIKE \'b%\'',
+    's LIKE \'b%\' AND n >= 5',
+    'n IS NULL AND s LIKE \'a%\'',
+    'n != 5 AND s LIKE \'b%\'',
+    'n = NULL AND s LIKE \'a%\'',
+    'n >= 5 OR s LIKE \'a%\'',
+    'NOT (n >= 5 AND s LIKE \'a%\')',
+    'NOT (n >= 5 OR s LIKE \'a%\')',
+    'NOT (NOT (n >= 5 AND s LIKE \'b%\'))',
+    '(n = 5 AND s LIKE \'a%\') OR (n = 9 AND s LIKE \'b%\')',
+    'CAST(n >= 5 AND s LIKE \'b%\' AS BOOL)',
     // TEXT cast of a non-primitive literal
     's = CAST(TIMESTAMP \'2026-08-11T00:00:00Z\' AS TEXT)',
     's = CAST(5 AS TEXT)',
@@ -90,8 +107,10 @@ describe('pushed-down WHERE matches the engine on nullable columns', () => {
 
   for (const predicate of predicates) {
     it(`agrees for ${predicate}`, async () => {
-      const { pushed, engine } = await bothWays(predicate)
-      expect(pushed).toEqual(engine)
+      for (const legacy of [false, true]) {
+        const { pushed, engine } = await bothWays(predicate, legacy)
+        expect(pushed).toEqual(engine)
+      }
     })
   }
 })

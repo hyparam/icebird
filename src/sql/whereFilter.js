@@ -1,35 +1,37 @@
 /**
  * Convert a squirreling WHERE clause AST to a hyparquet ParquetQueryFilter.
- * Returns undefined when any sub-expression can't be converted, so callers
- * can fall back to engine-side filtering.
+ * By default, returns undefined unless the entire predicate can be converted
+ * with the same SQL null semantics (see `guardNull`).
  *
- * A converted filter replaces engine-side WHERE rather than pre-filtering for
- * it, so it must select exactly the rows the engine selects - including on
- * null cells, where the two evaluators disagree by default (see `guardNull`).
+ * With `allowPartial`, returns a conservative filter for supported parts:
+ * every SQL match passes, but extra rows may pass too. Callers must still
+ * evaluate the full SQL predicate before applying LIMIT/OFFSET.
  *
- * Filter keys are the SQL identifier names (iceberg field names as exposed by
- * the data source). Per-file mapping to physical parquet column names happens
- * downstream in `readDataFile`.
+ * Filter keys are SQL identifier names (Iceberg field names). Per-file
+ * mapping to physical Parquet column names happens in the reader.
  *
  * @import {ExprNode} from 'squirreling'
  * @import {BinaryNode, CastType, InValuesNode} from 'squirreling/src/ast.js'
  * @import {ParquetQueryFilter} from 'hyparquet'
  * @param {ExprNode | undefined} where
+ * @param {object} [options]
+ * @param {boolean} [options.allowPartial=false] Allow conservative partial conversion.
  * @returns {ParquetQueryFilter | undefined}
  */
-export function whereToParquetFilter(where) {
+export function whereToParquetFilter(where, { allowPartial = false } = {}) {
   if (!where) return undefined
-  return convertExpr(where, false)
+  return convertExpr(where, false, allowPartial)
 }
 
 /**
  * @param {ExprNode} node
  * @param {boolean} negate
+ * @param {boolean} [partial] Allow conservative filters instead of exact matching.
  * @returns {ParquetQueryFilter | undefined}
  */
-function convertExpr(node, negate) {
+function convertExpr(node, negate, partial = false) {
   if (node.type === 'unary' && node.op === 'NOT') {
-    return convertExpr(node.argument, !negate)
+    return convertExpr(node.argument, !negate, partial)
   }
   if (node.type === 'unary' && (node.op === 'IS NULL' || node.op === 'IS NOT NULL')) {
     if (node.argument.type !== 'identifier') return undefined
@@ -37,7 +39,7 @@ function convertExpr(node, negate) {
     return { [node.argument.name]: { [isNull ? '$eq' : '$ne']: null } }
   }
   if (node.type === 'binary') {
-    return convertBinary(node, negate)
+    return convertBinary(node, negate, partial)
   }
   if (node.type === 'in valuelist') {
     return convertInValues(node, negate)
@@ -46,7 +48,7 @@ function convertExpr(node, negate) {
     // A cast at boolean position (WHERE CAST(a = 1 AS INT)) keeps the operand's
     // truthiness only for boolean/numeric targets; TEXT ('false' is truthy) and
     // TIMESTAMP (any Date is truthy) do not, so those fall back to the engine.
-    return convertExpr(node.expr, negate)
+    return convertExpr(node.expr, negate, partial)
   }
   return undefined
 }
@@ -59,13 +61,16 @@ const TRUTHINESS_PRESERVING_CASTS = new Set(
 /**
  * @param {BinaryNode} node
  * @param {boolean} negate
+ * @param {boolean} partial
  * @returns {ParquetQueryFilter | undefined}
  */
-function convertBinary({ op, left, right }, negate) {
+function convertBinary({ op, left, right }, negate, partial) {
   if (op === 'AND') {
-    const l = convertExpr(left, negate)
-    const r = convertExpr(right, negate)
-    if (!l || !r) return undefined
+    const l = convertExpr(left, negate, partial)
+    const r = convertExpr(right, negate, partial)
+    // A conjunct is necessary for a match; a disjunct is not. Negation
+    // swaps those roles, so never drop a child from NOT (a AND b).
+    if (!l || !r) return partial && !negate ? l ?? r : undefined
     return negate ? { $or: [l, r] } : { $and: [l, r] }
   }
   if (op === 'OR') {
@@ -75,9 +80,9 @@ function convertBinary({ op, left, right }, negate) {
     // (null cell) would match. Pushing the negation into the children keeps
     // it at the leaves, where each operator handles null cells itself, and
     // `$and` prunes on row-group statistics where `$nor` never can.
-    const l = convertExpr(left, negate)
-    const r = convertExpr(right, negate)
-    if (!l || !r) return undefined
+    const l = convertExpr(left, negate, partial)
+    const r = convertExpr(right, negate, partial)
+    if (!l || !r) return partial && negate ? l ?? r : undefined
     return negate ? { $and: [l, r] } : { $or: [l, r] }
   }
   if (op === 'LIKE') return undefined

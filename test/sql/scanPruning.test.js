@@ -393,11 +393,14 @@ describe('timestamp predicate pushdown on a day-partitioned table', () => {
   })
 
   it('returns the same rows as engine-side filtering', async () => {
-    // The added `id + 0 >= 0` conjunct is a tautology, but arithmetic is not
-    // pushable, so the whole WHERE falls back to the engine and reads all files.
+    // Casting the column prevents pushdown even though the cast is an identity.
+    // Adding an unsupported conjunct alone now preserves timestamp pruning.
     const pushed = await query('message_created_at >= TIMESTAMP \'2026-08-06T00:00:00Z\'')
-    const engine = await query('message_created_at >= TIMESTAMP \'2026-08-06T00:00:00Z\' AND id + 0 >= 0')
+    const mixed = await query('message_created_at >= TIMESTAMP \'2026-08-06T00:00:00Z\' AND id + 0 >= 0')
+    const engine = await query('CAST(message_created_at AS TIMESTAMP) >= TIMESTAMP \'2026-08-06T00:00:00Z\'')
     expect(pushed.rows).toEqual(engine.rows)
+    expect(mixed.rows).toEqual(engine.rows)
+    expect(mixed.dataFilesRead).toBe(1)
     expect(engine.dataFilesRead).toBe(3)
     expect(pushed.dataFilesRead).toBe(1)
   })
