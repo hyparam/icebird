@@ -1,5 +1,8 @@
 # Icebird Changelog
 
+## [0.8.28]
+ - WHERE clauses that only partially convert to a parquet filter still prune data files and row groups
+
 ## [0.8.27]
  - Nested fields are projected by field id, and `schema.name-mapping.default` is applied to parquet files written without field ids, so structs and lists survive renames and id-less files
  - Position delete files are ignored for a data file when a deletion vector applies to it, per the v3 spec
