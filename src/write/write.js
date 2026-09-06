@@ -601,13 +601,15 @@ async function commitWithRetry({ catalog, target, ctx, stage }) {
       if (!retryEnabled || !isCommitConflict(err)) throw err
       if (attempt === policy.maxAttempts) {
         throw new Error(
-          `${catalog.type} catalog commit failed after ${policy.maxAttempts} attempts due to concurrent commits`
+          `${catalog.type} catalog commit failed after ${policy.maxAttempts} attempts due to concurrent commits`,
+          { cause: err }
         )
       }
       const elapsed = Date.now() - startedAt
       if (elapsed >= policy.totalTimeoutMs) {
         throw new Error(
-          `${catalog.type} catalog commit retry budget exhausted after ${attempt} attempts and ${elapsed}ms (limit ${policy.totalTimeoutMs}ms)`
+          `${catalog.type} catalog commit retry budget exhausted after ${attempt} attempts and ${elapsed}ms (limit ${policy.totalTimeoutMs}ms)`,
+          { cause: err }
         )
       }
       const remaining = policy.totalTimeoutMs - elapsed

@@ -32,7 +32,8 @@ export async function icebergManifests({ metadata, resolver, snapshotId }) {
   }
 
   // Get manifest URLs from snapshot
-  let manifests = []
+  /** @type {Manifest[]} */
+  let manifests
   if (snapshot['manifest-list']) {
     // Fetch manifest list and extract manifest URLs
     const manifestListUrl = snapshot['manifest-list']

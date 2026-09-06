@@ -722,7 +722,7 @@ function validateWritablePartitionSpec(spec, schema) {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     if (message.startsWith('unsupported partition transform: ')) {
-      throw new Error(`add-spec: ${message}`)
+      throw new Error(`add-spec: ${message}`, { cause: err })
     }
     throw err
   }

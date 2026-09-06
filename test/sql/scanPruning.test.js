@@ -357,7 +357,7 @@ describe('timestamp predicate pushdown on a day-partitioned table', () => {
     vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
     const tableUrl = 'mem://events'
     const { resolver: memR } = memResolver()
-    let metadata = await icebergCreate({ tableUrl, resolver: memR, schema, partitionSpec })
+    const metadata = await icebergCreate({ tableUrl, resolver: memR, schema, partitionSpec })
     const records = []
     let id = 0n
     for (const day of days) {
@@ -366,7 +366,7 @@ describe('timestamp predicate pushdown on a day-partitioned table', () => {
       }
     }
     const staged = await icebergStageAppend({ tableUrl, metadata, records, resolver: memR })
-    metadata = await fileCatalogCommit({ tableUrl, metadata, staged, resolver: memR })
+    await fileCatalogCommit({ tableUrl, metadata, staged, resolver: memR })
     const { resolver, dataFilesRead } = countingResolver({ reader: memR.reader })
     return { tableUrl, resolver, dataFilesRead }
   }

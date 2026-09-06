@@ -30,7 +30,8 @@ export async function resolveAwsCredentials({
     if (code === 'ERR_MODULE_NOT_FOUND') {
       throw new Error(
         'Cannot find module \'@aws-sdk/credential-providers\'. '
-        + 'Install the optional peer dependency: npm install @aws-sdk/credential-providers'
+        + 'Install the optional peer dependency: npm install @aws-sdk/credential-providers',
+        { cause: err }
       )
     }
     throw err

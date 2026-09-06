@@ -170,7 +170,7 @@ export async function resolveMetadata({ tableUrl, metadataFileName, resolver, li
         return { metadata: parseIcebergJson(text), metadataFileName: match }
       }
     } catch { /* lister failed, fall through */ }
-    throw new Error(`failed to get iceberg metadata: ${/** @type {Error} */ (err).message}`)
+    throw new Error(`failed to get iceberg metadata: ${/** @type {Error} */ (err).message}`, { cause: err })
   }
 }
 
