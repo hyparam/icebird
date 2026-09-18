@@ -946,6 +946,9 @@ describe.concurrent('icebergDataSource scanColumn', () => {
     /** @type {AsyncDataSource} */
     const spied = {
       ...source,
+      // Exercise the compatibility hook even with engines that prefer batches.
+      prepareScan: undefined,
+      schema: undefined,
       /** @type {NonNullable<AsyncDataSource['scanColumn']>} */
       scanColumn(options) {
         if (options.where !== undefined) sawWhere = true
@@ -974,6 +977,9 @@ describe.concurrent('icebergDataSource scanColumn', () => {
     /** @type {AsyncDataSource} */
     const spied = {
       ...source,
+      // Exercise the compatibility hook even with engines that prefer batches.
+      prepareScan: undefined,
+      schema: undefined,
       /** @type {NonNullable<AsyncDataSource['scanColumn']>} */
       scanColumn(options) {
         scanColumnCalls++
@@ -1041,6 +1047,8 @@ describe.concurrent('icebergDataSource scanColumn', () => {
     /** @type {AsyncDataSource} */
     const spied = {
       ...source,
+      prepareScan: undefined,
+      schema: undefined,
       /** @type {NonNullable<AsyncDataSource['scanColumn']>} */
       scanColumn(options) {
         scanColumnCalls++

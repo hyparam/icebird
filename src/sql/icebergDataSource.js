@@ -2,7 +2,7 @@ import { asyncRow } from 'squirreling'
 import { fetchDeleteMaps, urlResolver } from '../fetch.js'
 import { icebergManifests, splitManifestEntries } from '../manifest.js'
 import { icebergMetadata } from '../metadata.js'
-import { readDataFile, readDataFileBatches } from '../read.js'
+import { readDataFile, readDataFileBatches, readDataFileColumn } from '../read.js'
 import { fileMightMatch, partitionMightMatch } from '../prune.js'
 import { whereToParquetFilter } from './whereFilter.js'
 
@@ -269,20 +269,20 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
     },
     /**
      * Streams a single column's values in row order as an async iterable of
-     * chunks (one chunk per parquet row group), so peak memory is bounded by a
-     * single row group's worth of values rather than the whole table. This is
+     * native column chunks, without constructing intermediate row objects.
+     * Contiguous numeric chunks retain their typed arrays. This is
      * squirreling's optional `AsyncDataSource.scanColumn` hook: its
      * `tryColumnScanAggregate` consumes it to compute a scalar aggregate
      * (`COUNT`/`MIN`/`MAX`/`SUM`/`AVG`, low-cardinality `COUNT(DISTINCT …)`) in
-     * O(1)/O(cardinality) state; without the hook the engine falls back to
-     * buffering every scanned row.
+     * O(1)/O(cardinality) state. Engines can also consume prepareScan directly
+     * to share one native scan across multiple aggregate columns.
      *
      * WHERE is pruned and pushed down exactly as in `scan`: whole data files
      * are dropped by partition tuple and per-column manifest bounds, and the
      * predicate is handed to hyparquet (row-group/page pruning plus per-row
      * matching) for supported parts of the predicate. Unsupported nodes
      * (LIKE, functions, arithmetic) leave `appliedWhere: false` so the consumer
-     * must fall back to rows when it cannot evaluate the full predicate.
+     * must evaluate the remaining predicate with all required columns.
      * `appliedLimitOffset` mirrors `scan`: position-based reads require no WHERE,
      * deletes, or pruning. An exact WHERE can cap candidates at `offset+limit`;
      * a partial WHERE cannot cap them before the engine applies the residual.
@@ -351,8 +351,7 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
               ? Math.min(recordCount, fileRowStart + remaining)
               : recordCount
 
-            let stop = false
-            for await (const batch of readDataFile({
+            for await (const chunk of readDataFileColumn({
               dataEntry: entry,
               fileRowStart,
               fileRowEnd,
@@ -363,28 +362,20 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
               positionDeletesMap,
               equalityDeleteGroups,
               wantedColumns,
+              column,
+              limit: remaining,
               filter,
               signal,
             })) {
               if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
-              // OFFSET is either already spent at fileRowStart (canPushOffset)
-              // or deferred to the consumer via appliedLimitOffset: false, so
-              // batches start at 0 here. `take` still caps the emitted count.
-              let end = batch.length
-              if (remaining !== Infinity && end > remaining) {
-                end = remaining
-                stop = true
-              }
-              /** @type {SqlPrimitive[]} */
-              const chunk = []
-              for (let i = 0; i < end; i++) chunk.push(batch[i][column])
+              // The native reader bounds the chunk before resolving payloads.
               if (chunk.length > 0) {
                 yield chunk
                 remaining -= chunk.length
               }
-              if (stop || remaining <= 0) break
+              if (remaining <= 0) break
             }
-            if (stop || remaining <= 0) break
+            if (remaining <= 0) break
           }
         },
       }
