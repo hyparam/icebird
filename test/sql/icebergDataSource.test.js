@@ -1,5 +1,6 @@
 import { collect, executeSql, parseSql, readBatchColumn, valueAt } from 'squirreling'
 import { describe, expect, it } from 'vitest'
+import { icebergMetadata } from '../../src/metadata.js'
 import { icebergDataSource } from '../../src/sql/icebergDataSource.js'
 import { localResolver } from '../helpers.js'
 
@@ -39,6 +40,37 @@ describe.concurrent('icebergDataSource', () => {
       'Popularity Rank',
     ])
     expect(source.schema.fields.map(field => field.name)).toEqual(source.columns)
+  })
+
+  it('honors appliedWhere for defaulted fields absent from older files, before LIMIT', async () => {
+    const metadata = await icebergMetadata({ tableUrl, resolver, metadataFileName: 'v2.metadata.json' })
+    const schema = metadata.schemas.find(schema => schema['schema-id'] === metadata['current-schema-id'])
+    if (!schema) throw new Error('expected current schema')
+    schema.fields.push({ id: 100, name: 'defaulted', type: 'double', required: false, 'initial-default': 42 })
+    const source = await icebergDataSource({ tableUrl, resolver, metadata })
+    for (const mode of ['rows', 'columns']) {
+      for (const [predicate, expected] of [
+        ['defaulted = 99', []],
+        ['defaulted = 42 AND "Popularity Rank" >= 20', [20n]],
+        ['defaulted = 99 OR "Popularity Rank" >= 20', [20n]],
+      ]) {
+        const statement = parseSql({ query: `SELECT "Popularity Rank" FROM t WHERE ${predicate}` })
+        if (statement.type !== 'select') throw new Error('expected SELECT')
+        const options = { where: statement.where, limit: 1 }
+        const values = []
+        if (mode === 'rows') {
+          const result = source.scan({ ...options, columns: ['Popularity Rank'] })
+          expect(result.appliedWhere).toBe(true)
+          for await (const row of result.rows()) values.push(row.resolved?.['Popularity Rank'])
+        } else {
+          const result = source.scanColumn({ ...options, column: 'Popularity Rank' })
+          if (!('chunks' in result)) throw new Error('expected column scan hints')
+          expect(result.appliedWhere).toBe(true)
+          for await (const chunk of result.chunks()) values.push(...Array.from(chunk))
+        }
+        expect(values).toEqual(expected)
+      }
+    }
   })
 
   it('keeps parquet columns deferred and reads only a requested selection', async () => {
