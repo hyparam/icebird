@@ -3,7 +3,7 @@ import { compressors } from 'hyparquet-compressors'
 import { columnsNeededForFilter, matchFilter } from 'hyparquet/src/filter.js'
 import { isListLike, isMapLike } from 'hyparquet/src/schema.js'
 import { concat } from 'hyparquet/src/utils.js'
-import { selectVector } from 'squirreling'
+import { readBatchColumn, selectBatch, selectVector, valueAt } from 'squirreling'
 import { fetchDeleteMaps, readParquetMetadata, urlResolver } from './fetch.js'
 import { icebergMetadata } from './metadata.js'
 import { icebergManifests, splitManifestEntries } from './manifest.js'
@@ -459,6 +459,9 @@ export async function* readDataFile({
  * @param {Map<string, Array<{deleteEntry: ManifestEntry, positions: Set<bigint>}>>} [options.positionDeletesMap]
  * @param {Array<{deleteEntry: ManifestEntry, rows: Record<string, any>[]}>} [options.equalityDeleteGroups]
  * @param {ParquetQueryFilter} [options.filter] - Conservative pruning predicate keyed by Iceberg field name. Exact matching remains in the query engine.
+ * @param {number} [options.fileRowStart] - First physical row to read.
+ * @param {number} [options.fileRowEnd] - Exclusive physical row bound.
+ * @param {boolean} [options.applyFilter] - Match the converted filter as well as pruning.
  * @param {AbortSignal} [options.signal]
  * @returns {AsyncGenerator<AsyncBatch>}
  */
@@ -468,6 +471,9 @@ export async function* readDataFileBatches({
   metadata,
   resolver,
   fields,
+  fileRowStart = 0,
+  fileRowEnd,
+  applyFilter = false,
   positionDeletesMap = new Map(),
   equalityDeleteGroups = [],
   filter,
@@ -559,6 +565,8 @@ export async function* readDataFileBatches({
     metadata: parquetMetadata,
     columns: [...scanColumns],
     pruningFilter: parquetFilter,
+    rowStart: fileRowStart,
+    rowEnd: fileRowEnd,
     compressors,
     filterStrict: false,
     useBloomFilters: true,
@@ -572,7 +580,7 @@ export async function* readDataFileBatches({
     const { rowStart: batchStart, rowEnd: batchEnd } = scan.ranges[rangeIndex]
     signal?.throwIfAborted()
     const batchRows = batchEnd - batchStart
-    const selection = await deleteSelection({
+    let selection = await deleteSelection({
       scan,
       rowStart: batchStart,
       rowEnd: batchEnd,
@@ -582,6 +590,9 @@ export async function* readDataFileBatches({
       dataColumnNamesById,
       signal,
     })
+    if (applyFilter && parquetFilter && selectedRows(selection) > 0) {
+      selection = await filterSelection(scan, parquetFilter, selection, batchStart, signal)
+    }
     if (selectedRows(selection) === 0) continue
     /** @type {AsyncBatch} */
     const batch = {
@@ -625,6 +636,123 @@ export async function* readDataFileBatches({
       }),
     }
     yield batch
+  }
+}
+
+/**
+ * Match a converted predicate using a reusable scratch row over decoded filter
+ * columns. Output rows are never constructed, and scan.readColumn reuses these
+ * decoded ranges when the output column also participates in the predicate.
+ *
+ * @param {ParquetScan} scan
+ * @param {ParquetQueryFilter} filter
+ * @param {RowSelection} selection
+ * @param {number} rowStart
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<RowSelection>}
+ */
+async function filterSelection(scan, filter, selection, rowStart, signal) {
+  const names = columnsNeededForFilter(filter)
+  const vectors = await Promise.all(names.map(column =>
+    scan.readColumn({ column, rowStart, rowEnd: rowStart + selection.length })))
+  signal?.throwIfAborted()
+  const count = selectedRows(selection)
+  const indices = new Uint32Array(count)
+  /** @type {Record<string, any>} */
+  const row = {}
+  let kept = 0
+  for (let i = 0; i < count; i++) {
+    const index = selection.type === 'all' ? i
+      : selection.type === 'range' ? selection.start + i : selection.indices[i]
+    for (let j = 0; j < names.length; j++) row[names[j]] = vectors[j][index]
+    if (matchFilter(row, filter, false)) indices[kept++] = index
+  }
+  if (kept === count) return selection
+  if (kept > 0 && indices[kept - 1] - indices[0] + 1 === kept) {
+    return { type: 'range', start: indices[0], end: indices[kept - 1] + 1, length: selection.length }
+  }
+  return { type: 'indices', indices: indices.subarray(0, kept), length: selection.length }
+}
+
+/**
+ * Compatibility column chunks backed by native vectors. Contiguous numeric
+ * and ordinary columns pass through without a row-object round trip; only
+ * sparse selections, constants and validity-bearing vectors need gathering.
+ * Synthesized v3 lineage columns retain the lineage-aware reader.
+ *
+ * @param {Parameters<typeof readDataFile>[0] & {column: string, limit?: number}} options
+ * @returns {AsyncGenerator<ArrayLike<SqlPrimitive>>}
+ */
+export async function* readDataFileColumn(options) {
+  const { column, schema, limit = Infinity, signal } = options
+  let remaining = limit
+  if (remaining <= 0) return
+  // These virtual columns require lineage synthesis from the row reader.
+  if (options.rowLineage && (column === '_row_id' || column === '_last_updated_sequence_number')) {
+    yield* readLineageColumn(options)
+    return
+  }
+
+  const field = schema.fields.find(field => field.name === column)
+  if (!field) throw new Error(`Iceberg column not found: ${column}`)
+  const fields = [{
+    id: field.id,
+    name: field.name,
+    dataType: /** @type {const} */ ({ type: 'unknown' }),
+    nullable: !field.required,
+  }]
+  for await (let batch of readDataFileBatches({ ...options, fields, applyFilter: true })) {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+
+    // The selection already excludes deletes and filtered rows. Apply the limit
+    // to surviving rows before decoding the output column to avoid unused reads.
+    const count = selectedRows(batch.selection)
+    const take = Math.min(count, remaining)
+    if (take < count) batch = selectBatch(batch, { type: 'range', start: 0, end: take, length: count })
+    const vector = await readBatchColumn({ batch, columnIndex: 0, signal })
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+    yield columnChunk(vector)
+
+    // A consumer can abort while the generator is suspended at yield.
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+    remaining -= take
+    if (remaining <= 0) return
+  }
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+}
+
+/**
+ * Expose contiguous storage directly; gather only vectors whose selection,
+ * constant value or null bitmap cannot be represented by a plain array view.
+ *
+ * @param {ColumnVector} vector
+ * @returns {ArrayLike<SqlPrimitive>}
+ */
+function columnChunk(vector) {
+  if (vector.type === 'values') return vector.values
+  if (vector.type === 'typed' && !vector.validity) return vector.values
+
+  const values = new Array(vector.length)
+  for (let i = 0; i < values.length; i++) values[i] = valueAt(vector, i)
+  return values
+}
+
+/**
+ * Read synthesized v3 lineage values through the lineage-aware row reader.
+ *
+ * @param {Parameters<typeof readDataFileColumn>[0]} options
+ * @returns {AsyncGenerator<ArrayLike<SqlPrimitive>>}
+ */
+async function* readLineageColumn(options) {
+  const { column, limit = Infinity } = options
+  let remaining = limit
+  for await (const rows of readDataFile(options)) {
+    const count = Math.min(rows.length, remaining)
+    const values = new Array(count)
+    for (let i = 0; i < count; i++) values[i] = rows[i][column]
+    yield values
+    remaining -= count
+    if (remaining <= 0) return
   }
 }
 
