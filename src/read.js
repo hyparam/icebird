@@ -261,19 +261,16 @@ export async function* readDataFile({
     ? columns
     : parquetColumnNames.filter(n => n !== undefined)
 
-  // Remap filter from iceberg field names to physical parquet names. If any
-  // referenced column is absent in this file (added later in the iceberg
-  // schema and not yet materialized), drop the filter for this file so the
-  // read still succeeds; the data source promises only that WHERE *may* be
-  // applied at scan time, and the per-row delete loop yields all rows in
-  // that case (the engine will re-filter when `appliedWhere` is false).
+  // Pruning uses physical names, but exact matching must also handle fields
+  // supplied by Iceberg defaults or partition metadata rather than Parquet.
   /** @type {Record<string, string>} */
   const icebergToParquet = {}
   for (let i = 0; i < schema.fields.length; i++) {
     const parquetName = parquetColumnNames[i]
     if (parquetName) icebergToParquet[schema.fields[i].name] = parquetName
   }
-  const parquetFilter = filter ? remapFilterColumns(filter, icebergToParquet) : undefined
+  const fileFilter = prepareFileFilter(filter, icebergToParquet, schema, partitionSpec, data_file.partition)
+  const parquetFilter = fileFilter?.parquetFilter
 
   // Keep pruning and exact matching separate. parquetScan retains absolute
   // physical ranges after row-group, bloom-filter, and page-index pruning;
@@ -281,8 +278,8 @@ export async function* readDataFile({
   // by Iceberg position deletes. Exact matching happens below after `pos` has
   // been recovered.
   const readColumns = [...parquetColumns]
-  if (parquetFilter) {
-    for (const column of columnsNeededForFilter(parquetFilter)) {
+  if (fileFilter) {
+    for (const column of fileFilter.columns) {
       if (!readColumns.includes(column)) readColumns.push(column)
     }
   }
@@ -327,7 +324,7 @@ export async function* readDataFile({
     for (let idx = 0; idx < rows.length; idx++) {
       const row = rows[idx]
       const pos = BigInt(readStart + idx)
-      if (parquetFilter && !matchFilter(row, parquetFilter, false)) continue
+      if (fileFilter && !fileFilter.matches(row)) continue
       if (positionDeletes.has(pos)) continue
       if (applicableEqualityGroups.some(group =>
         group.rows.some(predicate => equalityMatch(row, predicate, dataColumnNamesById))
@@ -559,7 +556,11 @@ export async function* readDataFileBatches({
       }
     }
   }
-  const parquetFilter = filter ? remapFilterColumns(filter, icebergToParquet) : undefined
+  const fileFilter = prepareFileFilter(filter, icebergToParquet, schema, partitionSpec, data_file.partition)
+  const parquetFilter = fileFilter?.parquetFilter
+  if (applyFilter && fileFilter) {
+    for (const column of fileFilter.columns) scanColumns.add(column)
+  }
   const scan = await parquetScan({
     file,
     metadata: parquetMetadata,
@@ -590,8 +591,8 @@ export async function* readDataFileBatches({
       dataColumnNamesById,
       signal,
     })
-    if (applyFilter && parquetFilter && selectedRows(selection) > 0) {
-      selection = await filterSelection(scan, parquetFilter, selection, batchStart, signal)
+    if (applyFilter && fileFilter && selectedRows(selection) > 0) {
+      selection = await filterSelection(scan, fileFilter, selection, batchStart, signal)
     }
     if (selectedRows(selection) === 0) continue
     /** @type {AsyncBatch} */
@@ -645,14 +646,14 @@ export async function* readDataFileBatches({
  * decoded ranges when the output column also participates in the predicate.
  *
  * @param {ParquetScan} scan
- * @param {ParquetQueryFilter} filter
+ * @param {NonNullable<ReturnType<typeof prepareFileFilter>>} filter
  * @param {RowSelection} selection
  * @param {number} rowStart
  * @param {AbortSignal} [signal]
  * @returns {Promise<RowSelection>}
  */
 async function filterSelection(scan, filter, selection, rowStart, signal) {
-  const names = columnsNeededForFilter(filter)
+  const names = filter.columns
   const vectors = await Promise.all(names.map(column =>
     scan.readColumn({ column, rowStart, rowEnd: rowStart + selection.length })))
   signal?.throwIfAborted()
@@ -665,7 +666,7 @@ async function filterSelection(scan, filter, selection, rowStart, signal) {
     const index = selection.type === 'all' ? i
       : selection.type === 'range' ? selection.start + i : selection.indices[i]
     for (let j = 0; j < names.length; j++) row[names[j]] = vectors[j][index]
-    if (matchFilter(row, filter, false)) indices[kept++] = index
+    if (filter.matches(row)) indices[kept++] = index
   }
   if (kept === count) return selection
   if (kept > 0 && indices[kept - 1] - indices[0] + 1 === kept) {
@@ -935,6 +936,58 @@ function selectionRange(selection) {
     end = Math.max(end, index + 1)
   }
   return selection.indices.length === 0 ? { start: 0, end: 0 } : { start, end }
+}
+
+/**
+ * Keep physical pruning separate from exact matching. A missing physical
+ * column disables pruning, not the predicate: older files still have logical
+ * values supplied by identity partitions, initial defaults, or null.
+ *
+ * @param {ParquetQueryFilter | undefined} filter
+ * @param {Record<string, string>} mapping
+ * @param {Schema} schema
+ * @param {TableMetadata['partition-specs'][number] | undefined} partitionSpec
+ * @param {ManifestEntry['data_file']['partition']} partition
+ * @returns {{parquetFilter?: ParquetQueryFilter, columns: string[], matches: (row: Record<string, any>) => boolean} | undefined}
+ */
+function prepareFileFilter(filter, mapping, schema, partitionSpec, partition) {
+  if (!filter) return undefined
+  const parquetFilter = remapFilterColumns(filter, mapping)
+  if (parquetFilter) {
+    return {
+      parquetFilter,
+      columns: columnsNeededForFilter(parquetFilter),
+      matches: row => matchFilter(row, parquetFilter, false),
+    }
+  }
+
+  // Resolve constants once per file and reuse one scratch row per matcher.
+  // Physical predicate columns must be read even when absent from the output.
+  /** @type {Record<string, any>} */
+  const logicalRow = {}
+  /** @type {Array<{logical: string, physical: string}>} */
+  const bindings = []
+  for (const name of columnsNeededForFilter(filter)) {
+    const physical = mapping[name]
+    if (physical) {
+      bindings.push({ logical: name, physical })
+      continue
+    }
+    const field = schema.fields.find(candidate => candidate.name === name)
+    if (!field) throw new Error(`Iceberg filter column not found: ${name}`)
+    const partitionField = partitionSpec?.fields.find(
+      candidate => candidate['source-id'] === field.id && candidate.transform === 'identity')
+    logicalRow[name] = partitionField && Object.hasOwn(partition, partitionField.name)
+      ? partition[partitionField.name] ?? null
+      : field['initial-default'] ?? null
+  }
+  return {
+    columns: [...new Set(bindings.map(binding => binding.physical))],
+    matches(row) {
+      for (const { logical, physical } of bindings) logicalRow[logical] = row[physical]
+      return matchFilter(logicalRow, filter, false)
+    },
+  }
 }
 
 /**

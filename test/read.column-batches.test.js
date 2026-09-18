@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { parquetWriteBuffer } from 'hyparquet-writer'
-import { readDataFileColumn } from '../src/read.js'
+import { readDataFile, readDataFileColumn } from '../src/read.js'
 import { icebergCreate } from '../src/create.js'
 import { memResolver } from './helpers.js'
 
@@ -71,6 +71,53 @@ describe('native compatibility column reads', () => {
     for await (const chunk of readDataFileColumn({ ...options, schema, column: 'defaulted', limit: 3 })) defaults.push(...Array.from(chunk))
     expect(defaults).toEqual([42, 42, 42])
   })
+
+  for (const mode of ['rows', 'columns']) {
+    it(`${mode}: matches defaults, nulls and partition values when predicate columns are absent`, async () => {
+      const options = await fixture()
+      /** @type {Schema} */
+      const schema = { ...options.schema, fields: [
+        { ...options.schema.fields[0], name: 'renamed' },
+        options.schema.fields[1],
+        { id: 3, name: 'defaulted', type: 'double', required: false, 'initial-default': 42 },
+        { id: 4, name: 'missing', type: 'double', required: false },
+        { id: 5, name: 'partitioned', type: 'double', required: false, 'initial-default': 99 },
+      ] }
+      const metadata = { ...options.metadata, 'partition-specs': [{
+        'spec-id': 0,
+        fields: [{ 'source-id': 5, 'field-id': 1000, name: 'p', transform: /** @type {const} */ ('identity') }],
+      }] }
+      const dataEntry = { ...options.dataEntry, data_file: { ...options.dataEntry.data_file, partition: { p: 7 } } }
+      /** @type {Array<[import('hyparquet').ParquetQueryFilter, number[]]>} */
+      const cases = [
+        [{ defaulted: { $eq: 99 } }, []],
+        [{ defaulted: { $eq: 42 } }, [0, 1, 2, 3, 4, 5, 6, 7]],
+        [{ missing: { $eq: null } }, [0, 1, 2, 3, 4, 5, 6, 7]],
+        [{ missing: { $ne: null } }, []],
+        [{ partitioned: { $eq: 7 } }, [0, 1, 2, 3, 4, 5, 6, 7]],
+        [{ partitioned: { $eq: 99 } }, []],
+        // g is a physical predicate column excluded from the output projection.
+        [{ $and: [{ defaulted: { $eq: 42 } }, { g: { $eq: 1 } }] }, [1, 3, 5, 7]],
+        [{ $or: [{ defaulted: { $eq: 99 } }, { renamed: { $gte: 6 } }] }, [6, 7]],
+        [{ $nor: [{ defaulted: { $eq: 99 } }, { renamed: { $lt: 6 } }] }, [6, 7]],
+      ]
+      for (const [filter, expected] of cases) {
+        const readOptions = { ...options, schema, metadata, dataEntry, column: 'renamed', wantedColumns: ['renamed'], filter }
+        const values = []
+        if (mode === 'columns') {
+          for await (const chunk of readDataFileColumn(readOptions)) values.push(...Array.from(chunk))
+        } else {
+          for await (const rows of readDataFile(readOptions)) {
+            for (const row of rows) {
+              expect(Object.keys(row)).toEqual(['renamed'])
+              values.push(row.renamed)
+            }
+          }
+        }
+        expect(values, JSON.stringify(filter)).toEqual(expected)
+      }
+    })
+  }
 
   it('preserves synthesized v3 lineage through the compatibility fallback', async () => {
     const options = await fixture()
