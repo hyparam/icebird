@@ -1,5 +1,9 @@
 # Icebird Changelog
 
+## [0.8.29]
+ - `icebergDataSource` scans decode filter columns directly from native parquet batches and match the pushed-down `where` during the scan, so matching rows are selected without materializing row objects
+ - Filters that reference fields missing from a parquet file now match against Iceberg defaults and identity partition values instead of being dropped for that file
+
 ## [0.8.28]
  - WHERE clauses that only partially convert to a parquet filter still prune data files and row groups
 
