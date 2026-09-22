@@ -21,8 +21,15 @@ export function readZigZag(reader) {
  * @returns {bigint} value
  */
 export function readZigZagBigInt(reader) {
-  let result = 0n
-  let shift = 0n
+  // Decode the first four bytes without BigInt arithmetic.
+  let prefix = 0
+  for (let shift = 0; shift < 28; shift += 7) {
+    const byte = reader.view.getUint8(reader.offset++)
+    prefix |= (byte & 0x7f) << shift
+    if (!(byte & 0x80)) return BigInt(prefix >>> 1 ^ -(prefix & 1))
+  }
+  let result = BigInt(prefix)
+  let shift = 28n
   while (true) {
     const byte = reader.view.getUint8(reader.offset++)
     result |= BigInt(byte & 0x7f) << shift

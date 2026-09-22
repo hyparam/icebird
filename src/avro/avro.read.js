@@ -2,6 +2,8 @@ import { gunzip } from 'hyparquet-compressors'
 import { readZigZag, readZigZagBigInt } from './avro.metadata.js'
 import { parseDecimal } from 'hyparquet/src/convert.js'
 
+const textDecoder = new TextDecoder()
+
 /**
  * Read avro data blocks.
  * Should be called after avroMetadata.
@@ -175,7 +177,7 @@ function readType(reader, type) {
   } else if (type === 'string') {
     const length = readZigZag(reader)
     const bytes = new Uint8Array(reader.view.buffer, reader.view.byteOffset + reader.offset, length)
-    const text = new TextDecoder().decode(bytes)
+    const text = textDecoder.decode(bytes)
     reader.offset += length
     return text
   } else if (typeof type === 'object' && typeof type.type === 'string') {
