@@ -1,3 +1,5 @@
+const smallLongs = Array.from({ length: 128 }, (_, i) => BigInt(i >>> 1 ^ -(i & 1)))
+
 /**
  * @param {DataReader} reader
  * @returns {number} value
@@ -22,22 +24,26 @@ export function readZigZag(reader) {
  */
 export function readZigZagBigInt(reader) {
   // Decode the first four bytes without BigInt arithmetic.
-  let prefix = 0
-  for (let shift = 0; shift < 28; shift += 7) {
+  const first = reader.view.getUint8(reader.offset++)
+  if (first < 128) return smallLongs[first]
+  let prefix = first & 0x7f
+  for (let shift = 7; shift < 28; shift += 7) {
     const byte = reader.view.getUint8(reader.offset++)
     prefix |= (byte & 0x7f) << shift
     if (!(byte & 0x80)) return BigInt(prefix >>> 1 ^ -(prefix & 1))
   }
-  let result = BigInt(prefix)
-  let shift = 28n
+  // The remaining 36 bits of a valid long also fit exactly in a Number.
+  let high = 0
+  let factor = 1
   while (true) {
     const byte = reader.view.getUint8(reader.offset++)
-    result |= BigInt(byte & 0x7f) << shift
+    high += (byte & 0x7f) * factor
     if (!(byte & 0x80)) {
       // convert zigzag to int
-      return result >> 1n ^ -(result & 1n)
+      const result = BigInt(high) << 27n | BigInt(prefix >>> 1)
+      return prefix & 1 ? ~result : result
     }
-    shift += 7n
+    factor *= 128
   }
 }
 
