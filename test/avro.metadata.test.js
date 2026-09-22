@@ -1,6 +1,7 @@
 import fs from 'fs'
 import { describe, expect, it } from 'vitest'
-import { avroMetadata } from '../src/avro/avro.metadata.js'
+import { ByteWriter } from 'hyparquet-writer'
+import { avroMetadata, readZigZagBigInt } from '../src/avro/avro.metadata.js'
 import { asyncBufferFromFile, toJson } from 'hyparquet'
 import { fileToJson } from './helpers.js'
 
@@ -20,4 +21,17 @@ describe('avroMetadata from test files', () => {
       expect(JSON.parse(JSON.stringify(toJson(metadata)))).toEqual(expected)
     })
   })
+})
+
+it('decodes signed longs at every varint boundary without consuming the next value', () => {
+  const values = [0n, -1n, -(1n << 63n), (1n << 63n) - 1n]
+  for (let bits = 6n; bits < 63n; bits += 7n) {
+    const boundary = 1n << bits
+    values.push(boundary - 1n, boundary, -boundary, -boundary - 1n)
+  }
+  const writer = new ByteWriter()
+  for (const value of values) writer.appendZigZag(value)
+  const reader = { view: writer.view, offset: 0 }
+  for (const value of values) expect(readZigZagBigInt(reader)).toBe(value)
+  expect(reader.offset).toBe(writer.offset)
 })

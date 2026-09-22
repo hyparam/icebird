@@ -2,6 +2,8 @@ import { gunzip } from 'hyparquet-compressors'
 import { readZigZag, readZigZagBigInt } from './avro.metadata.js'
 import { parseDecimal } from 'hyparquet/src/convert.js'
 
+const textDecoder = new TextDecoder()
+
 /**
  * Read avro data blocks.
  * Should be called after avroMetadata.
@@ -13,6 +15,7 @@ import { parseDecimal } from 'hyparquet/src/convert.js'
  * @returns {Record<string, any>[]}
  */
 export function avroRead({ reader, metadata, syncMarker }) {
+  const decode = compileType(metadata['avro.schema'])
   const blocks = []
   while (reader.offset < reader.view.byteLength) {
     let recordCount = readZigZag(reader)
@@ -43,20 +46,9 @@ export function avroRead({ reader, metadata, syncMarker }) {
       throw new Error(`unsupported codec: ${codec}`)
     }
 
-    // Decode according to binary or json encoding
-    // Loop through metadata['avro.schema'] to parse the block
-    const { fields } = metadata['avro.schema']
     const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
     const dataReader = { view, offset: 0 }
-    for (let i = 0; i < recordCount; i++) {
-      /** @type {Record<string, any>} */
-      const obj = {}
-      for (const field of fields) {
-        const value = readType(dataReader, field.type)
-        obj[field.name] = value
-      }
-      blocks.push(obj)
-    }
+    for (let i = 0; i < recordCount; i++) blocks.push(decode(dataReader))
   }
   return blocks
 }
@@ -175,7 +167,7 @@ function readType(reader, type) {
   } else if (type === 'string') {
     const length = readZigZag(reader)
     const bytes = new Uint8Array(reader.view.buffer, reader.view.byteOffset + reader.offset, length)
-    const text = new TextDecoder().decode(bytes)
+    const text = textDecoder.decode(bytes)
     reader.offset += length
     return text
   } else if (typeof type === 'object' && typeof type.type === 'string') {
@@ -208,4 +200,64 @@ function bytesToUuid(bytes) {
     if (i === 3 || i === 5 || i === 7 || i === 9) hex += '-'
   }
   return hex
+}
+
+/**
+ * Resolve schema dispatch once per file instead of once per value.
+ *
+ * @param {AvroType} type
+ * @returns {(reader: DataReader) => any}
+ */
+function compileType(type) {
+  if (type === 'null') return () => undefined
+  if (type === 'int') return readZigZag
+  if (type === 'long') return readZigZagBigInt
+  if (type === 'string' || type === 'bytes') {
+    return reader => {
+      const length = readZigZag(reader)
+      const bytes = new Uint8Array(reader.view.buffer, reader.view.byteOffset + reader.offset, length)
+      reader.offset += length
+      return type === 'string' ? textDecoder.decode(bytes) : bytes
+    }
+  }
+  if (Array.isArray(type)) {
+    const readers = type.map(compileType)
+    return reader => readers[readZigZag(reader)](reader)
+  }
+  if (typeof type === 'object' && type.type === 'array') {
+    const item = compileType(type.items)
+    return reader => {
+      const arr = []
+      while (true) {
+        let count = readZigZag(reader)
+        if (count === 0) return arr
+        if (count < 0) {
+          count = -count
+          readZigZag(reader)
+        }
+        for (let i = 0; i < count; i++) arr.push(item(reader))
+      }
+    }
+  }
+  if (typeof type === 'object' && type.type === 'record') {
+    const fields = type.fields.map(field => ({ name: field.name, read: compileType(field.type) }))
+    // Avoid a field loop for the key/value records used by Iceberg maps.
+    if (fields.length === 2) {
+      const [{ name: firstName, read: firstRead }, { name: secondName, read: secondRead }] = fields
+      return reader => {
+        /** @type {Record<string, any>} */
+        const obj = {}
+        obj[firstName] = firstRead(reader)
+        obj[secondName] = secondRead(reader)
+        return obj
+      }
+    }
+    return reader => {
+      /** @type {Record<string, any>} */
+      const obj = {}
+      for (const field of fields) obj[field.name] = field.read(reader)
+      return obj
+    }
+  }
+  return reader => readType(reader, type)
 }
