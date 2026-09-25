@@ -1,5 +1,8 @@
 # Icebird Changelog
 
+## [0.8.31]
+ - SQL `ORDER BY ... LIMIT` queries skip data files whose column bounds cannot reach the top K rows, including tables with position deletes
+
 ## [0.8.30]
  - Faster Avro decoding of manifest lists and manifest files
 
