@@ -1,13 +1,15 @@
 import { asyncRow } from 'squirreling'
+import { applicablePositionDeletes } from '../delete.js'
 import { fetchDeleteMaps, urlResolver } from '../fetch.js'
 import { icebergManifests, splitManifestEntries } from '../manifest.js'
 import { icebergMetadata } from '../metadata.js'
 import { readDataFile, readDataFileBatches, readDataFileColumn } from '../read.js'
 import { fileMightMatch, partitionMightMatch } from '../prune.js'
 import { whereToParquetFilter } from './whereFilter.js'
+import { pruneTopKFiles } from './topK.js'
 
 /**
- * @import {AsyncDataSource, ExprNode, PrepareScan, RelationSchema, ScanResults, SqlPrimitive} from 'squirreling'
+ * @import {AsyncDataSource, ExprNode, PrepareScan, RelationSchema, ScanOptions, ScanResults, SqlPrimitive} from 'squirreling'
  * @import {ScanColumnResults} from 'squirreling/src/types.js'
  * @import {Lister, Resolver, TableMetadata} from '../../src/types.js'
  */
@@ -21,7 +23,7 @@ import { whereToParquetFilter } from './whereFilter.js'
  * @property {number} [numRows]
  * @property {string[]} columns
  * @property {RelationSchema} schema
- * @property {(options: import('squirreling').ScanOptions) => ScanResults} scan
+ * @property {(options: ScanOptions) => ScanResults} scan
  * @property {PrepareScan} prepareScan
  * @property {NonNullable<AsyncDataSource['scanColumn']>} scanColumn
  */
@@ -122,11 +124,14 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
         return field
       })
       const filter = whereToParquetFilter(request.filter, { allowPartial: true })
+      const candidates = request.topK && !request.filter && !hasDeletes
+        ? pruneTopKFiles(dataEntries, schema, request.topK)
+        : dataEntries
       const scanEntries = filter
-        ? dataEntries.filter(entry =>
+        ? candidates.filter(entry =>
           partitionMightMatch(filter, entry, schema, tableMetadata) &&
             fileMightMatch(filter, entry, schema))
-        : dataEntries
+        : candidates
       let maxRows = 0
       for (const entry of scanEntries) maxRows += Number(entry.data_file.record_count)
 
@@ -144,7 +149,21 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
         async *batches({ signal } = {}) {
           signal?.throwIfAborted()
           const { positionDeletesMap, equalityDeleteGroups } = await deleteMapsPromise
-          for (const entry of scanEntries) {
+          // Delete maps are already needed by the reader. Once loaded, use
+          // exact surviving counts without opening the data files. Equality
+          // predicates still require inspecting rows, so keep their fallback.
+          const liveEntries = hasDeletes && request.topK && !request.filter && !equalityDeleteGroups.length
+            ? pruneTopKFiles(scanEntries, schema, request.topK, entry => {
+              const { file_path, record_count } = entry.data_file
+              const deleted = applicablePositionDeletes(entry, positionDeletesMap.get(file_path), tableMetadata)
+              let count = record_count
+              for (const pos of deleted) {
+                if (pos >= 0n && pos < record_count) count--
+              }
+              return count
+            })
+            : scanEntries
+          for (const entry of liveEntries) {
             signal?.throwIfAborted()
             yield* readDataFileBatches({
               dataEntry: entry,
