@@ -1,5 +1,8 @@
 # Icebird Changelog
 
+## [0.8.32]
+ - SQL `ORDER BY ... LIMIT` queries with a `WHERE` clause also skip data files that cannot reach the top K rows
+
 ## [0.8.31]
  - SQL `ORDER BY ... LIMIT` queries skip data files whose column bounds cannot reach the top K rows, including tables with position deletes
 
