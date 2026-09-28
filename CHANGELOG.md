@@ -1,5 +1,8 @@
 # Icebird Changelog
 
+## [0.8.33]
+ - SQL queries that only read identity-partitioned string columns are answered from manifest metadata without reading parquet data files
+
 ## [0.8.32]
  - SQL `ORDER BY ... LIMIT` queries with a `WHERE` clause also skip data files that cannot reach the top K rows
 
