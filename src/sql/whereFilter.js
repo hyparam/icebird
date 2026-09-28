@@ -300,8 +300,10 @@ function convertInValues(node, negate) {
   // stats skipping bails when any member fails to compare against the chunk
   // bounds. An all-NULL list drops to `$in: []`, which is what it means.
   const pushed = values.filter(value => value !== null)
-  if (!negate) return { [column]: { $in: pushed } }
-  // `$nin`, like `$ne`, is true on a null cell in hyparquet; SQL's NOT IN is
-  // UNKNOWN there. Guard the same way guardNull does.
-  return { $and: [{ [column]: { $ne: null } }, { [column]: { $nin: pushed } }] }
+  if (!negate && !pushed.length) return { [column]: { $in: [] } }
+  // SQL compares the whole value; hyparquet's $in/$nin also search array
+  // elements. Use equality comparisons so pushed and residual predicates agree.
+  if (!negate) return { $or: pushed.map(value => ({ [column]: { $eq: value } })) }
+  // $ne is true on a null cell; SQL's NOT IN is UNKNOWN there.
+  return { $and: [{ [column]: { $ne: null } }, ...pushed.map(value => ({ [column]: { $ne: value } }))] }
 }

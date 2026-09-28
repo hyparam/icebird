@@ -32,14 +32,10 @@ export function pruneTopKFiles(entries, schema, hint, rowCount) {
   const fieldType = field.type
   const counts = entries.map(entry => rowCount ? rowCount(entry) : entry.data_file.record_count)
   const stats = entries.map((entry, i) => {
-    const file = entry.data_file
     const count = counts[i]
-    if (count <= 0n || metric(file.null_value_counts, field.id) !== 0n ||
-        metric(file.value_counts, field.id) !== file.record_count) return undefined
-    const lower = decode(metric(file.lower_bounds, field.id), fieldType)
-    const upper = decode(metric(file.upper_bounds, field.id), fieldType)
-    if (lower === undefined || upper === undefined || lower > upper) return undefined
-    return { count, lower, upper }
+    if (count <= 0n) return undefined
+    const bounds = fileBounds(entry, field.id, fieldType)
+    return bounds && { count, ...bounds }
   })
   const known = stats.filter(s => s !== undefined)
   const direction = descending ? -1 : 1
@@ -60,6 +56,73 @@ export function pruneTopKFiles(entries, schema, hint, rowCount) {
     })
   }
   return entries.filter((entry, i) => counts[i] !== 0n)
+}
+
+/**
+ * Certify a filtered Top-K boundary by counting actual surviving matches in
+ * promising files. A file's lower bound certifies every match for DESC;
+ * its upper bound does so for ASC. Probe at most four files, reading only
+ * predicate/delete columns. Unknown and null-bearing files never certify a
+ * bound and always remain. Preserve the original file order and all ties.
+ *
+ * @param {ManifestEntry[]} entries
+ * @param {Schema} schema
+ * @param {ScanTopK} hint
+ * @param {(entry: ManifestEntry, needed: number) => Promise<number>} countMatches - Must count exact matches after deletes, not a conservative predicate.
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<ManifestEntry[]>}
+ */
+export async function pruneFilteredTopKFiles(entries, schema, hint, countMatches, signal) {
+  signal?.throwIfAborted()
+  if (hint.orderBy.length !== 1 || entries.length < 2 ||
+      !Number.isSafeInteger(hint.limit) || hint.limit <= 0) return entries
+  const term = hint.orderBy[0]
+  const field = schema.fields.find(f => f.id === term.field)
+  if (!field || typeof field.type !== 'string' ||
+      !['int', 'long', 'date', 'timestamp', 'timestamptz', 'timestamp_ns', 'timestamptz_ns', 'string'].includes(field.type)) return entries
+  const descending = term.direction === 'DESC'
+  const bounds = entries.map(entry => fileBounds(entry, field.id, field.type))
+  const candidates = entries.flatMap((entry, index) => {
+    const bound = bounds[index]
+    return bound ? [{ entry, threshold: descending ? bound.lower : bound.upper }] : []
+  })
+  candidates.sort((a, b) => (descending ? -1 : 1) *
+    (a.threshold < b.threshold ? -1 : a.threshold > b.threshold ? 1 : 0))
+  let remaining = hint.limit
+  let probes = 0
+  for (const { entry, threshold } of candidates) {
+    // If this boundary cannot discard anything, later/weaker ones cannot
+    // either. Avoid an extra read when file bounds overlap completely.
+    if (!bounds.some(bound => bound && (descending ? bound.upper < threshold : bound.lower > threshold))) break
+    signal?.throwIfAborted()
+    remaining -= await countMatches(entry, remaining)
+    signal?.throwIfAborted()
+    if (remaining <= 0) {
+      return entries.filter((entry, index) => {
+        const bound = bounds[index]
+        return !bound || (descending ? bound.upper >= threshold : bound.lower <= threshold)
+      })
+    }
+    if (++probes === 4) break
+  }
+  return entries
+}
+
+/**
+ * Only complete, non-null statistics can certify or exclude a file.
+ * @param {ManifestEntry} entry
+ * @param {number} id
+ * @param {IcebergType} type
+ * @returns {{lower: number | bigint | string, upper: number | bigint | string} | undefined}
+ */
+function fileBounds(entry, id, type) {
+  const file = entry.data_file
+  if (file.record_count <= 0n || metric(file.null_value_counts, id) !== 0n ||
+      metric(file.value_counts, id) !== file.record_count) return undefined
+  const lower = decode(metric(file.lower_bounds, id), type)
+  const upper = decode(metric(file.upper_bounds, id), type)
+  if (lower === undefined || upper === undefined || lower > upper) return undefined
+  return { lower, upper }
 }
 
 /**
