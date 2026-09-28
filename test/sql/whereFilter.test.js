@@ -183,12 +183,12 @@ describe.concurrent('whereToParquetFilter', () => {
 
   it('converts IN and NOT IN', () => {
     const where = inList(id('a'), [lit(1), lit(2), lit(3)])
-    expect(whereToParquetFilter(where)).toEqual({ a: { $in: [1, 2, 3] } })
+    expect(whereToParquetFilter(where)).toEqual({ $or: [{ a: { $eq: 1 } }, { a: { $eq: 2 } }, { a: { $eq: 3 } }] })
 
-    // $nin, like $ne, is true on a null cell; SQL's NOT IN is UNKNOWN there
+    // $ne is true on a null cell; SQL's NOT IN is UNKNOWN there
     const negated = un('NOT', where)
     expect(whereToParquetFilter(negated)).toEqual({
-      $and: [{ a: { $ne: null } }, { a: { $nin: [1, 2, 3] } }],
+      $and: [{ a: { $ne: null } }, { a: { $ne: 1 } }, { a: { $ne: 2 } }, { a: { $ne: 3 } }],
     })
   })
 
@@ -199,7 +199,7 @@ describe.concurrent('whereToParquetFilter', () => {
     expect(whereToParquetFilter(un('NOT', withNull))).toEqual({ a: { $in: [] } })
     // A NULL member of a plain IN can never make the disjunction TRUE, and
     // dropping it keeps row-group statistics pruning decidable
-    expect(whereToParquetFilter(withNull)).toEqual({ a: { $in: [1] } })
+    expect(whereToParquetFilter(withNull)).toEqual({ $or: [{ a: { $eq: 1 } }] })
     expect(whereToParquetFilter(inList(id('a'), [lit(null)]))).toEqual({ a: { $in: [] } })
   })
 
@@ -274,10 +274,9 @@ describe.concurrent('whereToParquetFilter', () => {
   })
 
   it('pushes TIMESTAMP literals inside IN lists', () => {
-    // Needs hyparquet >= 1.28.0, whose $in/$nin compare Dates by time.
     const where = inList(id('ts'), [cast('TIMESTAMP', lit('2026-08-06T00:00:00Z')), lit(1)])
     expect(whereToParquetFilter(where)).toEqual({
-      ts: { $in: [new Date('2026-08-06T00:00:00Z'), 1] },
+      $or: [{ ts: { $eq: new Date('2026-08-06T00:00:00Z') } }, { ts: { $eq: 1 } }],
     })
   })
 
@@ -288,7 +287,7 @@ describe.concurrent('whereToParquetFilter', () => {
 
   it('folds casts inside IN lists', () => {
     const where = inList(id('a'), [cast('INT', lit('1')), lit(2)])
-    expect(whereToParquetFilter(where)).toEqual({ a: { $in: [1, 2] } })
+    expect(whereToParquetFilter(where)).toEqual({ $or: [{ a: { $eq: 1 } }, { a: { $eq: 2 } }] })
   })
 
   it('returns undefined for LIKE (not pushable)', () => {
