@@ -191,6 +191,36 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
           }
           for (const entry of liveEntries) {
             signal?.throwIfAborted()
+            // Identity strings have the same representation in manifests and
+            // SQL. Other logical types retain the reader's conversion rules.
+            const partitionSpec = tableMetadata['partition-specs'].find(spec => spec['spec-id'] === entry.partition_spec_id)
+            const constants = requestedFields.map(requested => {
+              const field = schema.fields.find(field => field.id === requested.id)
+              const partition = partitionSpec?.fields.find(partition => partition['source-id'] === field?.id && partition.transform === 'identity')
+              const value = partition ? entry.data_file.partition[partition.name] ?? null : undefined
+              return field?.type === 'string' && partition &&
+                Object.hasOwn(entry.data_file.partition, partition.name) &&
+                (value === null || typeof value === 'string')
+                ? { value } : undefined
+            })
+            const { file_path, record_count } = entry.data_file
+            if (!equalityDeleteGroups.length && record_count >= 0n &&
+                record_count <= BigInt(Number.MAX_SAFE_INTEGER) &&
+                constants.every(constant => constant !== undefined)) {
+              const positions = applicablePositionDeletes(entry, positionDeletesMap.get(file_path), tableMetadata)
+              let count = record_count
+              for (const position of positions) {
+                if (position >= 0n && position < record_count) count--
+              }
+              // Batches describe visible rows, so deleted physical ordinals
+              // need not be materialized. The engine retains the SQL residual.
+              const length = Number(count)
+              if (length) yield {
+                selection: { type: 'all', length },
+                columns: constants.map(constant => ({ type: 'constant', value: constant.value, length })),
+              }
+              continue
+            }
             yield* readDataFileBatches({
               dataEntry: entry,
               schema,

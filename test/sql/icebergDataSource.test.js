@@ -1,8 +1,13 @@
 import { collect, executeSql, parseSql, readBatchColumn, valueAt } from 'squirreling'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { icebergMetadata } from '../../src/metadata.js'
 import { icebergDataSource } from '../../src/sql/icebergDataSource.js'
-import { localResolver } from '../helpers.js'
+import { localResolver, memResolver } from '../helpers.js'
+
+import { icebergCreate } from '../../src/create.js'
+import { fileCatalogCommit } from '../../src/write/commit.js'
+import { icebergStageAppend } from '../../src/write/stage.js'
+import { icebergStagePositionDelete } from '../../src/write/stage-position-delete.js'
 
 /**
  * @import {AsyncDataSource, ExprNode} from 'squirreling'
@@ -11,6 +16,92 @@ import { localResolver } from '../helpers.js'
  */
 
 describe.concurrent('icebergDataSource', () => {
+  it('counts metadata rows with null partitions and position deletes', async () => {
+    const { resolver } = memResolver()
+    const reads = vi.spyOn(resolver, 'reader')
+    const tableUrl = 'mem://count-research'
+    let metadata = await icebergCreate({
+      tableUrl,
+      resolver,
+      schema: {
+        type: 'struct', 'schema-id': 0,
+        fields: [{ id: 1, name: 'id', type: 'int', required: true }, { id: 2, name: 'date', type: 'string', required: false }],
+      },
+      partitionSpec: { 'spec-id': 0, fields: [{ 'source-id': 2, 'field-id': 1000, name: 'date', transform: 'identity' }] },
+    })
+    const groups = [
+      [{ id: 1, date: '2026-08-01' }, { id: 2, date: '2026-08-01' }],
+      [{ id: 3, date: '2026-09-01' }, { id: 4, date: '2026-09-01' }],
+      [{ id: 5, date: null }],
+    ]
+    const files = []
+    for (const records of groups) {
+      const staged = await icebergStageAppend({ tableUrl, metadata, records, resolver })
+      files.push(staged.writtenFiles[0])
+      metadata = await fileCatalogCommit({ tableUrl, metadata, staged, resolver })
+    }
+    const queries = [
+      'SELECT COUNT(*) AS n FROM t',
+      'SELECT id, date FROM t ORDER BY id',
+      'SELECT date FROM t ORDER BY date LIMIT 2 OFFSET 1',
+      'SELECT COUNT(*) AS n FROM t WHERE date >= \'2026-09-01\'',
+      'SELECT date, COUNT(*) AS n FROM t GROUP BY date ORDER BY date',
+      'SELECT COUNT(*) AS n FROM t WHERE date IS NULL',
+      'SELECT COUNT(*) AS n FROM t WHERE date IS NOT NULL',
+      'SELECT COUNT(*) AS n FROM t WHERE date = \'never\'',
+    ]
+    let expectedRows = groups.flat()
+    for (let stage = 0; stage < 4; stage++) {
+      if (stage > 0) {
+        const deletes = stage < 3
+          ? [{ file_path: files[1], pos: 0 }]
+          : [{ file_path: files[0], pos: 0 }, { file_path: files[0], pos: 1 }]
+        const staged = await icebergStagePositionDelete({ tableUrl, metadata, resolver, deletes })
+        metadata = await fileCatalogCommit({ tableUrl, metadata, staged, resolver })
+        expectedRows = expectedRows.filter(row => stage < 3 ? row.id !== 3 : row.id > 2)
+      }
+      const source = await icebergDataSource({ tableUrl, metadata, resolver })
+      for (const query of queries) {
+        const expected = await collect(executeSql({ tables: { t: expectedRows }, query }))
+        const actual = await collect(executeSql({ tables: { t: source }, query }))
+        expect(actual).toEqual(expected)
+      }
+      const prepared = source.prepareScan({ columns: [{ field: 2, phase: 0, purpose: 'output', mode: 'required' }] })
+      reads.mockClear()
+      const batches = []
+      for await (const batch of prepared.batches()) batches.push(batch)
+      expect(reads).not.toHaveBeenCalled()
+      expect(batches.every(batch => batch.columns.every(column => 'type' in column && column.type === 'constant'))).toEqual(true)
+      expect(batches.reduce((sum, batch) => sum + batch.selection.length, 0)).toEqual(expectedRows.length)
+    }
+    // Renames resolve by source field id, retaining the old partition name.
+    const renamedMetadata = structuredClone(metadata)
+    for (const schema of renamedMetadata.schemas) {
+      const field = schema.fields.find(field => field.id === 2)
+      if (field) field.name = 'calendar'
+    }
+    const renamedSource = await icebergDataSource({ tableUrl, metadata: renamedMetadata, resolver })
+    const renamed = renamedSource.prepareScan({ columns: [{ field: 2, phase: 0, purpose: 'output', mode: 'required' }] })
+    const values = []
+    for await (const batch of renamed.batches()) {
+      const column = batch.columns[0]
+      expect('type' in column && column.type).toEqual('constant')
+      if ('type' in column && column.type === 'constant') values.push(column.value)
+    }
+    expect(values.sort()).toEqual(['2026-09-01', null].sort())
+    const controller = new AbortController()
+    controller.abort(new Error('count cancelled'))
+    await expect(renamed.batches({ signal: controller.signal })[Symbol.asyncIterator]().next()).rejects.toThrow('count cancelled')
+
+    const deletedSource = await icebergDataSource({
+      tableUrl: 's3://hyperparam-iceberg/java/bunnies', metadataFileName: 'v5.metadata.json',
+      resolver: localResolver(new URL('../files', import.meta.url).pathname),
+    })
+    const legacy = { columns: deletedSource.columns, scan: deletedSource.scan }
+    const expected = await collect(executeSql({ tables: { t: legacy }, query: queries[0] }))
+    expect(await collect(executeSql({ tables: { t: deletedSource }, query: queries[0] }))).toEqual(expected)
+  })
+
   const tableUrl = 's3://hyperparam-iceberg/java/bunnies'
   const resolver = localResolver('test/files')
 
