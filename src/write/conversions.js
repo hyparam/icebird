@@ -34,6 +34,17 @@ export function decimalRequiredBytes(precision) {
 }
 
 /**
+ * Match Parquet decimal inputs: bigint is unscaled; number is scaled and rounded.
+ *
+ * @param {number | bigint} value
+ * @param {number} scale
+ * @returns {bigint}
+ */
+export function decimalToUnscaled(value, scale) {
+  return typeof value === 'bigint' ? value : BigInt(Math.round(value * 10 ** scale))
+}
+
+/**
  * Convert a decimal value to Avro fixed-width two's-complement bytes.
  *
  * @param {any} value
@@ -51,10 +62,7 @@ export function decimalToFixedBytes(value, precision, scale, label) {
   if (typeof value !== 'number' && typeof value !== 'bigint') {
     throw new Error(`expected ${label}`)
   }
-  const factor = 10n ** BigInt(scale)
-  const unscaled = typeof value === 'bigint'
-    ? value * factor
-    : BigInt(Math.round(value * Number(factor)))
+  const unscaled = decimalToUnscaled(value, scale)
   const limit = 10n ** BigInt(precision)
   if (unscaled >= limit || unscaled <= -limit) {
     throw new Error(`${label} exceeds precision ${precision}`)

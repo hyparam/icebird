@@ -1,6 +1,6 @@
 import { typeName } from '../schema.js'
 import { computeGeoBounds, isGeoType } from './geospatial.js'
-import { compare, serializeValue } from './serde.js'
+import { compareWriteValues, serializeValue } from './serde.js'
 
 /**
  * @import {FieldSummary, IcebergType, Schema} from '../../src/types.js'
@@ -80,8 +80,8 @@ export function computeColumnStats(records, schema) {
         continue
       }
       if (trackBounds) {
-        if (min === undefined || compare(v, min, field.type) < 0) min = v
-        if (max === undefined || compare(v, max, field.type) > 0) max = v
+        if (min === undefined || compareWriteValues(v, min, field.type) < 0) min = v
+        if (max === undefined || compareWriteValues(v, max, field.type) > 0) max = v
       }
     }
     value_counts[field.id] = BigInt(records.length)
@@ -143,8 +143,8 @@ export function computeFieldSummary(values, type) {
       continue
     }
     if (trackBounds) {
-      if (min === undefined || compare(v, min, type) < 0) min = v
-      if (max === undefined || compare(v, max, type) > 0) max = v
+      if (min === undefined || compareWriteValues(v, min, type) < 0) min = v
+      if (max === undefined || compareWriteValues(v, max, type) > 0) max = v
     }
   }
   /** @type {FieldSummary} */

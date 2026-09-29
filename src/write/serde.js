@@ -1,4 +1,5 @@
 import { typeName } from '../schema.js'
+import { decimalToUnscaled, parseDecimalType } from './conversions.js'
 
 /**
  * Iceberg single-value serialization (encode/decode) and the canonical
@@ -25,10 +26,7 @@ export function serializeValue(value, type) {
     if (!m) return undefined
     const scale = parseInt(m[2], 10)
     if (typeof value !== 'number' && typeof value !== 'bigint') return undefined
-    const factor = 10n ** BigInt(scale)
-    const unscaled = typeof value === 'bigint'
-      ? value * factor
-      : BigInt(Math.round(value * Number(factor)))
+    const unscaled = decimalToUnscaled(value, scale)
     return twosComplementMinBigEndian(unscaled)
   }
   if (name.startsWith('fixed[')) {
@@ -159,6 +157,23 @@ export function deserializeValue(bytes, type) {
   } catch {
     return undefined
   }
+}
+
+/**
+ * Compare write inputs, where decimal bigints represent unscaled integers.
+ * Read-side comparisons use decoded numbers and must not round query literals.
+ *
+ * @param {any} a
+ * @param {any} b
+ * @param {IcebergType} type
+ * @returns {number}
+ */
+export function compareWriteValues(a, b, type) {
+  const decimal = parseDecimalType(typeName(type))
+  if (decimal) {
+    return compareBigInt(decimalToUnscaled(a, decimal.scale), decimalToUnscaled(b, decimal.scale))
+  }
+  return compare(a, b, type)
 }
 
 /**

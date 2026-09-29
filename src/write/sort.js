@@ -1,4 +1,4 @@
-import { compare } from './serde.js'
+import { compareWriteValues } from './serde.js'
 import { applyTransform, transformResultType } from './transform.js'
 
 /**
@@ -90,6 +90,6 @@ function compareKeys(ka, kb, resultType, desc, nullsFirst) {
     return desc ? -c : c
   }
 
-  const c = compare(ka, kb, resultType)
+  const c = compareWriteValues(ka, kb, resultType)
   return desc ? -c : c
 }
