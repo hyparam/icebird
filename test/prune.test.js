@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { partitionMightMatch } from '../src/prune.js'
+import { applyTransform } from '../src/write/transform.js'
 
 /**
  * @import {ManifestEntry, PartitionField, Schema, TableMetadata} from '../src/types.js'
@@ -93,6 +94,32 @@ describe('partitionMightMatch — bucket', () => {
   it('cannot prune range predicates (bucket is not order-preserving)', () => {
     expect(partitionMightMatch({ id: { $gt: 1n } }, entry({ id_bucket: 3 }), schema, m)).toBe(true)
   })
+})
+
+describe('partitionMightMatch — decimal bigint literals', () => {
+  /** @type {Schema} */
+  const decimalSchema = {
+    type: 'struct',
+    'schema-id': 0,
+    fields: [{ id: 1, name: 'amount', required: true, type: 'decimal(10,2)' }],
+  }
+
+  for (const transform of /** @type {const} */ (['bucket[100]', 'truncate[10]'])) {
+    it(`projects logical bigint literals for ${transform}`, () => {
+      const m = meta([{ 'source-id': 1, 'field-id': 1000, name: 'part', transform }])
+      for (const amount of [29, -29]) {
+        const file = entry({ part: applyTransform(transform, amount, 'decimal(10,2)') })
+        expect(partitionMightMatch({ amount: { $eq: BigInt(amount) } }, file, decimalSchema, m)).toBe(true)
+        expect(partitionMightMatch({ amount: { $in: [BigInt(amount)] } }, file, decimalSchema, m)).toBe(true)
+        expect(partitionMightMatch({ amount: { $eq: 0n } }, file, decimalSchema, m)).toBe(false)
+        expect(partitionMightMatch({ amount: { $eq: 9007199254740993n } }, file, decimalSchema, m)).toBe(true)
+        if (transform === 'truncate[10]') {
+          expect(partitionMightMatch({ amount: { $lte: BigInt(amount) } }, file, decimalSchema, m)).toBe(true)
+          expect(partitionMightMatch({ amount: { $gte: BigInt(amount) } }, file, decimalSchema, m)).toBe(true)
+        }
+      }
+    })
+  }
 })
 
 describe('partitionMightMatch — monotonic (day)', () => {
