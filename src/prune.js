@@ -274,6 +274,11 @@ function bucketMightMatch(op, v, value, transform, sourceType) {
 function project(transform, value, sourceType) {
   if (value === null || value === undefined) return undefined
   try {
+    // Query bigints are logical decimals; write transforms treat them as unscaled.
+    if (typeof value === 'bigint' && typeName(sourceType).startsWith('decimal(')) {
+      value = numericOf(value)
+      if (value === undefined) return undefined
+    }
     return applyTransform(/** @type {any} */ (transform), value, sourceType)
   } catch {
     return undefined

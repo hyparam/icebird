@@ -1,5 +1,5 @@
 import { typeName } from '../schema.js'
-import { uuidToBytes } from './conversions.js'
+import { decimalToUnscaled, uuidToBytes } from './conversions.js'
 
 /**
  * Iceberg partition transform implementation. Given a source value and the
@@ -218,10 +218,7 @@ function decimalToUnscaledBytes(value, decimalType) {
   const m = /^decimal\((\d+),\s*(\d+)\)$/.exec(decimalType)
   if (!m) throw new Error(`bucket transform: invalid decimal type ${decimalType}`)
   const scale = parseInt(m[2], 10)
-  const factor = 10n ** BigInt(scale)
-  const unscaled = typeof value === 'bigint'
-    ? value * factor
-    : BigInt(Math.round(Number(value) * Number(factor)))
+  const unscaled = decimalToUnscaled(value, scale)
   const bytes = []
   let v = unscaled
   while (true) {
@@ -246,15 +243,12 @@ function truncateTransform(value, sourceType, w) {
     const m = /^decimal\((\d+),\s*(\d+)\)$/.exec(t)
     if (!m) throw new Error(`truncate transform: invalid decimal type ${t}`)
     const scale = parseInt(m[2], 10)
-    const factor = 10n ** BigInt(scale)
-    const unscaled = typeof value === 'bigint'
-      ? value * factor
-      : BigInt(Math.round(Number(value) * Number(factor)))
+    const unscaled = decimalToUnscaled(value, scale)
     const W = BigInt(w)
     // floor toward negative infinity so truncate(-x, w) ≤ -x
     const truncated = unscaled - (unscaled % W + W) % W
-    // re-scale; result fits in JS number for typical precisions
-    return Number(truncated) / Number(factor)
+    // Keep bigint inputs exact, including decimals wider than float64.
+    return typeof value === 'bigint' ? truncated : Number(truncated) / 10 ** scale
   }
   if (t === 'binary') {
     const b = value instanceof Uint8Array ? value : new Uint8Array(value)

@@ -182,6 +182,11 @@ const rows = await icebergRead({ tableUrl: metadata.location, metadata, resolver
 
 ## Writing
 
+For `decimal(P,S)` columns, pass a `bigint` as the **unscaled integer**:
+`29n` in `decimal(18,2)` writes `0.29`. A `number` is multiplied by `10 ** S`
+and rounded, so `0.29` writes the same value. Use bigint for exact writes,
+especially beyond JavaScript's safe integer range; decimal strings are not supported.
+
 Icebird has experimental write support for Iceberg v2 (and v3 deletion vectors). All write functions take a `Catalog` and dispatch internally — the same call works against `fileCatalog({ resolver })` or a REST catalog context returned by `restCatalogConnect`.
 
 ```javascript

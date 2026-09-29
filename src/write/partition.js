@@ -3,6 +3,7 @@ import { applyTransform, transformResultType } from './transform.js'
 import {
   decimalRequiredBytes,
   decimalToFixedBytes,
+  decimalToUnscaled,
   parseDecimalType,
   toUint8Array,
   uuidToBytes,
@@ -171,6 +172,8 @@ function partitionKeyPart(value, type) {
   if (typeof value === 'number' && (name === 'float' || name === 'double')) {
     return `${name}:${floatPartitionKey(value, name)}`
   }
+  const decimal = parseDecimalType(name)
+  if (decimal) return `decimal:${decimalToUnscaled(value, decimal.scale)}`
   if (name === 'long') return `long:${BigInt(value)}`
   if (typeof value === 'bigint') return `b:${value.toString()}`
   if (value instanceof Date) return `d:${value.getTime()}`
