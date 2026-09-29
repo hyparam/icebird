@@ -232,9 +232,10 @@ describe('icebergQuery', () => {
       },
     }
 
+    // Decimal values require Parquet reads even in files with constant metrics.
     const result = await icebergQuery({
       catalog,
-      query: 'SELECT id FROM "spark.rename_column"',
+      query: 'SELECT price FROM "spark.rename_column"',
       resolver: lazyResolver,
     })
     expect(lazyOpened.size).toBe(0)
@@ -258,7 +259,7 @@ describe('icebergQuery', () => {
     }
     await collect(await icebergQuery({
       catalog,
-      query: 'SELECT id FROM "spark.rename_column"',
+      query: 'SELECT price FROM "spark.rename_column"',
       resolver: fullResolver,
     }))
     expect(fullOpened.size).toBeGreaterThan(lazyOpened.size)

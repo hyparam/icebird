@@ -4,6 +4,7 @@ import { columnsNeededForFilter, matchFilter } from 'hyparquet/src/filter.js'
 import { isListLike, isMapLike } from 'hyparquet/src/schema.js'
 import { concat } from 'hyparquet/src/utils.js'
 import { readBatchColumn, selectBatch, selectVector, valueAt } from 'squirreling'
+import { constantBatch, manifestColumnConstant } from './columnConstants.js'
 import { fetchDeleteMaps, readParquetMetadata, urlResolver } from './fetch.js'
 import { icebergMetadata } from './metadata.js'
 import { icebergManifests, splitManifestEntries } from './manifest.js'
@@ -480,6 +481,26 @@ export async function* readDataFileBatches({
   signal?.throwIfAborted()
 
   const partitionSpec = metadata['partition-specs'].find(s => s['spec-id'] === partition_spec_id)
+  const requestedFields = fields.map(requested => {
+    const field = schema.fields.find(field => field.id === requested.id)
+    if (!field) throw new Error(`Iceberg field id ${requested.id} not found`)
+    return field
+  })
+  const constants = requestedFields.map(field => manifestColumnConstant(data_file, field, partitionSpec))
+  const positionDeletes = applicablePositionDeletes(dataEntry, positionDeletesMap.get(data_file.file_path), metadata)
+  const applicableEqualityGroups = equalityDeleteGroups.filter(group =>
+    deleteFileAppliesToDataEntry(dataEntry, group.deleteEntry, metadata, 'equality'))
+  // No payload reads are needed when every demanded field is proven constant.
+  // Exact matching stays in the engine; equality deletes still need key reads.
+  if (!applyFilter && applicableEqualityGroups.length === 0) {
+    const batch = constantBatch(data_file, constants, fileRowStart, fileRowEnd, positionDeletes)
+    if (batch) {
+      if (batch.selection.length > 0) yield batch
+      signal?.throwIfAborted()
+      return
+    }
+  }
+
   const resolved = await resolver.reader(data_file.file_path, Number(data_file.file_size_in_bytes))
   const file = cachedAsyncBuffer(resolved)
   const parquetMetadata = await readParquetMetadata(file)
@@ -514,12 +535,13 @@ export async function* readDataFileBatches({
 
   /** @type {Map<number, {name?: string, project?: (value: any) => any, constant?: SqlPrimitive}>} */
   const fieldSources = new Map()
-  for (const requested of fields) {
-    const field = schema.fields.find(candidate => candidate.id === requested.id)
-    if (!field) throw new Error(`Iceberg field id ${requested.id} not found`)
+  for (const [index, field] of requestedFields.entries()) {
     const physicalSource = physicalSourcesById.get(field.id)
     if (physicalSource) {
-      fieldSources.set(requested.id, physicalSource)
+      // A file-wide constant remains constant after any delete/WHERE selection.
+      // Keep physical columns available for pruning and delete-key evaluation.
+      const constant = constants[index]
+      fieldSources.set(field.id, constant ? { constant: constant.value } : physicalSource)
       continue
     }
 
@@ -533,12 +555,8 @@ export async function* readDataFileBatches({
     } else {
       constant = null
     }
-    fieldSources.set(requested.id, { constant: /** @type {SqlPrimitive} */ (constant) })
+    fieldSources.set(field.id, { constant: /** @type {SqlPrimitive} */ (constant) })
   }
-
-  const positionDeletes = applicablePositionDeletes(dataEntry, positionDeletesMap.get(data_file.file_path), metadata)
-  const applicableEqualityGroups = equalityDeleteGroups.filter(group =>
-    deleteFileAppliesToDataEntry(dataEntry, group.deleteEntry, metadata, 'equality'))
 
   const scanColumns = new Set()
   const equalityDeleteColumns = new Set()
