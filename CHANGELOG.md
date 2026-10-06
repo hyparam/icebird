@@ -1,5 +1,8 @@
 # Icebird Changelog
 
+## [0.8.35]
+ - SQL `ORDER BY ... LIMIT` queries with a `WHERE` clause scan the most promising data files first, so fewer files are read before the top K rows are found
+
 ## [0.8.34]
  - Data files whose requested columns are all provably constant (from identity partitions or manifest bounds) are read without fetching parquet data
  - Writing a `bigint` to a `decimal(P,S)` column now treats it as the unscaled integer (e.g. `29n` in `decimal(18,2)` writes `0.29`), matching hyparquet; partition pruning handles bigint decimal literals correctly
