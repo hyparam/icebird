@@ -197,6 +197,7 @@ import {
   icebergDelete,
   icebergExpireSnapshots,
   icebergRewrite,
+  icebergRewriteManifests,
   icebergSetRef,
   icebergUpdateSchema,
 } from 'icebird'
@@ -255,6 +256,20 @@ await icebergRewrite({ catalog, tableUrl, targetFileRows: 1_000_000, partitionSp
 ```
 
 A rewrite is not retried on a concurrent commit (it would risk dropping rows another writer appended meanwhile); on conflict it throws and should be re-run against fresh metadata.
+
+### Manifest maintenance
+
+Every append adds a manifest, so a long-lived table accumulates many small ones and every scan has to read them all. `icebergRewriteManifests` rewrites all data manifests of a partition spec into target-size manifests sorted by partition value, without touching data files (Java's `RewriteManifests`). Entries keep their snapshot ids and sequence numbers, so delete applicability is unchanged. The target size defaults to the `commit.manifest.target-size-bytes` table property (8 MB):
+
+```javascript
+await icebergRewriteManifests({ catalog, tableUrl })
+// or pick the spec and size explicitly
+await icebergRewriteManifests({ catalog, tableUrl, specId: 0, targetSizeBytes: 8 * 1024 * 1024 })
+```
+
+Unlike `icebergRewrite`, it retries on concurrent commits, carrying forward manifests committed in the meantime. Specs partitioned by identity or truncate on a timestamp or decimal column cannot be rewritten yet.
+
+Old `vN.metadata.json` files are kept unless the table sets `write.metadata.delete-after-commit.enabled=true` (with `write.metadata.previous-versions-max`, default 100).
 
 For a REST catalog, swap `fileCatalog(...)` for the connect context and pass `namespace`/`table` instead of `tableUrl`:
 

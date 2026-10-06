@@ -329,6 +329,65 @@ export function writeExistingDeleteManifest({ writer, schema, partitionSpec, ent
 }
 
 /**
+ * Write a manifest that carries entries from other manifests with their
+ * statuses already decided by the caller (manifest rewrites).
+ * ADDED entries must belong to `snapshotId` and leave their sequence numbers
+ * null so they inherit the committing snapshot's; EXISTING and DELETED
+ * entries keep their original snapshot id and data / file sequence numbers,
+ * so which delete files apply to them cannot shift.
+ *
+ * @param {object} options
+ * @param {Writer} options.writer
+ * @param {Schema} options.schema
+ * @param {PartitionSpec} options.partitionSpec
+ * @param {bigint} options.snapshotId - The committing snapshot.
+ * @param {ManifestEntry[]} options.entries
+ * @param {0|1} options.content - Manifest content: 0 data, 1 deletes.
+ * @param {2|3} [options.formatVersion]
+ * @returns {void | Promise<void>} resolves when the writer's `finish()` lands
+ */
+export function writeCarriedManifest({ writer, schema, partitionSpec, snapshotId, entries, content, formatVersion = 2 }) {
+  const records = entries.map(entry => {
+    const dataFile = entry.data_file
+    if (content === 0 ? dataFile.content !== 0 : dataFile.content === 0) {
+      throw new Error(`cannot write content=${dataFile.content} file into a ${content ? 'delete' : 'data'} manifest`)
+    }
+    const record = manifestEntryRecord(dataFile, schema, partitionSpec, snapshotId, formatVersion, content)
+    record.status = entry.status
+    if (entry.status === 1) {
+      if (entry.snapshot_id == null || BigInt(entry.snapshot_id) !== snapshotId) {
+        throw new Error('only entries added by the committing snapshot can stay ADDED')
+      }
+      return record
+    }
+    record.snapshot_id = entry.snapshot_id ?? null
+    record.sequence_number = entry.sequence_number ?? null
+    record.file_sequence_number = entry.file_sequence_number ?? entry.sequence_number ?? null
+    if (record.snapshot_id == null) {
+      throw new Error('carried manifest entry missing snapshot id')
+    }
+    if (record.sequence_number == null) {
+      throw new Error('carried manifest entry missing sequence numbers')
+    }
+    return record
+  })
+
+  return avroWrite({
+    writer,
+    schema: manifestEntrySchema(schema, partitionSpec, formatVersion, content),
+    records,
+    metadata: {
+      'format-version': String(formatVersion),
+      'schema-id': String(schema['schema-id']),
+      content: content ? 'deletes' : 'data',
+      schema: icebergSchemaJson(schema),
+      'partition-spec': partitionSpecJson(partitionSpec),
+      'partition-spec-id': String(partitionSpec['spec-id']),
+    },
+  })
+}
+
+/**
  * Build a single manifest entry record from a DataFile, including the
  * delete-only fields when emitting into a delete manifest.
  *

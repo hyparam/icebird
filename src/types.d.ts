@@ -228,6 +228,10 @@ export interface Snapshot {
     'total-delete-files'?: string
     'total-position-deletes'?: string
     'total-equality-deletes'?: string
+    'manifests-created'?: string
+    'manifests-replaced'?: string
+    'manifests-kept'?: string
+    'entries-processed'?: string
   }
   'schema-id'?: number
   'first-row-id'?: number // V3
