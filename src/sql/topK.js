@@ -1,9 +1,13 @@
+import { readBatchColumn, selectedRowCount, valueAt } from 'squirreling'
 import { deserializeValue } from '../write/serde.js'
 
 /**
- * @import {ScanTopK} from 'squirreling'
- * @import {IcebergType, ManifestEntry, Schema} from '../../src/types.js'
+ * @import {AsyncBatch, Field, ScanTopK, SqlPrimitive} from 'squirreling'
+ * @import {IcebergType, ManifestEntry, Schema, TopKRow} from '../../src/types.js'
  */
+
+const MAX_TIE_ROWS = 1024
+const MAX_TIE_BYTES = 1024 * 1024
 
 /**
  * Compute a conservative Kth-value threshold from file bounds and counts.
@@ -59,53 +63,253 @@ export function pruneTopKFiles(entries, schema, hint, rowCount) {
 }
 
 /**
- * Certify a filtered Top-K boundary by counting actual surviving matches in
- * promising files. A file's lower bound certifies every match for DESC;
- * its upper bound does so for ASC. Probe at most four files, reading only
- * predicate/delete columns. Unknown and null-bearing files never certify a
- * bound and always remain. Preserve the original file order and all ties.
+ * Read promising files once, keeping the best K actual matches. Unknown bounds
+ * remain eligible; only a strictly worse optimistic bound can skip a file.
+ * The reader must apply the complete predicate and deletes before yielding.
+ *
+ * Heap rows carry original positions, so reading files out of order cannot
+ * change stable ties. Emit the winning prefix in original input order for the
+ * engine's final sort/offset. Payloads are gathered for batch winners before
+ * advancing: keep O(K * projected width) values, not K pinned Parquet buffers.
+ * The scan contract requires every boundary tie. Keep a capped extra buffer;
+ * if it overflows at the final cutoff, stream eligible files again in physical
+ * order. Unsupported hints return undefined and use the ordinary streaming scan.
  *
  * @param {ManifestEntry[]} entries
  * @param {Schema} schema
  * @param {ScanTopK} hint
- * @param {(entry: ManifestEntry, needed: number) => Promise<number>} countMatches - Must count exact matches after deletes, not a conservative predicate.
+ * @param {readonly Field[]} fields
+ * @param {(entry: ManifestEntry, fields: readonly Field[]) => AsyncIterable<AsyncBatch>} read
  * @param {AbortSignal} [signal]
- * @returns {Promise<ManifestEntry[]>}
+ * @returns {AsyncGenerator<AsyncBatch> | undefined}
  */
-export async function pruneFilteredTopKFiles(entries, schema, hint, countMatches, signal) {
-  signal?.throwIfAborted()
-  if (hint.orderBy.length !== 1 || entries.length < 2 ||
-      !Number.isSafeInteger(hint.limit) || hint.limit <= 0) return entries
+export function scanTopKFiles(entries, schema, hint, fields, read, signal) {
+  if (hint.orderBy.length !== 1 || !Number.isSafeInteger(hint.limit) || hint.limit <= 0) return
   const term = hint.orderBy[0]
   const field = schema.fields.find(f => f.id === term.field)
   if (!field || typeof field.type !== 'string' ||
-      !['int', 'long', 'date', 'timestamp', 'timestamptz', 'timestamp_ns', 'timestamptz_ns', 'string'].includes(field.type)) return entries
+      !['int', 'long', 'date', 'timestamp', 'timestamptz', 'timestamp_ns', 'timestamptz_ns', 'string'].includes(field.type)) return
   const descending = term.direction === 'DESC'
-  const bounds = entries.map(entry => fileBounds(entry, field.id, field.type))
-  const candidates = entries.flatMap((entry, index) => {
-    const bound = bounds[index]
-    return bound ? [{ entry, threshold: descending ? bound.lower : bound.upper }] : []
+  const candidates = entries.map((entry, index) => {
+    const bounds = fileBounds(entry, field.id, field.type)
+    return { entry, index, best: bounds && (descending ? bounds.upper : bounds.lower) }
   })
-  candidates.sort((a, b) => (descending ? -1 : 1) *
-    (a.threshold < b.threshold ? -1 : a.threshold > b.threshold ? 1 : 0))
-  let remaining = hint.limit
-  let probes = 0
-  for (const { entry, threshold } of candidates) {
-    // If this boundary cannot discard anything, later/weaker ones cannot
-    // either. Avoid an extra read when file bounds overlap completely.
-    if (!bounds.some(bound => bound && (descending ? bound.upper < threshold : bound.lower > threshold))) break
-    signal?.throwIfAborted()
-    remaining -= await countMatches(entry, remaining)
-    signal?.throwIfAborted()
-    if (remaining <= 0) {
-      return entries.filter((entry, index) => {
-        const bound = bounds[index]
-        return !bound || (descending ? bound.upper >= threshold : bound.lower <= threshold)
-      })
-    }
-    if (++probes === 4) break
+  candidates.sort((a, b) => {
+    if (a.best === undefined) return b.best === undefined ? a.index - b.index : 1
+    if (b.best === undefined) return -1
+    return compareValue(a.best, b.best) || a.index - b.index
+  })
+  let keyIndex = fields.findIndex(f => f.id === field.id)
+  const readFields = [...fields]
+  if (keyIndex < 0) {
+    keyIndex = readFields.length
+    readFields.push({ id: field.id, name: field.name, dataType: { type: 'unknown' }, nullable: !field.required })
   }
-  return entries
+  return batches()
+
+  /**
+   * Compare SQL sort values in requested order, including explicit null order.
+   * Date values have already been reduced to SQL's millisecond precision.
+   * @param {TopKRow['value']} a
+   * @param {TopKRow['value']} b
+   * @returns {number}
+   */
+  function compareValue(a, b) {
+    if (a === null || b === null) {
+      if (a === b) return 0
+      return (a === null ? -1 : 1) * (term.nulls === 'LAST' ? -1 : 1)
+    }
+    return (a < b ? -1 : a > b ? 1 : 0) * (descending ? -1 : 1)
+  }
+
+  /**
+   * @param {TopKRow} a
+   * @param {TopKRow} b
+   * @returns {number}
+   */
+  function compareRows(a, b) {
+    return compareValue(a.value, b.value) || comparePosition(a, b)
+  }
+
+  /** @returns {AsyncGenerator<AsyncBatch>} */
+  async function* batches() {
+    /** @type {TopKRow[]} */
+    const heap = []
+    /** @type {Set<TopKRow>} */
+    const ties = new Set()
+    let tieBytes = 0
+    /** @type {TopKRow['value'] | undefined} */
+    let omittedTie
+
+    /** @param {Set<TopKRow>} pending */
+    function clearTies(pending) {
+      for (const row of ties) pending.delete(row)
+      ties.clear()
+      tieBytes = 0
+    }
+
+    /**
+     * @param {TopKRow} row
+     * @param {Set<TopKRow>} pending
+     * @returns {boolean}
+     */
+    function keepTie(row, pending) {
+      if (omittedTie !== undefined && compareValue(omittedTie, row.value) === 0) return false
+      let bytes = 128 + tieValueBytes(row.value)
+      for (const value of row.values) bytes += tieValueBytes(value)
+      if (ties.size >= MAX_TIE_ROWS || tieBytes + bytes > MAX_TIE_BYTES) {
+        omittedTie = row.value
+        clearTies(pending)
+        return false
+      }
+      ties.add(row)
+      tieBytes += bytes
+      return true
+    }
+
+    for (const { entry, index, best } of candidates) {
+      signal?.throwIfAborted()
+      // Equal bounds stay: an earlier physical row may win the boundary tie.
+      if (heap.length === hint.limit && best !== undefined && compareValue(best, heap[0].value) > 0) continue
+      let batchIndex = 0
+      for await (const batch of read(entry, readFields)) {
+        signal?.throwIfAborted()
+        const keys = await readBatchColumn({ batch, columnIndex: keyIndex, signal })
+        signal?.throwIfAborted()
+        /** @type {Set<TopKRow>} */
+        const pending = new Set()
+        const count = selectedRowCount(batch.selection)
+        for (let i = 0; i < count; i++) {
+          if ((i & 1023) === 0) signal?.throwIfAborted()
+          const raw = valueAt(keys, i)
+          const value = /** @type {TopKRow['value']} */ (raw instanceof Date ? raw.getTime() : raw ?? null)
+          const { selection } = batch
+          const rowIndex = selection.type === 'all' ? i
+            : selection.type === 'range' ? selection.start + i : selection.indices[i]
+          if (heap.length === hint.limit) {
+            const worst = heap[0]
+            const order = compareValue(value, worst.value) || index - worst.entryIndex ||
+              batchIndex - worst.batchIndex || rowIndex - worst.rowIndex
+            if (order >= 0) {
+              if (omittedTie === undefined && compareValue(value, worst.value) === 0) {
+                const row = { value, entryIndex: index, batchIndex, rowIndex, values: [] }
+                if (keepTie(row, pending)) pending.add(row)
+              }
+              continue
+            }
+          }
+          const row = { value, entryIndex: index, batchIndex, rowIndex, values: [] }
+          pending.add(row)
+          if (heap.length < hint.limit) {
+            heap.push(row)
+            let child = heap.length - 1
+            while (child > 0) {
+              const parent = child - 1 >>> 1
+              if (compareRows(heap[parent], row) >= 0) break
+              heap[child] = heap[parent]
+              child = parent
+            }
+            heap[child] = row
+          } else {
+            const worst = heap[0]
+            const wasPending = pending.delete(worst)
+            heap[0] = row
+            let parent = 0
+            while (parent * 2 + 1 < heap.length) {
+              let child = parent * 2 + 1
+              if (child + 1 < heap.length && compareRows(heap[child + 1], heap[child]) > 0) child++
+              if (compareRows(row, heap[child]) >= 0) break
+              heap[parent] = heap[child]
+              parent = child
+            }
+            heap[parent] = row
+            if (compareValue(worst.value, heap[0].value) === 0) {
+              if (keepTie(worst, pending) && wasPending) pending.add(worst)
+            } else {
+              if (ties.size) clearTies(pending)
+              omittedTie = undefined
+            }
+          }
+        }
+        // Read projected payload only for rows from this batch still in the
+        // heap or tie buffer. Copy values so discarded batches can be collected.
+        const kept = [...pending].sort((a, b) => a.rowIndex - b.rowIndex)
+        if (kept.length) {
+          const bufferedTies = ties.size > 0
+          const selection = { type: /** @type {const} */ ('indices'),
+            indices: Uint32Array.from(kept, row => row.rowIndex), length: batch.selection.length }
+          for (let columnIndex = 0; columnIndex < fields.length; columnIndex++) {
+            signal?.throwIfAborted()
+            const vector = await readBatchColumn({ batch, columnIndex, selection, signal })
+            if (!bufferedTies) {
+              for (let i = 0; i < kept.length; i++) kept[i].values.push(valueAt(vector, i))
+              continue
+            }
+            for (let i = 0; i < kept.length; i++) {
+              const row = kept[i]
+              if (!pending.has(row)) continue
+              const value = valueAt(vector, i)
+              if (ties.has(row)) {
+                tieBytes += tieValueBytes(value)
+                if (tieBytes > MAX_TIE_BYTES) {
+                  omittedTie = row.value
+                  clearTies(pending)
+                  continue
+                }
+              }
+              row.values.push(value)
+            }
+          }
+        }
+        batchIndex++
+      }
+    }
+    signal?.throwIfAborted()
+    if (omittedTie !== undefined && heap.length === hint.limit && compareValue(omittedTie, heap[0].value) === 0) {
+      const threshold = heap[0].value
+      heap.length = 0
+      candidates.sort((a, b) => a.index - b.index)
+      for (const { entry, best } of candidates) {
+        signal?.throwIfAborted()
+        if (best !== undefined && compareValue(best, threshold) > 0) continue
+        yield* read(entry, fields)
+      }
+      return
+    }
+    heap.push(...ties)
+    heap.sort(comparePosition)
+    // Bound output vectors even when K itself is large.
+    for (let start = 0; start < heap.length; start += 1024) {
+      signal?.throwIfAborted()
+      const rows = heap.slice(start, start + 1024)
+      yield {
+        selection: { type: 'all', length: rows.length },
+        columns: fields.map((field, i) => ({ type: 'values', values: rows.map(row => row.values[i]), length: rows.length })),
+      }
+    }
+  }
+}
+
+/**
+ * Conservative scalar storage estimate, including the value's array slot.
+ * Nested/binary payloads may pin backing buffers; leave those ties to fallback.
+ * @param {SqlPrimitive} value
+ * @returns {number}
+ */
+function tieValueBytes(value) {
+  if (typeof value === 'string') return 32 + value.length * 2
+  if (value && typeof value === 'object' && !(value instanceof Date)) return Infinity
+  return 32
+}
+
+/**
+ * Original physical input order, independent of file visit order.
+ * @param {TopKRow} a
+ * @param {TopKRow} b
+ * @returns {number}
+ */
+function comparePosition(a, b) {
+  return a.entryIndex - b.entryIndex || a.batchIndex - b.batchIndex || a.rowIndex - b.rowIndex
 }
 
 /**
