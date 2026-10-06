@@ -52,9 +52,9 @@ import { pruneTopKFiles, scanTopKFiles } from './topK.js'
  *   scan promising files and retain the best K surviving rows. Actual
  *   winners certify the cutoff for skipping worse files. Physical positions
  *   preserve stable ties; unknown/null-bearing files remain eligible. A tied
- *   cutoff with discarded rows streams eligible files again to preserve every
- *   boundary tie without unbounded buffering. Partial filters keep the ordinary
- *   scan because they cannot certify matches.
+ *   cutoff retains a bounded buffer of ties, streaming eligible files again
+ *   only on overflow. Partial filters keep the ordinary scan because they
+ *   cannot certify matches.
  * - When WHERE is resolved at scan time (either absent or fully pushed) we
  *   cap the scan at `offset + limit` rows so the source terminates early.
  *   OFFSET is also pushed into the parquet seek, and the per-file read bounded

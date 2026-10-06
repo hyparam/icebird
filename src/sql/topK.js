@@ -2,9 +2,12 @@ import { readBatchColumn, selectedRowCount, valueAt } from 'squirreling'
 import { deserializeValue } from '../write/serde.js'
 
 /**
- * @import {AsyncBatch, Field, ScanTopK} from 'squirreling'
+ * @import {AsyncBatch, Field, ScanTopK, SqlPrimitive} from 'squirreling'
  * @import {IcebergType, ManifestEntry, Schema, TopKRow} from '../../src/types.js'
  */
+
+const MAX_TIE_ROWS = 1024
+const MAX_TIE_BYTES = 1024 * 1024
 
 /**
  * Compute a conservative Kth-value threshold from file bounds and counts.
@@ -68,10 +71,9 @@ export function pruneTopKFiles(entries, schema, hint, rowCount) {
  * change stable ties. Emit the winning prefix in original input order for the
  * engine's final sort/offset. Payloads are gathered for batch winners before
  * advancing: keep O(K * projected width) values, not K pinned Parquet buffers.
- * The scan contract requires every boundary tie. If a discarded tie remains
- * at the final cutoff, stream eligible files again in physical order instead
- * of buffering an unbounded number of tied payloads. Unsupported hints return
- * undefined and use the ordinary streaming scan.
+ * The scan contract requires every boundary tie. Keep a capped extra buffer;
+ * if it overflows at the final cutoff, stream eligible files again in physical
+ * order. Unsupported hints return undefined and use the ordinary streaming scan.
  *
  * @param {ManifestEntry[]} entries
  * @param {Schema} schema
@@ -133,8 +135,38 @@ export function scanTopKFiles(entries, schema, hint, fields, read, signal) {
   async function* batches() {
     /** @type {TopKRow[]} */
     const heap = []
+    /** @type {Set<TopKRow>} */
+    const ties = new Set()
+    let tieBytes = 0
     /** @type {TopKRow['value'] | undefined} */
     let omittedTie
+
+    /** @param {Set<TopKRow>} pending */
+    function clearTies(pending) {
+      for (const row of ties) pending.delete(row)
+      ties.clear()
+      tieBytes = 0
+    }
+
+    /**
+     * @param {TopKRow} row
+     * @param {Set<TopKRow>} pending
+     * @returns {boolean}
+     */
+    function keepTie(row, pending) {
+      if (omittedTie !== undefined && compareValue(omittedTie, row.value) === 0) return false
+      let bytes = 128 + tieValueBytes(row.value)
+      for (const value of row.values) bytes += tieValueBytes(value)
+      if (ties.size >= MAX_TIE_ROWS || tieBytes + bytes > MAX_TIE_BYTES) {
+        omittedTie = row.value
+        clearTies(pending)
+        return false
+      }
+      ties.add(row)
+      tieBytes += bytes
+      return true
+    }
+
     for (const { entry, index, best } of candidates) {
       signal?.throwIfAborted()
       // Equal bounds stay: an earlier physical row may win the boundary tie.
@@ -159,7 +191,10 @@ export function scanTopKFiles(entries, schema, hint, fields, read, signal) {
             const order = compareValue(value, worst.value) || index - worst.entryIndex ||
               batchIndex - worst.batchIndex || rowIndex - worst.rowIndex
             if (order >= 0) {
-              if (compareValue(value, worst.value) === 0) omittedTie = value
+              if (omittedTie === undefined && compareValue(value, worst.value) === 0) {
+                const row = { value, entryIndex: index, batchIndex, rowIndex, values: [] }
+                if (keepTie(row, pending)) pending.add(row)
+              }
               continue
             }
           }
@@ -177,7 +212,7 @@ export function scanTopKFiles(entries, schema, hint, fields, read, signal) {
             heap[child] = row
           } else {
             const worst = heap[0]
-            pending.delete(worst)
+            const wasPending = pending.delete(worst)
             heap[0] = row
             let parent = 0
             while (parent * 2 + 1 < heap.length) {
@@ -188,19 +223,42 @@ export function scanTopKFiles(entries, schema, hint, fields, read, signal) {
               parent = child
             }
             heap[parent] = row
-            if (compareValue(worst.value, heap[0].value) === 0) omittedTie = worst.value
+            if (compareValue(worst.value, heap[0].value) === 0) {
+              if (keepTie(worst, pending) && wasPending) pending.add(worst)
+            } else {
+              if (ties.size) clearTies(pending)
+              omittedTie = undefined
+            }
           }
         }
         // Read projected payload only for rows from this batch still in the
-        // heap. Copy scalar values so discarded batches/files can be collected.
+        // heap or tie buffer. Copy values so discarded batches can be collected.
         const kept = [...pending].sort((a, b) => a.rowIndex - b.rowIndex)
         if (kept.length) {
+          const bufferedTies = ties.size > 0
           const selection = { type: /** @type {const} */ ('indices'),
             indices: Uint32Array.from(kept, row => row.rowIndex), length: batch.selection.length }
           for (let columnIndex = 0; columnIndex < fields.length; columnIndex++) {
             signal?.throwIfAborted()
             const vector = await readBatchColumn({ batch, columnIndex, selection, signal })
-            for (let i = 0; i < kept.length; i++) kept[i].values.push(valueAt(vector, i))
+            if (!bufferedTies) {
+              for (let i = 0; i < kept.length; i++) kept[i].values.push(valueAt(vector, i))
+              continue
+            }
+            for (let i = 0; i < kept.length; i++) {
+              const row = kept[i]
+              if (!pending.has(row)) continue
+              const value = valueAt(vector, i)
+              if (ties.has(row)) {
+                tieBytes += tieValueBytes(value)
+                if (tieBytes > MAX_TIE_BYTES) {
+                  omittedTie = row.value
+                  clearTies(pending)
+                  continue
+                }
+              }
+              row.values.push(value)
+            }
           }
         }
         batchIndex++
@@ -218,6 +276,7 @@ export function scanTopKFiles(entries, schema, hint, fields, read, signal) {
       }
       return
     }
+    heap.push(...ties)
     heap.sort(comparePosition)
     // Bound output vectors even when K itself is large.
     for (let start = 0; start < heap.length; start += 1024) {
@@ -229,6 +288,18 @@ export function scanTopKFiles(entries, schema, hint, fields, read, signal) {
       }
     }
   }
+}
+
+/**
+ * Conservative scalar storage estimate, including the value's array slot.
+ * Nested/binary payloads may pin backing buffers; leave those ties to fallback.
+ * @param {SqlPrimitive} value
+ * @returns {number}
+ */
+function tieValueBytes(value) {
+  if (typeof value === 'string') return 32 + value.length * 2
+  if (value && typeof value === 'object' && !(value instanceof Date)) return Infinity
+  return 32
 }
 
 /**
