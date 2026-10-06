@@ -1,3 +1,4 @@
+import type { SqlPrimitive } from 'squirreling'
 import type { AsyncBuffer } from 'hyparquet'
 import type { Writer } from 'hyparquet-writer'
 
@@ -430,4 +431,13 @@ export interface DataFile {
 export interface FilePositionDelete {
   file_path: string
   pos: bigint
+}
+
+/** Internal candidate retained by the best-first SQL scan. */
+export interface TopKRow {
+  value: number | bigint | string | null
+  entryIndex: number
+  batchIndex: number
+  rowIndex: number
+  values: SqlPrimitive[]
 }

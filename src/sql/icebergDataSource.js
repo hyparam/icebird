@@ -1,4 +1,4 @@
-import { asyncRow, selectedRowCount } from 'squirreling'
+import { asyncRow } from 'squirreling'
 import { applicablePositionDeletes } from '../delete.js'
 import { fetchDeleteMaps, urlResolver } from '../fetch.js'
 import { icebergManifests, splitManifestEntries } from '../manifest.js'
@@ -6,7 +6,7 @@ import { icebergMetadata } from '../metadata.js'
 import { readDataFile, readDataFileBatches, readDataFileColumn } from '../read.js'
 import { fileMightMatch, partitionMightMatch } from '../prune.js'
 import { whereToParquetFilter } from './whereFilter.js'
-import { pruneFilteredTopKFiles, pruneTopKFiles } from './topK.js'
+import { pruneTopKFiles, scanTopKFiles } from './topK.js'
 
 /**
  * @import {AsyncDataSource, ExprNode, PrepareScan, RelationSchema, ScanOptions, ScanResults, SqlPrimitive} from 'squirreling'
@@ -49,9 +49,12 @@ import { pruneFilteredTopKFiles, pruneTopKFiles } from './topK.js'
  *   their physical positions. Unsupported nodes (LIKE,
  *   functions, arithmetic, identifier vs identifier) stay in the engine.
  * - For a single supported Top-K sort key and an exactly convertible WHERE,
- *   probe up to four promising files for surviving matches. Their bounds then
- *   certify a cutoff for pruning older/worse files. Partial filters cannot
- *   certify counts; ties, unknown bounds, and null-bearing files remain.
+ *   scan promising files and retain the best K surviving rows. Actual
+ *   winners certify the cutoff for skipping worse files. Physical positions
+ *   preserve stable ties; unknown/null-bearing files remain eligible. A tied
+ *   cutoff with discarded rows streams eligible files again to preserve every
+ *   boundary tie without unbounded buffering. Partial filters keep the ordinary
+ *   scan because they cannot certify matches.
  * - When WHERE is resolved at scan time (either absent or fully pushed) we
  *   cap the scan at `offset + limit` rows so the source terminates early.
  *   OFFSET is also pushed into the parquet seek, and the per-file read bounded
@@ -157,7 +160,7 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
           // Delete maps are already needed by the reader. Once loaded, use
           // exact surviving counts without opening the data files. Equality
           // predicates still require inspecting rows, so keep their fallback.
-          let liveEntries = hasDeletes && request.topK && !request.filter && !equalityDeleteGroups.length
+          const liveEntries = hasDeletes && request.topK && !request.filter && !equalityDeleteGroups.length
             ? pruneTopKFiles(scanEntries, schema, request.topK, entry => {
               const { file_path, record_count } = entry.data_file
               const deleted = applicablePositionDeletes(entry, positionDeletesMap.get(file_path), tableMetadata)
@@ -169,25 +172,23 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
             })
             : scanEntries
           if (request.topK && exactFilter) {
-            liveEntries = await pruneFilteredTopKFiles(liveEntries, schema, request.topK, async (entry, needed) => {
-              let count = 0
-              for await (const batch of readDataFileBatches({
+            const topK = scanTopKFiles(liveEntries, schema, request.topK, requestedFields,
+              (entry, fields) => readDataFileBatches({
                 dataEntry: entry,
                 schema,
                 metadata: tableMetadata,
                 resolver: fetchResolver,
-                fields: [],
+                fields,
                 positionDeletesMap,
                 equalityDeleteGroups,
                 filter: exactFilter,
                 applyFilter: true,
                 signal,
-              })) {
-                count += selectedRowCount(batch.selection)
-                if (count >= needed) break
-              }
-              return count
-            }, signal)
+              }), signal)
+            if (topK) {
+              yield* topK
+              return
+            }
           }
           for (const entry of liveEntries) {
             signal?.throwIfAborted()

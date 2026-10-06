@@ -1,5 +1,5 @@
-import { collect, executeSql } from 'squirreling'
-import { describe, expect, it, vi } from 'vitest'
+import { collect, executeSql, readBatchColumn, selectedRowCount, valueAt } from 'squirreling'
+import { describe, expect, it } from 'vitest'
 import { icebergCreate } from '../../src/create.js'
 import { fileCatalogCommit } from '../../src/write/commit.js'
 import { icebergStageAppend } from '../../src/write/stage.js'
@@ -9,11 +9,11 @@ import { computeColumnStats } from '../../src/write/stats.js'
 import { serializeValue } from '../../src/write/serde.js'
 import { icebergDataSource } from '../../src/sql/icebergDataSource.js'
 import { icebergQuery } from '../../src/sql/icebergQuery.js'
-import { pruneFilteredTopKFiles, pruneTopKFiles } from '../../src/sql/topK.js'
+import { pruneTopKFiles, scanTopKFiles } from '../../src/sql/topK.js'
 import { localResolver, memResolver } from '../helpers.js'
 
 /**
- * @import {AsyncDataSource} from 'squirreling'
+ * @import {AsyncDataSource, AsyncBatch, Field, SqlPrimitive} from 'squirreling'
  * @import {ManifestEntry, Resolver, Schema} from '../../src/types.js'
  */
 
@@ -327,45 +327,197 @@ describe('filtered Top-K', () => {
     expect(await collect(executeSql({ query, tables: { t: source } }))).toEqual(expected)
   })
 
-  it('keeps ties, nulls, unknown bounds and original file order', async () => {
-    const entries = entriesFor([[1], [3], [3, 4], [null], [99]])
-    const missing = entries[4].data_file.lower_bounds
-    if (missing) delete missing[1]
-    const count = vi.fn(() => Promise.resolve(1))
-    const actual = await pruneFilteredTopKFiles(entries, schema, {
-      orderBy: [{ field: 1, direction: 'DESC', nulls: 'FIRST' }], limit: 1,
-    }, count)
-    expect(actual).toEqual(entries.slice(1))
-    expect(count).toHaveBeenCalledTimes(1)
+  it('reads more than four small files without rereading them', async () => {
+    const { source, visits } = await filteredFixture(Array.from({ length: 10 }, (_, i) => [
+      { id: i * 10, iso: 'keep' }, { id: i * 10 + 1, iso: 'drop' },
+    ]))
+    const query = 'SELECT id FROM t WHERE iso = \'keep\' ORDER BY id DESC LIMIT 5'
+    expect(await collect(executeSql({ query, tables: { t: source } })))
+      .toEqual([90, 80, 70, 60, 50].map(id => ({ id })))
+    expect(visits).toEqual([9, 8, 7, 6, 5])
   })
 
-  it('bounds unsuccessful probing to four files', async () => {
-    const entries = entriesFor(Array.from({ length: 10 }, (_, i) => [i]))
-    const count = vi.fn(() => Promise.resolve(0))
-    expect(await pruneFilteredTopKFiles(entries, schema, {
+  it('tightens the cutoff from actual matches when file bounds overlap', async () => {
+    const { source, visits } = await filteredFixture([
+      [{ id: 0, iso: 'keep' }, { id: 100, iso: 'drop' }],
+      [{ id: 50, iso: 'keep' }, { id: 99, iso: 'drop' }],
+      [{ id: 40, iso: 'keep' }],
+    ])
+    expect(await collect(executeSql({
+      query: 'SELECT id FROM t WHERE iso = \'keep\' ORDER BY id DESC LIMIT 1', tables: { t: source },
+    }))).toEqual([{ id: 50 }])
+    expect(visits).toEqual([0, 1])
+  })
+
+  it('restores stable ties after visiting a later file first', async () => {
+    const early = new Date('2020-01-01')
+    const late = new Date('2021-01-01')
+    const { source, visits } = await filteredFixture([
+      [{ id: 5, iso: 'keep', ts: early }, { id: 6, iso: 'drop' }],
+      [{ id: 5, iso: 'keep', ts: late }, { id: 10, iso: 'drop' }],
+    ])
+    expect(await collect(executeSql({
+      query: 'SELECT id, ts FROM t WHERE iso = \'keep\' ORDER BY id DESC LIMIT 1', tables: { t: source },
+    }))).toEqual([{ id: 5, ts: early }])
+    expect(visits).toEqual([1, 0, 0, 1])
+  })
+
+  it('reads every file only once when the predicate finds no matches', async () => {
+    const { source, visits } = await filteredFixture(Array.from({ length: 7 }, (_, i) => [
+      { id: i, iso: 'a' }, { id: i, iso: 'z' },
+    ]))
+    expect(await collect(executeSql({
+      query: 'SELECT id FROM t WHERE iso = \'missing\' ORDER BY id DESC LIMIT 2', tables: { t: source },
+    }))).toEqual([])
+    expect(visits).toEqual([6, 5, 4, 3, 2, 1, 0])
+  })
+
+  it('scans unknown bounds and uses matches to preserve ties and null order', async () => {
+    const entries = entriesFor([[3], [3, 4], [null], [99]])
+    if (entries[3].data_file.upper_bounds) delete entries[3].data_file.upper_bounds[1]
+    const fields = [{ id: 1, name: 'id', dataType: { type: /** @type {const} */ ('unknown') }, nullable: true }]
+    for (const nulls of [/** @type {const} */ ('FIRST'), /** @type {const} */ ('LAST')]) {
+      /** @type {number[]} */
+      const visits = []
+      const scan = scanTopKFiles(entries, schema, {
+        orderBy: [{ field: 1, direction: 'DESC', nulls }], limit: 2,
+      }, fields, async function* (entry) {
+        const index = Number(entry.data_file.file_path)
+        visits.push(index)
+        const values = [[3], [3, 4], [null], [99]][index]
+        yield { selection: { type: 'all', length: values.length }, columns: [{ type: 'values', values, length: values.length }] }
+      })
+      const actual = []
+      if (!scan) throw new Error('expected supported Top-K')
+      for await (const batch of scan) {
+        const column = batch.columns[0]
+        if ('type' in column && column.type === 'values') actual.push(...column.values)
+      }
+      expect(actual).toEqual(nulls === 'FIRST' ? [null, 99] : [4, 99])
+      expect(visits).toContain(3)
+      expect(new Set(visits).size).toBe(visits.length)
+    }
+  })
+
+  it.each(['ASC', 'DESC'])('matches a full-sort oracle across batches and selections (%s)', async direction => {
+    // Deterministic permutation exercises repeated heap insertions/evictions.
+    for (const nullable of [false, true]) {
+      const groups = Array.from({ length: 8 }, (_, file) => Array.from({ length: 70 }, (_, i) => {
+        const ordinal = file * 70 + i
+        return { id: nullable && ordinal % 31 === 0 ? null : (ordinal * 193 + 73) % 563, ordinal }
+      }))
+      const entries = entriesFor(groups.map(rows => rows.map(row => row.id)))
+      delete entries[2].data_file.upper_bounds
+      /** @type {Field[]} */
+      const fields = [
+        { id: 1, name: 'id', dataType: { type: 'unknown' }, nullable: true },
+        { id: 4, name: 'iso', dataType: { type: 'unknown' }, nullable: false },
+      ]
+      for (const nulls of [/** @type {const} */ ('FIRST'), /** @type {const} */ ('LAST')]) {
+        for (const limit of [1, 17, 140, 600]) {
+          const scan = scanTopKFiles(entries, schema, {
+            orderBy: [{ field: 1, direction: direction === 'ASC' ? 'ASC' : 'DESC', nulls }], limit,
+          }, fields, async function* (entry) {
+            const rows = groups[Number(entry.data_file.file_path)]
+            for (let start = 0; start < rows.length; start += 10) {
+              const chunk = rows.slice(start, start + 10)
+              const indices = Uint32Array.from([1, 3, 5, 7, 9])
+              yield {
+                selection: { type: 'indices', indices, length: chunk.length },
+                columns: [
+                  { type: 'values', values: chunk.map(row => row.id), length: chunk.length },
+                  { type: 'values', values: chunk.map(row => row.ordinal), length: chunk.length },
+                ],
+              }
+            }
+          })
+          if (!scan) throw new Error('expected supported Top-K')
+          const actual = await scanRows(scan)
+          const all = groups.flat().filter(row => row.ordinal % 2 === 1)
+          const sorted = [...all].sort((a, b) => {
+            if (a.id === null || b.id === null) {
+              if (a.id === b.id) return a.ordinal - b.ordinal
+              return (a.id === null ? -1 : 1) * (nulls === 'FIRST' ? 1 : -1)
+            }
+            return (a.id - b.id) * (direction === 'ASC' ? 1 : -1) || a.ordinal - b.ordinal
+          })
+          const winners = sorted.slice(0, limit)
+          const threshold = winners.at(-1)?.id
+          const required = new Set([...winners, ...sorted.filter(row => row.id === threshold)].map(row => row.ordinal))
+          const ordinals = actual.map(row => Number(row[1]))
+          expect(ordinals).toEqual([...ordinals].sort((a, b) => a - b))
+          expect(ordinals.filter(id => required.has(id))).toEqual([...required].sort((a, b) => a - b))
+          expect(sorted.filter(row => ordinals.includes(row.ordinal)).slice(0, limit)).toEqual(winners)
+        }
+      }
+    }
+  })
+
+  it('streams every boundary tie with bounded retained state', async () => {
+    const groups = [[5, 5, 5], [5, 5, 5], [1]]
+    const entries = entriesFor(groups)
+    const fields = [{ id: 1, name: 'id', dataType: { type: /** @type {const} */ ('unknown') }, nullable: true }]
+    const scan = scanTopKFiles(entries, schema, {
       orderBy: [{ field: 1, direction: 'DESC', nulls: 'LAST' }], limit: 1,
-    }, count)).toEqual(entries)
-    expect(count).toHaveBeenCalledTimes(4)
+    }, fields, async function* (entry) {
+      const values = groups[Number(entry.data_file.file_path)]
+      yield { selection: { type: 'all', length: values.length }, columns: [{ type: 'values', values, length: values.length }] }
+    })
+    if (!scan) throw new Error('expected supported Top-K')
+    expect(await scanRows(scan)).toEqual(Array.from({ length: 6 }, () => [5]))
   })
 
-  it('does no probing when all bounds overlap', async () => {
-    const entries = entriesFor([[1, 9], [2, 8], [3, 7]])
-    const count = vi.fn(() => Promise.resolve(1))
-    expect(await pruneFilteredTopKFiles(entries, schema, {
-      orderBy: [{ field: 1, direction: 'DESC', nulls: 'FIRST' }], limit: 1,
-    }, count)).toEqual(entries)
-    expect(count).not.toHaveBeenCalled()
-  })
-
-  it('propagates cancellation during a probe', async () => {
+  it('propagates cancellation during execution', async () => {
     const entries = entriesFor([[1], [2]])
     const controller = new AbortController()
-    const count = vi.fn(() => {
-      controller.abort(new Error('cancelled probe'))
-      return Promise.resolve(1)
-    })
-    await expect(pruneFilteredTopKFiles(entries, schema, {
+    const scan = scanTopKFiles(entries, schema, {
       orderBy: [{ field: 1, direction: 'DESC', nulls: 'FIRST' }], limit: 1,
-    }, count, controller.signal)).rejects.toThrow('cancelled probe')
+    }, [], async function* () {
+      controller.abort(new Error('cancelled scan'))
+      yield { selection: { type: 'all', length: 1 }, columns: [{ type: 'values', values: [2], length: 1 }] }
+    }, controller.signal)
+    if (!scan) throw new Error('expected supported Top-K')
+    await expect(scan.next()).rejects.toThrow('cancelled scan')
   })
 })
+
+/**
+ * @param {Array<Array<{id: number | null, iso: string, ts?: Date}>>} groups
+ * @returns {Promise<{source: Awaited<ReturnType<typeof icebergDataSource>>, visits: number[]}>}
+ */
+async function filteredFixture(groups) {
+  const tableUrl = 'mem://best-first'
+  const { resolver } = memResolver()
+  const nullableSchema = { ...schema, fields: schema.fields.map(field => ({ ...field, required: false })) }
+  let metadata = await icebergCreate({ tableUrl, resolver, schema: nullableSchema })
+  /** @type {string[]} */
+  const paths = []
+  for (const records of groups) {
+    const staged = await icebergStageAppend({ tableUrl, metadata, records, resolver })
+    paths.push(staged.writtenFiles[0])
+    metadata = await fileCatalogCommit({ tableUrl, metadata, staged, resolver })
+  }
+  /** @type {number[]} */
+  const visits = []
+  const source = await icebergDataSource({ tableUrl, metadata, resolver: {
+    reader(path, length) {
+      const index = paths.indexOf(path)
+      if (index >= 0) visits.push(index)
+      return resolver.reader(path, length)
+    },
+  } })
+  return { source, visits }
+}
+
+/**
+ * @param {AsyncIterable<AsyncBatch>} scan
+ * @returns {Promise<SqlPrimitive[][]>}
+ */
+async function scanRows(scan) {
+  const rows = []
+  for await (const batch of scan) {
+    const columns = await Promise.all(batch.columns.map((_, columnIndex) => readBatchColumn({ batch, columnIndex })))
+    for (let i = 0; i < selectedRowCount(batch.selection); i++) rows.push(columns.map(column => valueAt(column, i)))
+  }
+  return rows
+}
