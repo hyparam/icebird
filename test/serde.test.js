@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { deserializeValue, serializeValue } from '../src/write/serde.js'
+import { compare, deserializeValue, serializeValue } from '../src/write/serde.js'
 
 /**
  * @import {IcebergType} from '../src/types.js'
@@ -15,6 +15,24 @@ function roundtrip(value, type) {
   expect(bytes).toBeInstanceOf(Uint8Array)
   return deserializeValue(/** @type {Uint8Array} */ (bytes), type)
 }
+
+describe('UUID comparison', () => {
+  it('compares strings and bytes in unsigned byte order', () => {
+    const lower = '0a000000-0000-0000-0000-000000000000'
+    const upper = '0b000000-0000-0000-0000-000000000000'
+    const lowerBytes = new Uint8Array(16)
+    lowerBytes[0] = 0x0a
+    const upperBytes = new Uint8Array(16)
+    upperBytes[0] = 0x0b
+    for (const a of [lower, lower.toUpperCase(), lowerBytes]) {
+      for (const b of [upper, upper.toUpperCase(), upperBytes]) {
+        expect(compare(a, b, 'uuid')).toBeLessThan(0)
+        expect(compare(b, a, 'uuid')).toBeGreaterThan(0)
+      }
+      expect(compare(a, lowerBytes, 'uuid')).toBe(0)
+    }
+  })
+})
 
 describe('serde round-trip', () => {
   it('boolean', () => {

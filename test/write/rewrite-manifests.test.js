@@ -79,6 +79,44 @@ async function scrambledTable(commits, days, properties) {
 }
 
 describe('icebergRewriteManifests', () => {
+  it('preserves UUID partition bounds when rewriting manifests', async () => {
+    const { resolver, lister } = memResolver()
+    const catalog = fileCatalog({ resolver, lister, conditionalCommits: true })
+    const tableUrl = 'http://test/uuid-rewrite'
+    await icebergCreateTable({
+      catalog, tableUrl,
+      schema: {
+        type: 'struct',
+        'schema-id': 0,
+        fields: [{ id: 1, name: 'id', required: true, type: 'uuid' }],
+      },
+      partitionSpec: {
+        'spec-id': 0,
+        fields: [{ 'source-id': 1, 'field-id': 1000, name: 'id', transform: 'identity' }],
+      },
+    })
+    const lower = '0a000000-0000-0000-0000-000000000000'
+    const upper = '0b000000-0000-0000-0000-000000000000'
+    await icebergAppend({ catalog, tableUrl, records: [{ id: upper }] })
+    await icebergAppend({ catalog, tableUrl, records: [{ id: lower }] })
+    const metadata = await icebergRewriteManifests({ catalog, tableUrl })
+    const manifests = await icebergManifests({ metadata, resolver })
+    expect(manifests).toHaveLength(1)
+    expect(manifests[0].entries.map(e => e.data_file.partition.id)).toEqual([lower, upper])
+    const list = await manifestList(metadata, resolver)
+    expect(list).toHaveLength(1)
+    const lowerBytes = new Uint8Array(16)
+    lowerBytes[0] = 0x0a
+    const upperBytes = new Uint8Array(16)
+    upperBytes[0] = 0x0b
+    expect(list[0].partitions).toEqual([{
+      contains_null: false,
+      contains_nan: undefined,
+      lower_bound: lowerBytes,
+      upper_bound: upperBytes,
+    }])
+  })
+
   it('rewrites ~1000 single-file manifests into target-size manifests sorted by partition', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
     const { resolver, lister, catalog, tableUrl, metadata: before } = await scrambledTable(1000, 100)

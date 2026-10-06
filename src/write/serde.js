@@ -1,5 +1,5 @@
 import { typeName } from '../schema.js'
-import { decimalToUnscaled, parseDecimalType } from './conversions.js'
+import { decimalToUnscaled, parseDecimalType, uuidToBytes } from './conversions.js'
 
 /**
  * Iceberg single-value serialization (encode/decode) and the canonical
@@ -216,8 +216,10 @@ export function compare(a, b, type) {
   case 'string':
     return compareStringsCodePoint(a, b)
   case 'binary':
-  case 'uuid':
     return compareBytes(a, b)
+  case 'uuid':
+    // Avro decodes UUIDs as strings; bounds and write inputs can be bytes.
+    return compareBytes(uuidToBytes(a, 'uuid value'), uuidToBytes(b, 'uuid value'))
   default:
     if (typeName(type).startsWith('fixed[')) return compareBytes(a, b)
     return a < b ? -1 : a > b ? 1 : 0
