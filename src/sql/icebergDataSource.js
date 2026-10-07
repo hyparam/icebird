@@ -35,9 +35,10 @@ import { pruneTopKFiles, scanTopKFiles } from './topK.js'
  * rows for compatibility.
  *
  * Metadata, the manifest list, delete manifests, schema, and delete maps are
- * resolved once at construction. Each scan fetches the data manifests it
- * needs and walks their data files in manifest order, yielding rows on
- * demand. Pushdowns:
+ * resolved once at construction. Data manifests are fetched lazily and shared
+ * by scans of this source's fixed snapshot, including concurrent scans. They
+ * are retained only for this source's lifetime; failed reads can be retried.
+ * Each scan walks its selected data files in manifest order. Pushdowns:
  * - WHERE skips whole data manifests before they are fetched, using the
  *   manifest list's per-partition-field summaries (Java `ManifestEvaluator`).
  *   This pays off on tables whose manifests are clustered by partition (see
@@ -118,6 +119,11 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
   // Pre-fetch delete maps once; reused by every scan.
   const deleteMapsPromise = fetchDeleteMaps(deleteEntries, fetchResolver)
 
+  // The source pins its manifest list at construction. Retain decoded entries
+  // alongside it, with no sharing or invalidation across source instances.
+  /** @type {Map<Manifest, Promise<ManifestEntry[]>>} */
+  const manifestEntries = new Map()
+
   /**
    * Live data entries of the manifests that might match `filter`, in
    * manifest-list order.
@@ -129,7 +135,17 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
     const selected = filter
       ? dataManifests.filter(m => manifestMightMatch(filter, m, scanSchema, tableMetadata))
       : dataManifests
-    return liveEntries(await Promise.all(selected.map(m => fetchManifestEntries(m, fetchResolver))))
+    return liveEntries(await Promise.all(selected.map(m => {
+      let entries = manifestEntries.get(m)
+      if (!entries) {
+        entries = fetchManifestEntries(m, fetchResolver).catch(err => {
+          manifestEntries.delete(m)
+          throw err
+        })
+        manifestEntries.set(m, entries)
+      }
+      return entries
+    })))
   }
   /**
    * Live rows the data files of `selected` manifests hold, before deletes,

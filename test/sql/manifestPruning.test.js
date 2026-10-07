@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { fileCatalog } from '../../src/catalog/file.js'
 import { icebergManifests } from '../../src/manifest.js'
 import { manifestMightMatch } from '../../src/prune.js'
+import { icebergDataSource } from '../../src/sql/icebergDataSource.js'
 import { icebergQuery } from '../../src/sql/icebergQuery.js'
 import { serializeValue } from '../../src/write/serde.js'
 import { icebergAppend, icebergCreateTable, icebergRewriteManifests, icebergUpdateSchema } from '../../src/write/write.js'
@@ -85,7 +86,91 @@ async function query(resolver, tableUrl, where) {
   return rows.map(r => /** @type {bigint} */ (r.id)).sort((a, b) => Number(a) - Number(b))
 }
 
+/**
+ * Two independently prunable manifests for source-lifetime tests.
+ *
+ * @returns {Promise<{ resolver: Resolver, catalog: ReturnType<typeof fileCatalog>, tableUrl: string }>}
+ */
+async function smallPartitionedTable() {
+  const { resolver, lister } = memResolver()
+  const catalog = fileCatalog({ resolver, lister, conditionalCommits: true })
+  const tableUrl = 'http://test/source-manifests'
+  await icebergCreateTable({
+    catalog, tableUrl, schema,
+    partitionSpec: {
+      'spec-id': 0,
+      fields: [{ 'source-id': 3, 'field-id': 1000, name: 'kind', transform: 'identity' }],
+    },
+  })
+  for (let i = 0; i < 2; i++) {
+    await icebergAppend({ catalog, tableUrl, records: [{ id: BigInt(i), kind: `k${i}` }] })
+  }
+  return { resolver, catalog, tableUrl }
+}
+
 describe('manifest list pruning', () => {
+  it('loads manifests lazily and shares them across concurrent and repeated scans', async () => {
+    const { resolver, tableUrl } = await smallPartitionedTable()
+    const counting = countingResolver(resolver)
+    const source = await icebergDataSource({ tableUrl, resolver: counting.resolver })
+    expect(counting.manifestsRead()).toBe(0)
+    /**
+     * @param {string} where
+     * @returns {Promise<Record<string, import('squirreling').SqlPrimitive>[]>}
+     */
+    async function scan(where) {
+      return collect(await icebergQuery({ query: `SELECT id FROM t ${where} ORDER BY id`, tables: { t: source } }))
+    }
+    const samePartition = await Promise.all([scan('WHERE kind = \'k0\''), scan('WHERE kind = \'k0\'')])
+    expect(samePartition).toEqual([[{ id: 0n }], [{ id: 0n }]])
+    expect(counting.manifestsRead()).toBe(1)
+    expect(await scan('WHERE kind = \'k0\'')).toEqual([{ id: 0n }])
+    expect(counting.manifestsRead()).toBe(1)
+    expect(await scan('')).toEqual([{ id: 0n }, { id: 1n }])
+    expect(counting.manifestsRead()).toBe(2)
+    expect(await scan('WHERE kind = \'k1\'')).toEqual([{ id: 1n }])
+    expect(counting.manifestsRead()).toBe(2)
+  })
+
+  it('keeps retained manifests private to each source and its snapshot', async () => {
+    const { resolver, catalog, tableUrl } = await smallPartitionedTable()
+    const counting = countingResolver(resolver)
+    const old = await icebergDataSource({ tableUrl, resolver: counting.resolver })
+    const sql = 'SELECT id FROM t ORDER BY id'
+    expect(await collect(await icebergQuery({ query: sql, tables: { t: old } }))).toEqual([{ id: 0n }, { id: 1n }])
+    expect(counting.manifestsRead()).toBe(2)
+    await icebergAppend({ catalog, tableUrl, records: [{ id: 2n, kind: 'k2' }] })
+    const fresh = await icebergDataSource({ tableUrl, resolver: counting.resolver })
+    expect(await collect(await icebergQuery({ query: sql, tables: { t: fresh } }))).toEqual([{ id: 0n }, { id: 1n }, { id: 2n }])
+    expect(counting.manifestsRead()).toBe(5)
+    expect(await collect(await icebergQuery({ query: sql, tables: { t: old } }))).toEqual([{ id: 0n }, { id: 1n }])
+    expect(counting.manifestsRead()).toBe(5)
+  })
+
+  it('retries a failed manifest read on the same source', async () => {
+    const { resolver, tableUrl } = await smallPartitionedTable()
+    let attempts = 0
+    /** @type {Resolver} */
+    const flaky = {
+      reader(url, length) {
+        if (url.endsWith('.avro') && !url.includes('/snap-') && ++attempts === 1) {
+          throw new Error('temporary manifest failure')
+        }
+        return resolver.reader(url, length)
+      },
+    }
+    const source = await icebergDataSource({ tableUrl, resolver: flaky })
+    /** @returns {Promise<Record<string, import('squirreling').SqlPrimitive>[]>} */
+    async function scan() {
+      return collect(await icebergQuery({ query: 'SELECT id FROM t WHERE kind = \'k0\'', tables: { t: source } }))
+    }
+    await expect(scan()).rejects.toThrow('temporary manifest failure')
+    expect(await scan()).toEqual([{ id: 0n }])
+    expect(attempts).toBe(2)
+    expect(await scan()).toEqual([{ id: 0n }])
+    expect(attempts).toBe(2)
+  })
+
   it('keeps identity dates before a timestamp later on the same day', async () => {
     const { resolver, lister } = memResolver()
     const catalog = fileCatalog({ resolver, lister, conditionalCommits: true })
