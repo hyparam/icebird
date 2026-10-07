@@ -161,7 +161,12 @@ export async function stageSnapshotForRewriteManifests({ tableUrl, metadata, pre
     if (firstRowId !== prepared.replacedFirstRowIds.get(path)) return undefined
   }
   const sequenceNumber = BigInt(metadata['last-sequence-number'] ?? 0) + 1n
-  for (const manifest of prepared.manifests) manifest.sequence_number = sequenceNumber
+  for (const manifest of prepared.manifests) {
+    manifest.sequence_number = sequenceNumber
+    // IDs assigned by a failed staging attempt must be reserved again.
+    // Manifests whose entries already own IDs retain their inherited IDs.
+    if (unassignedRowCounts.has(manifest)) manifest.first_row_id = undefined
+  }
 
   const prevSummary = currentSnapshot(metadata)?.summary
   /** @type {Snapshot['summary']} */

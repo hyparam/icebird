@@ -8,7 +8,7 @@ import { icebergRead } from '../../src/read.js'
 import { fileCatalogCommit } from '../../src/write/commit.js'
 import { deserializeValue } from '../../src/write/serde.js'
 import { prepareRewriteManifests, stageSnapshotForRewriteManifests } from '../../src/write/rewrite-manifests.js'
-import { icebergAppend, icebergCreateTable, icebergDelete, icebergRewriteManifests } from '../../src/write/write.js'
+import { icebergAppend, icebergCreateTable, icebergDelete, icebergRewriteManifests, icebergUpdateSchema } from '../../src/write/write.js'
 import { memResolver } from '../helpers.js'
 
 /**
@@ -366,6 +366,56 @@ describe('icebergRewriteManifests', () => {
     expect(after['next-row-id']).toBe(appended['next-row-id'])
   })
 
+  it('reserves row ids again after a metadata-only conflict on an upgraded v3 table', async () => {
+    const { resolver, lister, catalog, tableUrl, metadata } = await scrambledTable(2, 2, {
+      'commit.retry.min-wait-ms': '0', 'commit.retry.max-wait-ms': '0',
+    })
+    await fileCatalogCommit({
+      tableUrl, resolver, conditionalCommits: true,
+      metadata: { ...metadata, 'format-version': 3, 'next-row-id': 0 },
+      staged: { requirements: [], updates: [], writtenFiles: [] },
+    })
+    const realWriter = resolver.writer
+    if (!realWriter) throw new Error('writer required')
+    let attempts = 0
+    /** @type {string[]} */
+    const manifestWrites = []
+    /** @type {Resolver} */
+    const racingResolver = {
+      ...resolver,
+      writer(path, options) {
+        if (/-m\d+\.avro$/.test(path)) manifestWrites.push(path)
+        const writer = realWriter(path, options)
+        if (options?.ifNoneMatch === '*') {
+          const finish = writer.finish.bind(writer)
+          writer.finish = async () => {
+            if (++attempts === 1) {
+              await icebergUpdateSchema({
+                catalog, tableUrl,
+                schema: { ...schema, fields: [...schema.fields, { id: 3, name: 'extra', required: false, type: 'string' }] },
+              })
+            }
+            await finish()
+          }
+        }
+        return writer
+      },
+    }
+    const after = await icebergRewriteManifests({
+      catalog: fileCatalog({ resolver: racingResolver, lister, conditionalCommits: true }), tableUrl,
+    })
+    expect(attempts).toBe(2)
+    expect(manifestWrites).toHaveLength(1)
+    expect(after['current-schema-id']).toBe(1)
+    expect(after['next-row-id']).toBe(2)
+    const snapshot = after.snapshots?.find(s => s['snapshot-id'] === after['current-snapshot-id'])
+    expect(snapshot).toMatchObject({ 'first-row-id': 0, 'added-rows': 2 })
+    expect(byId(await icebergRead({ tableUrl, metadata: after, resolver })).map(r => r._row_id)).toEqual([0n, 1n])
+    const appended = await icebergAppend({ catalog, tableUrl, records: [{ id: 2n, created: new Date(2 * DAY) }] })
+    expect(appended['next-row-id']).toBe(3)
+    expect(byId(await icebergRead({ tableUrl, metadata: appended, resolver })).map(r => r._row_id)).toEqual([0n, 1n, 2n])
+  })
+
   it('reuses prepared v3 manifests when a concurrent append leaves inherited row ids unchanged', async () => {
     const { resolver, lister } = memResolver()
     const catalog = fileCatalog({ resolver, lister, conditionalCommits: true })
@@ -375,6 +425,7 @@ describe('icebergRewriteManifests', () => {
     const before = await icebergAppend({ catalog, tableUrl, records: [{ id: 20n, created: new Date(0) }] })
     const prepared = await prepareRewriteManifests({ tableUrl, metadata: before, resolver })
     if (!prepared) throw new Error('expected a rewrite')
+    await stageSnapshotForRewriteManifests({ tableUrl, metadata: before, prepared, resolver })
     const appended = await icebergAppend({ catalog, tableUrl, records: [{ id: 30n, created: new Date(2 * DAY) }] })
     expect(appended['next-row-id']).toBe(3)
     const staged = await stageSnapshotForRewriteManifests({ tableUrl, metadata: appended, prepared, resolver })
