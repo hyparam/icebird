@@ -82,6 +82,63 @@ async function scrambledTable(commits, days, properties) {
 }
 
 describe('icebergRewriteManifests', () => {
+  it.each(['identity', 'truncate[2]'])('rewrites a historical %s spec after its source column is dropped', async transform => {
+    const { resolver, lister } = memResolver()
+    const catalog = fileCatalog({ resolver, lister, conditionalCommits: true })
+    const tableUrl = 'http://test/rm-dropped-source'
+    /** @type {Schema} */
+    const originalSchema = {
+      ...schema,
+      fields: [schema.fields[0], { id: 2, name: 'category', required: false, type: 'string' }],
+    }
+    await icebergCreateTable({
+      catalog, tableUrl, schema: originalSchema,
+      partitionSpec: { 'spec-id': 0, fields: [{ 'source-id': 2, 'field-id': 1000, name: 'category', transform }] },
+    })
+    await icebergAppend({ catalog, tableUrl, records: [{ id: 1n, category: 'zebra' }] })
+    const before = await icebergAppend({ catalog, tableUrl, records: [{ id: 2n, category: 'apple' }] })
+    const originalEntries = (await icebergManifests({ metadata: before, resolver })).flatMap(m => m.entries)
+    await fileCatalogCommit({
+      tableUrl, metadata: before, resolver, conditionalCommits: true,
+      staged: {
+        requirements: [], writtenFiles: [],
+        updates: [
+          { action: 'add-spec', spec: { 'spec-id': 1, fields: [] } },
+          { action: 'set-default-spec', 'spec-id': 1 },
+        ],
+      },
+    })
+    const evolved = await icebergUpdateSchema({
+      catalog, tableUrl,
+      // Reusing the name with a new ID must not change the historical type.
+      schema: { ...schema, fields: [schema.fields[0], { id: 3, name: 'category', required: false, type: 'int' }] },
+    })
+    const beforeRows = byId(await icebergRead({ tableUrl, metadata: evolved, resolver }))
+    const after = await icebergRewriteManifests({ catalog, tableUrl, specId: 0 })
+    expect(after['current-schema-id']).toBe(evolved['current-schema-id'])
+    expect(after.schemas).toEqual(evolved.schemas)
+    const manifests = await manifestList(after, resolver)
+    expect(manifests).toHaveLength(1)
+    const [manifest] = manifests
+    expect(manifest.partition_spec_id).toBe(0)
+    const file = await resolver.reader(manifest.manifest_path)
+    const buffer = await file.slice(0, file.byteLength)
+    const header = avroMetadata({ view: new DataView(buffer), offset: 0 })
+    expect(header.metadata.schema).toEqual(originalSchema)
+    const entries = (await icebergManifests({ metadata: after, resolver })).flatMap(m => m.entries)
+    const sorted = [...originalEntries].sort((a, b) => String(a.data_file.partition.category).localeCompare(String(b.data_file.partition.category)))
+    expect(entries).toEqual(sorted.map(entry => ({ ...entry, status: 0 })))
+    expect(deserializeValue(/** @type {Uint8Array} */ (manifest.partitions?.[0].lower_bound), 'string'))
+      .toBe(transform === 'identity' ? 'apple' : 'ap')
+    expect(deserializeValue(/** @type {Uint8Array} */ (manifest.partitions?.[0].upper_bound), 'string'))
+      .toBe(transform === 'identity' ? 'zebra' : 'ze')
+    expect(byId(await icebergRead({ tableUrl, metadata: after, resolver }))).toEqual(beforeRows)
+    await expect(prepareRewriteManifests({
+      tableUrl, resolver, specId: 0,
+      metadata: { ...evolved, schemas: evolved.schemas.filter(s => s['schema-id'] === evolved['current-schema-id']) },
+    })).rejects.toThrow(/source fields not found in retained schemas/)
+  })
+
   it('rewrites inherited v1 data manifests without a content column', async () => {
     const { resolver, catalog, tableUrl, metadata } = await scrambledTable(2, 2)
     const originalEntries = (await icebergManifests({ metadata, resolver })).flatMap(m => m.entries)
@@ -505,7 +562,7 @@ describe('icebergRewriteManifests', () => {
     expect(await stageSnapshotForRewriteManifests({ tableUrl, metadata: fresh, prepared, resolver })).toBeUndefined()
   })
 
-  it('rejects specs it cannot rewrite losslessly', async () => {
+  it.each([false, true])('rejects specs it cannot rewrite losslessly (dropped source: %s)', async dropped => {
     const { resolver, lister } = memResolver()
     const catalog = fileCatalog({ resolver, lister })
     const tableUrl = 'http://test/rm-identity-ts'
@@ -513,7 +570,20 @@ describe('icebergRewriteManifests', () => {
       catalog, tableUrl, schema,
       partitionSpec: { 'spec-id': 0, fields: [{ 'source-id': 2, 'field-id': 1000, name: 'created', transform: 'identity' }] },
     })
-    await icebergAppend({ catalog, tableUrl, records: [{ id: 1n, created: new Date(0) }] })
-    await expect(icebergRewriteManifests({ catalog, tableUrl })).rejects.toThrow(/losslessly/)
+    const metadata = await icebergAppend({ catalog, tableUrl, records: [{ id: 1n, created: new Date(0) }] })
+    if (dropped) {
+      await fileCatalogCommit({
+        tableUrl, metadata, resolver,
+        staged: {
+          requirements: [], writtenFiles: [],
+          updates: [
+            { action: 'add-spec', spec: { 'spec-id': 1, fields: [] } },
+            { action: 'set-default-spec', 'spec-id': 1 },
+          ],
+        },
+      })
+      await icebergUpdateSchema({ catalog, tableUrl, schema: { ...schema, fields: [schema.fields[0]] } })
+    }
+    await expect(icebergRewriteManifests({ catalog, tableUrl, specId: 0 })).rejects.toThrow(/losslessly/)
   })
 })

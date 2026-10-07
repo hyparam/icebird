@@ -78,11 +78,18 @@ export async function prepareRewriteManifests({ tableUrl, metadata, resolver, sp
   const target = targetSizeBytes ?? targetSizeProperty(metadata.properties)
   if (!currentSnapshot(metadata)) return undefined
 
-  const schema = metadata.schemas.find(s => s['schema-id'] === metadata['current-schema-id'])
+  let schema = metadata.schemas.find(s => s['schema-id'] === metadata['current-schema-id'])
   if (!schema) throw new Error('current schema not found in metadata')
   const rewriteSpecId = specId ?? metadata['default-spec-id']
   const spec = metadata['partition-specs'].find(s => s['spec-id'] === rewriteSpecId)
   if (!spec) throw new Error(`partition spec ${rewriteSpecId} not found in metadata`)
+  // Historical specs can reference dropped columns. Use the newest retained
+  // schema containing every source ID for sorting, encoding, and summaries.
+  // Keep a real schema so the manifest's embedded schema and ID agree.
+  if (!hasPartitionSources(schema, spec)) {
+    schema = metadata.schemas.filter(s => hasPartitionSources(s, spec)).sort((a, b) => b['schema-id'] - a['schema-id'])[0]
+    if (!schema) throw new Error(`partition spec ${rewriteSpecId} source fields not found in retained schemas`)
+  }
   if (!canRewriteSpec(schema, spec)) {
     throw new Error(`partition spec ${rewriteSpecId} cannot be rewritten losslessly (timestamp or decimal partition values)`)
   }
@@ -218,6 +225,15 @@ function partitionComparator(schema, spec) {
     }
     return 0
   }
+}
+
+/**
+ * @param {Schema} schema
+ * @param {PartitionSpec} spec
+ * @returns {boolean}
+ */
+function hasPartitionSources(schema, spec) {
+  return spec.fields.every(pf => schema.fields.some(f => f.id === pf['source-id']))
 }
 
 /**
