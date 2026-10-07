@@ -133,6 +133,45 @@ describe('packManifests', () => {
 })
 
 describe('merge on commit', () => {
+  it.each([true, false])('preserves position deletes after int-to-long partition promotion (merge=%s)', async merge => {
+    const { resolver, lister } = memResolver()
+    const catalog = fileCatalog({ resolver, lister, conditionalCommits: true })
+    const tableUrl = 'http://test/merge-promoted-partition'
+    /** @type {Schema} */
+    const originalSchema = {
+      ...schema,
+      fields: [...schema.fields, { id: 3, name: 'category', required: false, type: 'int' }],
+    }
+    await icebergCreateTable({
+      catalog, tableUrl, schema: originalSchema,
+      partitionSpec: { 'spec-id': 0, fields: [{ 'source-id': 3, 'field-id': 1000, name: 'category', transform: 'identity' }] },
+      properties: {
+        'commit.manifest-merge.enabled': String(merge),
+        'commit.manifest.min-count-to-merge': '2',
+      },
+    })
+    const before = await icebergAppend({ catalog, tableUrl, records: [{ id: 1n, name: 'deleted', category: 7 }] })
+    const [{ entries }] = await icebergManifests({ metadata: before, resolver })
+    const deleted = await icebergDelete({
+      catalog, tableUrl, deletes: [{ file_path: entries[0].data_file.file_path, pos: 0n }],
+    })
+    expect(await icebergRead({ tableUrl, metadata: deleted, resolver })).toEqual([])
+    const [deleteManifest] = (await manifestList(deleted, resolver)).filter(m => m.content === 1)
+    await icebergUpdateSchema({
+      catalog, tableUrl,
+      schema: { ...originalSchema, fields: [...schema.fields, { id: 3, name: 'category', required: false, type: 'long' }] },
+    })
+    const after = await icebergAppend({ catalog, tableUrl, records: [{ id: 2n, name: 'kept', category: 7n }] })
+    const list = await manifestList(after, resolver)
+    expect(list.filter(m => m.content === 0)).toHaveLength(merge ? 1 : 2)
+    expect(list.filter(m => m.content === 1)).toEqual([deleteManifest])
+    const afterEntries = (await icebergManifests({ metadata: after, resolver })).flatMap(m => m.entries)
+    expect(afterEntries.find(e => e.data_file.file_path === entries[0].data_file.file_path)?.data_file.partition.category)
+      .toBe(merge ? 7n : 7)
+    expect(afterEntries.find(e => e.data_file.content === 1)?.data_file.partition.category).toBe(7)
+    expect(await icebergRead({ tableUrl, metadata: after, resolver })).toEqual([{ id: 2n, name: 'kept', category: 7n }])
+  })
+
   it.each([-1, 0, 20000, null])('merges date-encoded day partitions (%s)', async day => {
     const { resolver, lister } = memResolver()
     const catalog = fileCatalog({ resolver, lister, conditionalCommits: true })

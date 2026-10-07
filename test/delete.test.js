@@ -69,6 +69,30 @@ describe('deleteFileAppliesToDataEntry', () => {
     expect(deleteFileAppliesToDataEntry(data, positiveZero, metadata, 'equality')).toBe(false)
     expect(deleteFileAppliesToDataEntry(nanData, nan, metadata, 'equality')).toBe(true)
   })
+
+  it.each(['position', 'equality'])('compares promoted integer partitions for %s deletes without lossy coercion', deleteType => {
+    const cases = [
+      [7, 7n, true],
+      [7n, 7, true],
+      [-2147483648, -2147483648n, true],
+      [2147483647n, 2147483647, true],
+      [0, 0n, true],
+      [7, 8n, false],
+      [8n, 7, false],
+      [9007199254740992, 9007199254740993n, false],
+      [1.5, 1n, false],
+      [NaN, 0n, false],
+      [Infinity, 0n, false],
+      ['7', 7n, false],
+      [null, 0n, false],
+      [undefined, 0n, false],
+    ]
+    for (const [dataValue, deleteValue, expected] of cases) {
+      const data = entry({ sequenceNumber: 1n, partitionSpecId: 1, partition: { 1000: dataValue } })
+      const del = entry({ sequenceNumber: 2n, partitionSpecId: 1, content: deleteType === 'position' ? 1 : 2, partition: { 1000: deleteValue } })
+      expect(deleteFileAppliesToDataEntry(data, del, metadata, /** @type {'position'|'equality'} */ (deleteType))).toBe(expected)
+    }
+  })
 })
 
 describe('applicablePositionDeletes', () => {

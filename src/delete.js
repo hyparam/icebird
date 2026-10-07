@@ -108,7 +108,8 @@ function partitionsEqual(a, b) {
 /**
  * Partition equality follows Iceberg's field-summary rules for floating
  * values: NaNs compare equal after canonicalization, but -0.0 and +0.0 remain
- * distinct.
+ * distinct. Integer partitions can be numbers in older manifests and bigints
+ * after int-to-long promotion, so compare those without losing precision.
  *
  * @param {unknown} a
  * @param {unknown} b
@@ -116,5 +117,7 @@ function partitionsEqual(a, b) {
  */
 function partitionValuesEqual(a, b) {
   if (typeof a === 'number' && typeof b === 'number') return Object.is(a, b)
+  if (typeof a === 'number' && typeof b === 'bigint') return Number.isSafeInteger(a) && BigInt(a) === b
+  if (typeof a === 'bigint' && typeof b === 'number') return Number.isSafeInteger(b) && a === BigInt(b)
   return valuesEqual(a, b)
 }
