@@ -1,7 +1,7 @@
 import { valuesEqual } from './utils.js'
 
 /**
- * @import {ManifestEntry, TableMetadata} from '../src/types.js'
+ * @import {ManifestEntry, PartitionSpec, TableMetadata} from '../src/types.js'
  */
 
 /**
@@ -28,7 +28,7 @@ export function deleteFileAppliesToDataEntry(dataEntry, deleteEntry, metadata, d
     return false
   }
 
-  return samePartition(dataEntry, deleteEntry)
+  return samePartition(dataEntry, deleteEntry, metadata)
 }
 
 /**
@@ -82,25 +82,29 @@ function isUnpartitioned(metadata, specId) {
 /**
  * @param {ManifestEntry} dataEntry
  * @param {ManifestEntry} deleteEntry
+ * @param {TableMetadata} metadata
  * @returns {boolean}
  */
-function samePartition(dataEntry, deleteEntry) {
+function samePartition(dataEntry, deleteEntry, metadata) {
   if (dataEntry.partition_spec_id !== deleteEntry.partition_spec_id) return false
-  return partitionsEqual(dataEntry.data_file.partition, deleteEntry.data_file.partition)
+  const spec = metadata['partition-specs'].find(s => s['spec-id'] === dataEntry.partition_spec_id)
+  return partitionsEqual(dataEntry.data_file.partition, deleteEntry.data_file.partition, spec)
 }
 
 /**
  * @param {Record<string, unknown>} a
  * @param {Record<string, unknown>} b
+ * @param {PartitionSpec | undefined} spec
  * @returns {boolean}
  */
-function partitionsEqual(a, b) {
+function partitionsEqual(a, b, spec) {
   const aKeys = Object.keys(a)
   const bKeys = Object.keys(b)
   if (aKeys.length !== bKeys.length) return false
   for (const key of aKeys) {
     if (!Object.hasOwn(b, key)) return false
-    if (!partitionValuesEqual(a[key], b[key])) return false
+    const transform = spec?.fields.find(f => f.name === key)?.transform
+    if (!partitionValuesEqual(a[key], b[key], transform)) return false
   }
   return true
 }
@@ -110,12 +114,19 @@ function partitionsEqual(a, b) {
  * values: NaNs compare equal after canonicalization, but -0.0 and +0.0 remain
  * distinct. Integer partitions can be numbers in older manifests and bigints
  * after int-to-long promotion, so compare those without losing precision.
+ * Day transforms may decode as Avro Dates or integer day ordinals. Normalize
+ * both to ordinals, without truncating Dates in identity timestamp partitions.
  *
  * @param {unknown} a
  * @param {unknown} b
+ * @param {string | undefined} transform
  * @returns {boolean}
  */
-function partitionValuesEqual(a, b) {
+function partitionValuesEqual(a, b, transform) {
+  if (transform === 'day') {
+    if (a instanceof Date) a = Math.floor(a.getTime() / 86400000)
+    if (b instanceof Date) b = Math.floor(b.getTime() / 86400000)
+  }
   if (typeof a === 'number' && typeof b === 'number') return Object.is(a, b)
   if (typeof a === 'number' && typeof b === 'bigint') return Number.isSafeInteger(a) && BigInt(a) === b
   if (typeof a === 'bigint' && typeof b === 'number') return Number.isSafeInteger(b) && a === BigInt(b)

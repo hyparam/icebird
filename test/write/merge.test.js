@@ -9,6 +9,7 @@ import { icebergManifests } from '../../src/manifest.js'
 import { icebergRead } from '../../src/read.js'
 import { loadLatestFileCatalogMetadata } from '../../src/metadata.js'
 import { writeCarriedManifest } from '../../src/write/manifest.js'
+import { writeManifestList } from '../../src/write/manifest-list.js'
 import { manifestMergeConfig, mergeManifests, packManifests } from '../../src/write/merge.js'
 import { icebergAppend, icebergCreateTable, icebergDelete, icebergRewrite, icebergUpdateSchema } from '../../src/write/write.js'
 import { memResolver } from '../helpers.js'
@@ -133,6 +134,57 @@ describe('packManifests', () => {
 })
 
 describe('merge on commit', () => {
+  it.each([-1, 0, 20000])('preserves deletes when only data day partitions are normalized (%s)', async day => {
+    const { resolver, lister } = memResolver()
+    const catalog = fileCatalog({ resolver, lister, conditionalCommits: true })
+    const tableUrl = 'http://test/merge-date-deletes'
+    await icebergCreateTable({
+      catalog, tableUrl,
+      schema: { ...schema, fields: [schema.fields[0], { id: 2, name: 'created', type: 'timestamp', required: false }] },
+      partitionSpec: { 'spec-id': 0, fields: [{ 'source-id': 2, 'field-id': 1000, name: 'created_day', transform: 'day' }] },
+      properties: { 'commit.manifest.min-count-to-merge': '2' },
+    })
+    const created = new Date(day * 86400000)
+    const before = await icebergAppend({ catalog, tableUrl, records: [{ id: 1n, created }] })
+    const [{ entries }] = await icebergManifests({ metadata: before, resolver })
+    const deleted = await icebergDelete({ catalog, tableUrl, deletes: [{ file_path: entries[0].data_file.file_path, pos: 0n }] })
+
+    // Model an external writer that uses Avro dates for both manifest types.
+    const manifests = await manifestList(deleted, resolver)
+    if (!resolver.writer) throw new Error('writer required')
+    for (const manifest of manifests) {
+      const file = await resolver.reader(manifest.manifest_path)
+      const reader = { view: new DataView(await file.slice(0, file.byteLength)), offset: 0 }
+      const header = avroMetadata(reader)
+      const records = await avroRead({ reader, ...header })
+      const avroSchema = /** @type {AvroRecord} */ (header.metadata['avro.schema'])
+      const dataFile = /** @type {AvroRecord} */ (avroSchema.fields.find(f => f.name === 'data_file')?.type)
+      const partition = /** @type {AvroRecord} */ (dataFile.fields.find(f => f.name === 'partition')?.type)
+      partition.fields[0].type = ['null', { type: 'int', logicalType: 'date' }]
+      const writer = resolver.writer(manifest.manifest_path)
+      await avroWrite({ writer, schema: avroSchema, records, metadata: { 'partition-spec-id': '0' } })
+      manifest.manifest_length = BigInt(writer.offset)
+    }
+    const snapshot = deleted.snapshots?.find(s => s['snapshot-id'] === deleted['current-snapshot-id'])
+    if (!snapshot?.['manifest-list']) throw new Error('snapshot required')
+    await writeManifestList({
+      writer: resolver.writer(snapshot['manifest-list']), manifests,
+      snapshotId: BigInt(snapshot['snapshot-id']), sequenceNumber: BigInt(deleted['last-sequence-number'] ?? 0),
+    })
+    const encodedEntries = (await icebergManifests({ metadata: deleted, resolver })).flatMap(m => m.entries)
+    expect(encodedEntries.map(e => e.data_file.partition.created_day)).toEqual([created, created])
+    expect(await icebergRead({ tableUrl, metadata: deleted, resolver })).toEqual([])
+
+    const after = await icebergAppend({ catalog, tableUrl, records: [{ id: 2n, created }] })
+    const list = await manifestList(after, resolver)
+    expect(list.filter(m => m.content === 0)).toHaveLength(1)
+    expect(list.filter(m => m.content === 1)).toEqual(manifests.filter(m => m.content === 1))
+    const afterEntries = (await icebergManifests({ metadata: after, resolver })).flatMap(m => m.entries)
+    expect(afterEntries.filter(e => e.data_file.content === 0).map(e => e.data_file.partition.created_day)).toEqual([day, day])
+    expect(afterEntries.find(e => e.data_file.content === 1)?.data_file.partition.created_day).toEqual(created)
+    expect(await icebergRead({ tableUrl, metadata: after, resolver })).toEqual([{ id: 2n, created }])
+  })
+
   it.each([true, false])('preserves position deletes after int-to-long partition promotion (merge=%s)', async merge => {
     const { resolver, lister } = memResolver()
     const catalog = fileCatalog({ resolver, lister, conditionalCommits: true })
