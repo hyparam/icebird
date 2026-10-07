@@ -7,6 +7,7 @@ import { icebergStageDeletionVector } from './stage-deletion-vector.js'
 import { icebergStagePositionDelete } from './stage-position-delete.js'
 import { icebergStageAppend, icebergStageExpireSnapshots, icebergStageSetRef, icebergStageUpdateSchema, prepareAppend, stageSnapshotForAppend } from './stage.js'
 import { icebergStageRewrite } from './rewrite.js'
+import { prepareRewriteManifests, stageSnapshotForRewriteManifests } from './rewrite-manifests.js'
 
 /**
  * @import {Catalog, IcebergTransaction, Lister, PartitionSpec, Resolver, Schema, Snapshot, SortOrder, StagedCommit, StagedUpdate, TableMetadata, TableRequirement, TableUpdate} from '../../src/types.js'
@@ -99,6 +100,67 @@ export async function icebergRewrite({ catalog, namespace, table, tableUrl, reso
   // Single commit attempt: see the doc comment on why a rewrite must not retry.
   return await commitStaged(catalog, { namespace, table }, ctx, staged)
 }
+
+/**
+ * Rewrite a table's data manifests into target-size manifests clustered by
+ * partition value, committed as a `replace` snapshot (Java's
+ * `RewriteManifests`). Data files are not touched. Use it as periodic
+ * maintenance on tables that accumulated many small manifests: afterwards a
+ * scan reads few manifests, and a filtered scan can skip whole manifests by
+ * their partition ranges.
+ *
+ * Retries on concurrent commits like {@link icebergAppend}: manifests written
+ * once are reused while every manifest they replace is still in the table, and
+ * manifests committed in the meantime are carried forward. If a concurrent
+ * commit replaced one of them, the rewrite is planned again against the new
+ * base. Returns the loaded metadata unchanged when there is nothing to rewrite.
+ *
+ * @param {object} options
+ * @param {Catalog} options.catalog
+ * @param {string | string[]} [options.namespace] - REST catalog only.
+ * @param {string} [options.table] - REST catalog only.
+ * @param {string} [options.tableUrl] - File catalog only.
+ * @param {Resolver} [options.resolver]
+ * @param {number} [options.specId] - Partition spec whose manifests to rewrite; defaults to `default-spec-id`.
+ * @param {number} [options.targetSizeBytes] - Target manifest size; defaults to `commit.manifest.target-size-bytes` (8 MB).
+ * @returns {Promise<TableMetadata>}
+ */
+export async function icebergRewriteManifests({ catalog, namespace, table, tableUrl, resolver, specId, targetSizeBytes }) {
+  const ctx = await loadTable({ catalog, namespace, table, tableUrl, resolver })
+  const writer = requireResolver(ctx.resolver, 'icebergRewriteManifests')
+  let prepared = await prepareRewriteManifests({
+    tableUrl: ctx.tableUrl, metadata: ctx.metadata, resolver: writer, specId, targetSizeBytes,
+  })
+  if (!prepared) return ctx.metadata
+  /** @type {TableMetadata | undefined} */
+  let unchanged
+  try {
+    return await commitWithRetry({
+      catalog, target: { namespace, table }, ctx,
+      async stage(workingCtx) {
+        const workingResolver = requireResolver(workingCtx.resolver, 'icebergRewriteManifests')
+        while (prepared) {
+          const staged = await stageSnapshotForRewriteManifests({
+            tableUrl: workingCtx.tableUrl, metadata: workingCtx.metadata, prepared, resolver: workingResolver,
+          })
+          if (staged) return staged
+          // The table format, source manifests, or row-ID inheritance changed.
+          prepared = await prepareRewriteManifests({
+            tableUrl: workingCtx.tableUrl, metadata: workingCtx.metadata, resolver: workingResolver, specId, targetSizeBytes,
+          })
+        }
+        unchanged = workingCtx.metadata
+        throw new NothingToRewriteError()
+      },
+    })
+  } catch (err) {
+    if (err instanceof NothingToRewriteError && unchanged) return unchanged
+    throw err
+  }
+}
+
+/** Internal signal: a retry found nothing left to rewrite. */
+class NothingToRewriteError extends Error {}
 
 /**
  * Apply row-level position deletes in one call. Picks the v3 puffin deletion

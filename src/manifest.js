@@ -97,43 +97,54 @@ export async function resolveInlineManifests(snapshot, resolver) {
  * @returns {Promise<ManifestList>}
  */
 async function fetchManifests(manifests, resolver) {
-  // Fetch manifest entries in parallel
-  return await Promise.all(manifests.map(async manifest => {
-    const url = manifest.manifest_path
-    const entries = /** @type {ManifestEntry[]} */ (
-      await fetchAvroRecords(url, resolver, Number(manifest.manifest_length))
-    )
+  return await Promise.all(manifests.map(async manifest => ({
+    url: manifest.manifest_path,
+    entries: await fetchManifestEntries(manifest, resolver),
+  })))
+}
 
-    // Inherit sequence number from manifest if not present in entry
-    for (const entry of entries) {
-      entry.partition_spec_id = manifest.partition_spec_id ?? 0
-      if (entry.snapshot_id == null) entry.snapshot_id = manifest.added_snapshot_id
+/**
+ * Fetch and decode one manifest's entries, applying the inheritance rules
+ * from its manifest list record: partition spec id, snapshot id, data and
+ * file sequence numbers, and v3 first row ids.
+ *
+ * @param {Manifest} manifest
+ * @param {Resolver} resolver
+ * @returns {Promise<ManifestEntry[]>}
+ */
+export async function fetchManifestEntries(manifest, resolver) {
+  const entries = /** @type {ManifestEntry[]} */ (
+    await fetchAvroRecords(manifest.manifest_path, resolver, Number(manifest.manifest_length))
+  )
 
+  // Inherit sequence number from manifest if not present in entry
+  for (const entry of entries) {
+    entry.partition_spec_id = manifest.partition_spec_id ?? 0
+    if (entry.snapshot_id == null) entry.snapshot_id = manifest.added_snapshot_id
+
+    if (entry.sequence_number === undefined) {
+      // When reading v1 manifests with no sequence number column,
+      // sequence numbers for all files must default to 0.
+      entry.sequence_number = manifest.sequence_number ?? 0n
+    }
+
+    if (entry.status === 1) {
+      // only ADDED can inherit sequence number
       if (entry.sequence_number === undefined) {
-        // When reading v1 manifests with no sequence number column,
-        // sequence numbers for all files must default to 0.
-        entry.sequence_number = manifest.sequence_number ?? 0n
+        entry.sequence_number = manifest.sequence_number
       }
-
-      if (entry.status === 1) {
-        // only ADDED can inherit sequence number
-        if (entry.sequence_number === undefined) {
-          entry.sequence_number = manifest.sequence_number
-        }
-        if (entry.file_sequence_number === undefined) {
-          entry.file_sequence_number = manifest.sequence_number
-        }
-      } else {
-        if (entry.sequence_number === undefined || entry.file_sequence_number === undefined) {
-          // spec violation "Sequence‑number inheritance"
-          throw new Error('iceberg manifest entry missing sequence number')
-        }
+      if (entry.file_sequence_number === undefined) {
+        entry.file_sequence_number = manifest.sequence_number
+      }
+    } else {
+      if (entry.sequence_number === undefined || entry.file_sequence_number === undefined) {
+        // spec violation "Sequence‑number inheritance"
+        throw new Error('iceberg manifest entry missing sequence number')
       }
     }
-    assignFirstRowIds(manifest, entries)
-
-    return { url, entries }
-  }))
+  }
+  assignFirstRowIds(manifest, entries)
+  return entries
 }
 
 /**

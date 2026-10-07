@@ -1,6 +1,7 @@
 import { fetchAvroRecords } from '../fetch.js'
 import { resolveInlineManifests } from '../manifest.js'
 import { writeManifestList } from './manifest-list.js'
+import { unassignedRowCounts } from './rewrite-manifests.js'
 import { computeFieldSummary } from './stats.js'
 import { transformResultType } from './transform.js'
 
@@ -183,9 +184,11 @@ function assignFirstRowIds(manifests, firstRowId) {
 
     const rowIdRange = BigInt(manifest.added_rows_count ?? 0) + BigInt(manifest.existing_rows_count ?? 0)
     if (manifest.first_row_id == null) {
+      // A rewritten manifest knows exactly how many of its rows lack ids.
+      const unassigned = unassignedRowCounts.get(manifest) ?? rowIdRange
       manifest.first_row_id = nextFirstRowId
-      nextFirstRowId += rowIdRange
-      assignedRows += rowIdRange
+      nextFirstRowId += unassigned
+      assignedRows += unassigned
     } else {
       const manifestEnd = BigInt(manifest.first_row_id) + rowIdRange
       if (manifestEnd > nextFirstRowId) nextFirstRowId = manifestEnd

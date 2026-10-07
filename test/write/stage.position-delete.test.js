@@ -3,10 +3,11 @@ import { fileCatalog } from '../../src/catalog/file.js'
 import { fetchAvroRecords } from '../../src/fetch.js'
 import { fileCatalogCommit } from '../../src/write/commit.js'
 import { icebergCreate } from '../../src/create.js'
+import { icebergManifests } from '../../src/manifest.js'
 import { icebergRead } from '../../src/read.js'
 import { icebergStagePositionDelete, partitionTupleKey } from '../../src/write/stage-position-delete.js'
 import { icebergStageAppend } from '../../src/write/stage.js'
-import { icebergDelete } from '../../src/write/write.js'
+import { icebergAppend, icebergCreateTable, icebergDelete } from '../../src/write/write.js'
 import { memResolver } from '../helpers.js'
 
 /**
@@ -24,6 +25,44 @@ const schema = {
 }
 
 describe('icebergStagePositionDelete', () => {
+  it('preserves UUID partition bounds in a position-delete manifest', async () => {
+    const { resolver, lister } = memResolver()
+    const catalog = fileCatalog({ resolver, lister, conditionalCommits: true })
+    const tableUrl = 'http://test/uuid-delete'
+    await icebergCreateTable({
+      catalog, tableUrl,
+      schema: {
+        type: 'struct',
+        'schema-id': 0,
+        fields: [{ id: 1, name: 'id', required: true, type: 'uuid' }],
+      },
+      partitionSpec: {
+        'spec-id': 0,
+        fields: [{ 'source-id': 1, 'field-id': 1000, name: 'id', transform: 'identity' }],
+      },
+    })
+    await icebergAppend({ catalog, tableUrl, records: [{ id: '0b000000-0000-0000-0000-000000000000' }] })
+    const metadata = await icebergAppend({ catalog, tableUrl, records: [{ id: '0a000000-0000-0000-0000-000000000000' }] })
+    const entries = (await icebergManifests({ metadata, resolver })).flatMap(m => m.entries)
+    const staged = await icebergStagePositionDelete({
+      tableUrl, metadata, resolver,
+      deletes: entries.map(e => ({ file_path: e.data_file.file_path, pos: 0n })),
+    })
+    const list = await fetchAvroRecords(staged.snapshot['manifest-list'], resolver)
+    const deleteManifests = list.filter(m => m.content === 1)
+    expect(deleteManifests).toHaveLength(1)
+    const lowerBytes = new Uint8Array(16)
+    lowerBytes[0] = 0x0a
+    const upperBytes = new Uint8Array(16)
+    upperBytes[0] = 0x0b
+    expect(deleteManifests[0].partitions).toEqual([{
+      contains_null: false,
+      contains_nan: undefined,
+      lower_bound: lowerBytes,
+      upper_bound: upperBytes,
+    }])
+  })
+
   it('keeps -0.0 and +0.0 distinct in partition tuple keys', () => {
     expect(partitionTupleKey({ 1000: -0 }))
       .not.toBe(partitionTupleKey({ 1000: 0 }))
