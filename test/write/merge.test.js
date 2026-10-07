@@ -11,7 +11,10 @@ import { loadLatestFileCatalogMetadata } from '../../src/metadata.js'
 import { writeCarriedManifest } from '../../src/write/manifest.js'
 import { writeManifestList } from '../../src/write/manifest-list.js'
 import { manifestMergeConfig, mergeManifests, packManifests } from '../../src/write/merge.js'
-import { icebergAppend, icebergCreateTable, icebergDelete, icebergRewrite, icebergUpdateSchema } from '../../src/write/write.js'
+import { writeParquet } from '../../src/write/parquet.js'
+import { writeManifestFile } from '../../src/write/rewrite-manifests.js'
+import { buildSnapshotUpdate } from '../../src/write/snapshot.js'
+import { icebergAppend, icebergCreateTable, icebergDelete, icebergRewrite, icebergRewriteManifests, icebergUpdateSchema } from '../../src/write/write.js'
 import { memResolver } from '../helpers.js'
 
 /**
@@ -134,6 +137,72 @@ describe('packManifests', () => {
 })
 
 describe('merge on commit', () => {
+  it.each([false, true])('preserves equality deletes and newer matching rows (partitioned=%s)', async partitioned => {
+    const { resolver, lister } = memResolver()
+    const catalog = fileCatalog({ resolver, lister, conditionalCommits: true })
+    const tableUrl = 'http://test/merge-equality'
+    /** @type {PartitionSpec} */
+    const spec = {
+      'spec-id': 0,
+      fields: partitioned ? [{ 'source-id': 2, 'field-id': 1000, name: 'name', transform: 'identity' }] : [],
+    }
+    await icebergCreateTable({
+      catalog, tableUrl, schema, partitionSpec: spec,
+      properties: { 'commit.manifest.min-count-to-merge': '2' },
+    })
+    let metadata = await icebergAppend({ catalog, tableUrl, records: [
+      { id: 1n, name: 'a' }, { id: 2n, name: 'a' }, { id: 1n, name: 'b' },
+    ] })
+    const initial = metadata
+    // Two delete commits force the delete manifests to merge, too. A new
+    // matching row appended after each delete must remain visible.
+    for (const id of [1n, 2n]) {
+      const sequenceNumber = BigInt(metadata['last-sequence-number']) + 1n
+      const snapshotId = BigInt(metadata['current-snapshot-id'] ?? 0) + 1n
+      if (!resolver.writer) throw new Error('writer required')
+      const filePath = `${tableUrl}/data/eq-${id}.parquet`
+      const writer = resolver.writer(filePath)
+      await writeParquet({ writer, schema: { ...schema, fields: [schema.fields[0]] }, records: [{ id }] })
+      const manifestPath = `${tableUrl}/metadata/eq-${id}.avro`
+      const manifest = await writeManifestFile({
+        resolver, manifestPath, schema, spec, content: 1, snapshotId, sequenceNumber, formatVersion: 2,
+        entries: [{
+          status: 1, snapshot_id: snapshotId, sequence_number: sequenceNumber, file_sequence_number: sequenceNumber,
+          data_file: {
+            content: 2, file_path: filePath, file_format: 'parquet',
+            partition: partitioned ? { name: 'a' } : {}, equality_ids: [1],
+            record_count: 1n, file_size_in_bytes: BigInt(writer.offset),
+          },
+        }],
+      })
+      const staged = await buildSnapshotUpdate({
+        tableUrl, metadata, resolver, snapshotId, sequenceNumber, manifestUuid: `eq-${id}`,
+        timestampMs: Date.now(), formatVersion: 2, newManifests: [manifest],
+        summary: { operation: 'delete' }, writtenFiles: [filePath, manifestPath],
+      })
+      await fileCatalogCommit({ tableUrl, metadata, staged, resolver, conditionalCommits: true })
+      metadata = await icebergAppend({ catalog, tableUrl, records: [{ id, name: 'a' }] })
+    }
+    const list = await manifestList(metadata, resolver)
+    expect(list.filter(m => m.content === 1)).toHaveLength(1)
+    expect(list.filter(m => m.content === 0)).toHaveLength(1)
+    const expected = partitioned
+      ? [{ id: 1n, name: 'b' }, { id: 1n, name: 'a' }, { id: 2n, name: 'a' }]
+      : [{ id: 1n, name: 'a' }, { id: 2n, name: 'a' }]
+    expect(await icebergRead({ tableUrl, metadata, resolver })).toEqual(expected)
+    // A rename verifies that equality IDs survive independently of names.
+    await icebergUpdateSchema({ catalog, tableUrl, schema: {
+      ...schema, fields: [{ ...schema.fields[0], name: 'renamed_id' }, schema.fields[1]],
+    } })
+    const rewritten = await icebergRewriteManifests({ catalog, tableUrl, targetSizeBytes: 1 })
+    const actual = await icebergRead({ tableUrl, metadata: rewritten, resolver })
+    expect(actual).toHaveLength(expected.length)
+    expect(actual).toEqual(expect.arrayContaining(expected.map(({ id, name }) => ({ renamed_id: id, name }))))
+    expect(await icebergRead({ tableUrl, metadata: initial, resolver })).toEqual([
+      { id: 1n, name: 'a' }, { id: 2n, name: 'a' }, { id: 1n, name: 'b' },
+    ])
+  })
+
   it.each([-1, 0, 20000])('preserves deletes when only data day partitions are normalized (%s)', async day => {
     const { resolver, lister } = memResolver()
     const catalog = fileCatalog({ resolver, lister, conditionalCommits: true })
