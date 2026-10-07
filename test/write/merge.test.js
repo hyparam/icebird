@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
+import { avroRead } from '../../src/avro/avro.read.js'
+import { avroWrite } from '../../src/avro/avro.write.js'
 import { avroMetadata } from '../../src/avro/avro.metadata.js'
 import { fileCatalog } from '../../src/catalog/file.js'
 import { fileCatalogCommit } from '../../src/write/commit.js'
@@ -12,6 +14,7 @@ import { icebergAppend, icebergCreateTable, icebergDelete, icebergRewrite, icebe
 import { memResolver } from '../helpers.js'
 
 /**
+ * @import {AvroRecord} from '../../src/avro/types.js'
  * @import {Manifest, ManifestEntry, PartitionSpec, Resolver, Schema, TableMetadata} from '../../src/types.js'
  */
 
@@ -57,6 +60,36 @@ function ids(rows) {
   return rows.map(r => r.id).sort((a, b) => a < b ? -1 : a > b ? 1 : 0)
 }
 
+/**
+ * Replace a single-manifest snapshot with a differently encoded manifest.
+ * Inline locations let the reader recover its new length from the file.
+ *
+ * @param {TableMetadata} metadata
+ * @param {Resolver} resolver
+ * @param {(schema: AvroRecord, entries: any[]) => any[]} transform
+ * @returns {Promise<TableMetadata>}
+ */
+async function replaceSnapshotManifest(metadata, resolver, transform) {
+  const [manifest] = await manifestList(metadata, resolver)
+  const file = await resolver.reader(manifest.manifest_path)
+  const reader = { view: new DataView(await file.slice(0, file.byteLength)), offset: 0 }
+  const header = avroMetadata(reader)
+  const entries = await avroRead({ reader, ...header })
+  const avroSchema = header.metadata['avro.schema']
+  const records = transform(avroSchema, entries)
+  const path = `${metadata.location}/metadata/reencoded.avro`
+  const writer = resolver.writer?.(path)
+  if (!writer) throw new Error('writer required')
+  await avroWrite({ writer, schema: avroSchema, records, metadata: { 'partition-spec-id': '0' } })
+  const snapshot = metadata.snapshots?.find(s => s['snapshot-id'] === metadata['current-snapshot-id'])
+  if (!snapshot) throw new Error('snapshot required')
+  return await fileCatalogCommit({
+    tableUrl: metadata.location, resolver,
+    metadata: { ...metadata, snapshots: [{ ...snapshot, 'manifest-list': '', manifests: [path] }] },
+    staged: { requirements: [], updates: [], writtenFiles: [] },
+  })
+}
+
 describe('manifestMergeConfig', () => {
   it('defaults to Java: enabled, 100 manifests, 8 MB', () => {
     expect(manifestMergeConfig(undefined)).toEqual({ enabled: true, minCountToMerge: 100, targetSizeBytes: 8388608 })
@@ -100,6 +133,37 @@ describe('packManifests', () => {
 })
 
 describe('merge on commit', () => {
+  it.each([-1, 0, 20000, null])('merges date-encoded day partitions (%s)', async day => {
+    const { resolver, lister } = memResolver()
+    const catalog = fileCatalog({ resolver, lister, conditionalCommits: true })
+    const tableUrl = 'http://test/date-encoded-merge'
+    await icebergCreateTable({
+      catalog, tableUrl,
+      schema: { ...schema, fields: [schema.fields[0], { id: 2, name: 'created', type: 'timestamp', required: false }] },
+      partitionSpec: { 'spec-id': 0, fields: [{ 'source-id': 2, 'field-id': 1000, name: 'created_day', transform: 'day' }] },
+      properties: { 'commit.manifest.min-count-to-merge': '2' },
+    })
+    const records = [{ id: 1n, created: day === null ? null : new Date(day * 86400000) }]
+    const before = await icebergAppend({ catalog, tableUrl, records })
+    await replaceSnapshotManifest(before, resolver, (avroSchema, entries) => {
+      const dataFile = /** @type {AvroRecord} */ (avroSchema.fields.find(f => f.name === 'data_file')?.type)
+      const partition = /** @type {AvroRecord} */ (dataFile.fields.find(f => f.name === 'partition')?.type)
+      partition.fields[0].type = ['null', { type: 'int', logicalType: 'date' }]
+      return entries
+    })
+    const after = await icebergAppend({ catalog, tableUrl, records: [{ id: 2n, created: new Date(86400000) }] })
+    const list = await manifestList(after, resolver)
+    expect(list).toHaveLength(1)
+    const [{ entries }] = await icebergManifests({ metadata: after, resolver })
+    expect(entries.map(e => e.data_file.partition.created_day)).toEqual([day ?? undefined, 1])
+    const [summary] = list[0].partitions ?? []
+    expect(summary.contains_null).toBe(day === null)
+    if (!summary.lower_bound || !summary.upper_bound) throw new Error('partition bounds required')
+    expect(new DataView(summary.lower_bound.buffer, summary.lower_bound.byteOffset).getInt32(0, true)).toBe(Math.min(day ?? 1, 1))
+    expect(new DataView(summary.upper_bound.buffer, summary.upper_bound.byteOffset).getInt32(0, true)).toBe(Math.max(day ?? 1, 1))
+    expect(ids(await icebergRead({ tableUrl, metadata: after, resolver }))).toEqual([1n, 2n])
+  })
+
   it('bounds manifest count at the Java defaults and reads like fast append', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
     const merged = await setup()
