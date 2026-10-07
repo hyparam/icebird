@@ -4,6 +4,7 @@ import { fileCatalog } from '../../src/catalog/file.js'
 import { icebergManifests } from '../../src/manifest.js'
 import { manifestMightMatch } from '../../src/prune.js'
 import { icebergQuery } from '../../src/sql/icebergQuery.js'
+import { serializeValue } from '../../src/write/serde.js'
 import { icebergAppend, icebergCreateTable, icebergRewriteManifests, icebergUpdateSchema } from '../../src/write/write.js'
 import { memResolver } from '../helpers.js'
 
@@ -295,6 +296,31 @@ describe('manifestMightMatch', () => {
     }
     expect(manifestMightMatch({ created: { $lt: new Date('2026-01-01T12:00:00Z') } }, dateManifest, dateSchema, dateMetadata)).toBe(true)
     expect(manifestMightMatch({ created: { $lt: new Date('2026-01-01') } }, dateManifest, dateSchema, dateMetadata)).toBe(false)
+  })
+
+  it.each(/** @type {const} */ (['float', 'double']))('treats signed zeros equally in identity %s summaries', type => {
+    const zeroSchema = { ...schema, fields: [{ ...schema.fields[0], type }] }
+    const zeroMetadata = {
+      ...metadata,
+      'partition-specs': [{
+        'spec-id': 0,
+        fields: [{ 'source-id': 1, 'field-id': 1000, name: 'id', transform: 'identity' }],
+      }],
+    }
+    for (const zero of [-0, 0]) {
+      const bound = serializeValue(zero, type)
+      const zeroManifest = {
+        ...manifest,
+        partitions: [{ contains_null: false, lower_bound: bound, upper_bound: bound }],
+      }
+      const literal = -zero
+      for (const condition of [{ $eq: literal }, { $in: [literal] }, { $lte: literal }, { $gte: literal }]) {
+        expect(manifestMightMatch({ id: condition }, zeroManifest, zeroSchema, zeroMetadata)).toBe(true)
+      }
+      for (const condition of [{ $lt: literal }, { $gt: literal }, { $eq: 1 }, { $eq: -1 }]) {
+        expect(manifestMightMatch({ id: condition }, zeroManifest, zeroSchema, zeroMetadata)).toBe(false)
+      }
+    }
   })
 
   it('handles AND / OR and keeps on missing summaries', () => {

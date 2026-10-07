@@ -112,6 +112,20 @@ describe('fileMightMatch — double with mixed numeric literals', () => {
   })
 })
 
+it.each(/** @type {const} */ (['float', 'double']))('treats signed zeros equally in %s column bounds', type => {
+  const zeroSchema = { ...schema, fields: [{ id: 4, name: 'price', required: false, type }] }
+  for (const zero of [-0, 0]) {
+    const e = entry({ 4: { min: zero, max: zero, type } })
+    const literal = -zero
+    for (const condition of [{ $eq: literal }, { $in: [literal] }, { $lte: literal }, { $gte: literal }]) {
+      expect(fileMightMatch({ price: condition }, e, zeroSchema)).toBe(true)
+    }
+    for (const condition of [{ $lt: literal }, { $gt: literal }, { $eq: 1 }, { $eq: -1 }]) {
+      expect(fileMightMatch({ price: condition }, e, zeroSchema)).toBe(false)
+    }
+  }
+})
+
 describe('fileMightMatch — timestamp with Date literal', () => {
   // ts in micros for 2022-01-01 .. 2022-06-01
   const lo = BigInt(Date.parse('2022-01-01')) * 1000n

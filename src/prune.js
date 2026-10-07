@@ -688,6 +688,8 @@ function eqInRange(value, lo, hi, type) {
  */
 function safeCompare(a, b, type) {
   if (a === null || a === undefined || b === null || b === undefined) return undefined
+  // Predicates treat signed zeros as equal; statistics still order -0 below +0.
+  if (a === 0 && b === 0) return 0
   try {
     // Date bounds are day counts at midnight, but timestamp literals can
     // include a time of day. Preserve it instead of truncating to a date.
