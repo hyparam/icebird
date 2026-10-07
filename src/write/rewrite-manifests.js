@@ -27,7 +27,7 @@ const DEFAULT_TARGET_SIZE_BYTES = 8 * 1024 * 1024
 /**
  * Manifests written by `prepareRewriteManifests`, reusable across commit
  * attempts while every manifest they replace is still in the table with
- * unchanged row-ID inheritance.
+ * unchanged row-ID inheritance and table format version.
  *
  * @typedef {object} PreparedRewriteManifests
  * @property {bigint} snapshotId
@@ -139,8 +139,8 @@ export async function prepareRewriteManifests({ tableUrl, metadata, resolver, sp
  * Build the `replace` snapshot for prepared manifest rewrites against the
  * freshest metadata. Manifests committed concurrently are carried forward.
  * Returns undefined when a manifest the rewrite replaces is no longer in the
- * table or its inherited first row ID changed, in which case the caller must
- * prepare again against this metadata.
+ * table, its inherited first row ID changed, or the table format version
+ * changed, in which case the caller must prepare again against this metadata.
  *
  * @param {object} options
  * @param {string} options.tableUrl
@@ -150,6 +150,7 @@ export async function prepareRewriteManifests({ tableUrl, metadata, resolver, sp
  * @returns {Promise<StagedUpdate | undefined>}
  */
 export async function stageSnapshotForRewriteManifests({ tableUrl, metadata, prepared, resolver }) {
+  if (metadata['format-version'] !== prepared.formatVersion) return undefined
   const priors = await loadPriorManifests(metadata, resolver)
   const priorsByPath = new Map(priors.map(m => [m.manifest_path, m]))
   for (const path of prepared.replacedPaths) {

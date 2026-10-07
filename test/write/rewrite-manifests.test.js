@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { avroMetadata } from '../../src/avro/avro.metadata.js'
 import { avroWrite } from '../../src/avro/avro.write.js'
 import { fileCatalog } from '../../src/catalog/file.js'
 import { fetchAvroRecords } from '../../src/fetch.js'
@@ -414,6 +415,61 @@ describe('icebergRewriteManifests', () => {
     const appended = await icebergAppend({ catalog, tableUrl, records: [{ id: 2n, created: new Date(2 * DAY) }] })
     expect(appended['next-row-id']).toBe(3)
     expect(byId(await icebergRead({ tableUrl, metadata: appended, resolver })).map(r => r._row_id)).toEqual([0n, 1n, 2n])
+  })
+
+  it('reprepares v3 manifests when a concurrent format upgrade causes a retry', async () => {
+    const { resolver, lister, tableUrl, metadata } = await scrambledTable(2, 2, {
+      'commit.retry.min-wait-ms': '0', 'commit.retry.max-wait-ms': '0',
+    })
+    const realWriter = resolver.writer
+    if (!realWriter) throw new Error('writer required')
+    let attempts = 0
+    /** @type {string[]} */
+    const manifestWrites = []
+    /** @type {Resolver} */
+    const racingResolver = {
+      ...resolver,
+      writer(path, options) {
+        if (/-m\d+\.avro$/.test(path)) manifestWrites.push(path)
+        const writer = realWriter(path, options)
+        if (options?.ifNoneMatch === '*') {
+          const finish = writer.finish.bind(writer)
+          writer.finish = async () => {
+            if (++attempts === 1) {
+              await fileCatalogCommit({
+                tableUrl, resolver, conditionalCommits: true,
+                metadata: { ...metadata, 'format-version': 3, 'next-row-id': 0 },
+                staged: { requirements: [], updates: [], writtenFiles: [] },
+              })
+            }
+            await finish()
+          }
+        }
+        return writer
+      },
+    }
+    const after = await icebergRewriteManifests({
+      catalog: fileCatalog({ resolver: racingResolver, lister, conditionalCommits: true }), tableUrl,
+    })
+    expect(attempts).toBe(2)
+    expect(after['format-version']).toBe(3)
+    const snapshot = after.snapshots?.find(s => s['snapshot-id'] === after['current-snapshot-id'])
+    expect(snapshot).toMatchObject({ 'first-row-id': 0, 'added-rows': 2 })
+    expect(after['next-row-id']).toBe(2)
+    expect(manifestWrites).toHaveLength(2)
+    expect(manifestWrites[0]).not.toBe(manifestWrites[1])
+    const list = await manifestList(after, resolver)
+    expect(list.map(m => m.manifest_path)).toEqual([manifestWrites[1]])
+    if (!snapshot) throw new Error('snapshot required')
+    for (const path of [snapshot['manifest-list'], list[0].manifest_path]) {
+      const file = await resolver.reader(path)
+      const buffer = await file.slice(0, file.byteLength)
+      const header = avroMetadata({ view: new DataView(buffer), offset: 0 })
+      expect(header.metadata['format-version']).toBe('3')
+    }
+    const rows = byId(await icebergRead({ tableUrl, metadata: after, resolver }))
+    expect(rows.map(r => r._row_id)).toEqual([0n, 1n])
+    expect(rows.map(r => r._last_updated_sequence_number)).toEqual([1n, 2n])
   })
 
   it('reuses prepared v3 manifests when a concurrent append leaves inherited row ids unchanged', async () => {
