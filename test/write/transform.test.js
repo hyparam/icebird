@@ -171,6 +171,21 @@ describe('applyTransform', () => {
     expect(applyTransform('year', -1, 'date')).toBe(-1)
   })
 
+  it.each(/** @type {const} */ (['timestamp', 'timestamptz', 'timestamp_ns', 'timestamptz_ns']))(
+    'floors submillisecond %s values at temporal boundaries', type => {
+      const unitsPerMillis = type.endsWith('_ns') ? 1000000n : 1000n
+      for (const transform of /** @type {const} */ (['year', 'month', 'day', 'hour'])) {
+        for (const millis of [Date.UTC(1969, 0, 1), 0, Date.UTC(1971, 0, 1)]) {
+          const boundary = BigInt(millis) * unitsPerMillis
+          for (const offset of [-unitsPerMillis, -1n, 0n, 1n]) {
+            const expected = applyTransform(transform, new Date(millis + (offset < 0n ? -1 : 0)), type)
+            expect(applyTransform(transform, boundary + offset, type)).toBe(expected)
+          }
+        }
+      }
+    }
+  )
+
   it('throws on unsupported source types', () => {
     expect(() => applyTransform('bucket[16]', 1.5, 'double'))
       .toThrow(/bucket transform: unsupported source type double/)

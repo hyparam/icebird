@@ -266,6 +266,14 @@ describe('manifestMightMatch', () => {
         }
         expect(manifestMightMatch({ created: { $gt: new Date(-1) } }, temporalManifest, temporalSchema, temporalMetadata)).toBe(true)
         expect(manifestMightMatch({ created: { $gt: new Date(0) } }, temporalManifest, temporalSchema, temporalMetadata)).toBe(false)
+        const unitsPerMillis = type.endsWith('_ns') ? 1000000n : 1000n
+        for (const value of [-unitsPerMillis, -unitsPerMillis + 1n]) {
+          expect(manifestMightMatch({ created: { $gt: value } }, temporalManifest, temporalSchema, temporalMetadata)).toBe(true)
+          expect(manifestMightMatch({ created: { $gt: Number(value) } }, temporalManifest, temporalSchema, temporalMetadata)).toBe(true)
+        }
+        expect(manifestMightMatch({ created: { $eq: -1n } }, temporalManifest, temporalSchema, temporalMetadata)).toBe(true)
+        expect(manifestMightMatch({ created: { $lt: 0n } }, temporalManifest, temporalSchema, temporalMetadata)).toBe(true)
+        expect(manifestMightMatch({ created: { $gt: -1n } }, temporalManifest, temporalSchema, temporalMetadata)).toBe(false)
       }
     }
   )
