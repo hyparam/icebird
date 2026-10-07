@@ -70,7 +70,8 @@ describe.concurrent('icebergDataSource', () => {
       reads.mockClear()
       const batches = []
       for await (const batch of prepared.batches()) batches.push(batch)
-      expect(reads).not.toHaveBeenCalled()
+      // Each scan reads its manifests, but no parquet data.
+      expect(reads.mock.calls.filter(([path]) => path.endsWith('.parquet'))).toEqual([])
       expect(batches.every(batch => batch.columns.every(column => 'type' in column && column.type === 'constant'))).toEqual(true)
       expect(batches.reduce((sum, batch) => sum + batch.selection.length, 0)).toEqual(expectedRows.length)
     }
@@ -803,7 +804,9 @@ describe.concurrent('icebergDataSource partition pruning', () => {
     if (statement.type !== 'select') throw new Error('expected SELECT')
     const prepared = source.prepareScan({ columns: [], filter: statement.where, limit: 1, offset: 1 })
     expect(prepared.residual).toEqual({ filter: statement.where, limit: 1, offset: 1 })
-    expect(prepared.properties.maxRows).toBe(2)
+    // Preparing fetches no manifests, so the bound comes from the manifest
+    // list: id is bucketed, so its summary cannot rule out the one manifest.
+    expect(prepared.properties.maxRows).toBe(4)
     expect(prepared.properties.exactRows).toBeUndefined()
   })
 

@@ -97,12 +97,12 @@ function dateAsMillis(value, sourceType, transform) {
   validateTransformSource({ kind: transform }, sourceType)
   if (value instanceof Date) return value.getTime()
   const n = typeof value === 'bigint' ? value : BigInt(value)
-  switch (t) {
-  case 'date': return Number(n) * 86400000
-  case 'timestamp':
-  case 'timestamptz': return Number(n / 1000n)
-  default: return Number(n / 1000000n) // *_ns
-  }
+  if (t === 'date') return Number(n) * 86400000
+  const unitsPerMillis = t === 'timestamp' || t === 'timestamptz' ? 1000n : 1000000n
+  // Bigint division truncates toward zero; temporal partitions must floor
+  // negative submillisecond values into the preceding millisecond.
+  const millis = n / unitsPerMillis
+  return Number(n % unitsPerMillis < 0n ? millis - 1n : millis)
 }
 
 /**

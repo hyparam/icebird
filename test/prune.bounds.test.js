@@ -112,6 +112,20 @@ describe('fileMightMatch — double with mixed numeric literals', () => {
   })
 })
 
+it.each(/** @type {const} */ (['float', 'double']))('treats signed zeros equally in %s column bounds', type => {
+  const zeroSchema = { ...schema, fields: [{ id: 4, name: 'price', required: false, type }] }
+  for (const zero of [-0, 0]) {
+    const e = entry({ 4: { min: zero, max: zero, type } })
+    const literal = -zero
+    for (const condition of [{ $eq: literal }, { $in: [literal] }, { $lte: literal }, { $gte: literal }]) {
+      expect(fileMightMatch({ price: condition }, e, zeroSchema)).toBe(true)
+    }
+    for (const condition of [{ $lt: literal }, { $gt: literal }, { $eq: 1 }, { $eq: -1 }]) {
+      expect(fileMightMatch({ price: condition }, e, zeroSchema)).toBe(false)
+    }
+  }
+})
+
 describe('fileMightMatch — timestamp with Date literal', () => {
   // ts in micros for 2022-01-01 .. 2022-06-01
   const lo = BigInt(Date.parse('2022-01-01')) * 1000n
@@ -147,6 +161,18 @@ describe('fileMightMatch — date with Date literal', () => {
 
   it('keeps the file for an unparseable date literal (no mis-prune)', () => {
     expect(fileMightMatch({ d: { $gt: 'not-a-date' } }, e, schema)).toBe(true)
+  })
+
+  it('preserves the time of day in timestamp literals', () => {
+    const singleDay = entry({ 6: { min: lo, max: lo, type: 'date' } })
+    for (const noon of [new Date('2022-01-01T12:00:00Z'), '2022-01-01T12:00:00Z']) {
+      expect(fileMightMatch({ d: { $lt: noon } }, singleDay, schema)).toBe(true)
+      expect(fileMightMatch({ d: { $lte: noon } }, singleDay, schema)).toBe(true)
+      expect(fileMightMatch({ d: { $gt: noon } }, singleDay, schema)).toBe(false)
+      expect(fileMightMatch({ d: { $gte: noon } }, singleDay, schema)).toBe(false)
+      expect(fileMightMatch({ d: { $eq: noon } }, singleDay, schema)).toBe(false)
+      expect(fileMightMatch({ d: { $in: [noon, new Date('2022-01-02')] } }, singleDay, schema)).toBe(false)
+    }
   })
 })
 

@@ -1,5 +1,5 @@
 import { typeName } from './schema.js'
-import { applyTransform } from './write/transform.js'
+import { applyTransform, transformResultType } from './write/transform.js'
 import { compare, compareStringsCodePoint, deserializeValue } from './write/serde.js'
 
 /**
@@ -14,7 +14,7 @@ import { compare, compareStringsCodePoint, deserializeValue } from './write/serd
  * file is kept. Pruning never changes query results, only which files are read.
  *
  * @import {ParquetQueryFilter} from 'hyparquet'
- * @import {DataFile, IcebergType, ManifestEntry, PartitionSpec, Schema, TableMetadata} from '../src/types.js'
+ * @import {DataFile, FieldSummary, IcebergType, Manifest, ManifestEntry, PartitionSpec, Schema, TableMetadata} from '../src/types.js'
  */
 
 /**
@@ -31,6 +31,140 @@ export function partitionMightMatch(filter, dataEntry, schema, metadata) {
   /** @type {PruneContext} */
   const ctx = { spec, schema, partition: dataEntry.data_file.partition }
   return nodeMightMatch(filter, (column, condition) => columnMightMatch(column, condition, ctx))
+}
+
+/**
+ * Manifest-level scan pruning (Java `ManifestEvaluator`). Given a hyparquet
+ * query filter (keyed by iceberg field name) and a manifest list record,
+ * decide whether any file in the manifest could match, using the manifest's
+ * per-partition-field summaries (`lower_bound` / `upper_bound` over the
+ * partition values of its files). A skipped manifest is never fetched.
+ *
+ * Inclusive like `partitionMightMatch`: a manifest is skipped only when its
+ * partition ranges prove no row can match, and any uncertainty (missing
+ * summaries, unknown transform, undecodable bound) keeps it.
+ *
+ * @param {ParquetQueryFilter} filter - Filter keyed by iceberg field name.
+ * @param {Manifest} manifest
+ * @param {Schema} schema - Current schema (filter column names map to its fields).
+ * @param {TableMetadata} metadata
+ * @returns {boolean} true if the manifest must be read, false if it can be skipped.
+ */
+export function manifestMightMatch(filter, manifest, schema, metadata) {
+  const spec = metadata['partition-specs'].find(s => s['spec-id'] === (manifest.partition_spec_id ?? 0))
+  const summaries = manifest.partitions
+  if (!spec || spec.fields.length === 0 || !summaries || summaries.length !== spec.fields.length) return true
+  return nodeMightMatch(filter, (column, condition) => {
+    const field = schema.fields.find(f => f.name === column)
+    if (!field) return true
+    for (const { op, value } of normalizeCondition(condition)) {
+      for (let i = 0; i < spec.fields.length; i++) {
+        const pf = spec.fields[i]
+        if (pf['source-id'] !== field.id) continue
+        if (!summaryMightMatch(op, value, summaries[i], pf.transform, field.type)) return false
+      }
+    }
+    return true
+  })
+}
+
+/**
+ * Whether a manifest whose partition values for one field span `summary`
+ * could hold a file matching `op value` under the given transform.
+ *
+ * @param {string} op
+ * @param {any} value
+ * @param {FieldSummary | undefined} summary
+ * @param {string} transform
+ * @param {IcebergType} sourceType
+ * @returns {boolean}
+ */
+function summaryMightMatch(op, value, summary, transform, sourceType) {
+  if (!summary) return true
+  const kind = transformKind(transform)
+  if (kind === 'other') return true
+  /** @type {IcebergType} */
+  let resultType
+  let lo
+  let hi
+  try {
+    resultType = transformResultType(/** @type {any} */ (transform), sourceType)
+    lo = summary.lower_bound ? deserializeValue(summary.lower_bound, resultType) : undefined
+    hi = summary.upper_bound ? deserializeValue(summary.upper_bound, resultType) : undefined
+  } catch {
+    return true
+  }
+  if (lo === undefined && hi === undefined) return true
+  // Identity partition values are source values: reuse the column bounds check.
+  if (kind === 'identity') return boundsOpMightMatch(op, value, lo, hi, resultType)
+
+  if (op === '$in') {
+    if (!Array.isArray(value)) return true
+    return value.some(x => {
+      const t = project(transform, x, sourceType)
+      return t === undefined || eqInRange(t, lo, hi, resultType)
+    })
+  }
+  if (kind === 'bucket') {
+    if (op !== '$eq') return true
+    const b = project(transform, value, sourceType)
+    return b === undefined || eqInRange(b, lo, hi, resultType)
+  }
+  // Monotonic: compare the projected literal against the partition range.
+  // Projection floors, so tighten strict bounds only when an exact source
+  // neighbor is available. Otherwise retain the boundary partition.
+  let t = project(transform, value, sourceType)
+  if (t === undefined) return true
+  if (op === '$lt' || op === '$gt') {
+    const adjacent = adjacentValue(value, op === '$lt' ? -1 : 1, sourceType)
+    const ta = adjacent === undefined ? undefined : project(transform, adjacent, sourceType)
+    if (ta !== undefined) t = ta
+  }
+  switch (op) {
+  case '$eq': return eqInRange(t, lo, hi, resultType)
+  case '$lt':
+  case '$lte': {
+    if (lo === undefined) return true
+    const c = safeCompare(lo, t, resultType)
+    return c === undefined || c <= 0
+  }
+  case '$gt':
+  case '$gte': {
+    if (hi === undefined) return true
+    const c = safeCompare(hi, t, resultType)
+    return c === undefined || c >= 0
+  }
+  default: return true
+  }
+}
+
+/**
+ * The source value one unit below (`step` -1) or above (+1) `value`, for
+ * integer and temporal source types, or undefined when there is no exact
+ * neighbor (decimals, strings, non-integer numbers). Date literals have only
+ * millisecond precision, so keep their projection conservative: a millisecond
+ * step can skip matching microsecond or nanosecond timestamps.
+ *
+ * @param {any} value
+ * @param {-1|1} step
+ * @param {IcebergType} sourceType
+ * @returns {any}
+ */
+function adjacentValue(value, step, sourceType) {
+  switch (typeName(sourceType)) {
+  case 'int':
+  case 'long':
+  case 'date':
+  case 'timestamp':
+  case 'timestamptz':
+  case 'timestamp_ns':
+  case 'timestamptz_ns':
+    if (typeof value === 'bigint') return value + BigInt(step)
+    if (Number.isSafeInteger(value)) return value + step
+    return undefined
+  default:
+    return undefined
+  }
 }
 
 /**
@@ -554,10 +688,27 @@ function eqInRange(value, lo, hi, type) {
  */
 function safeCompare(a, b, type) {
   if (a === null || a === undefined || b === null || b === undefined) return undefined
+  // Predicates treat signed zeros as equal; statistics still order -0 below +0.
+  if (a === 0 && b === 0) return 0
   try {
-    const c = compare(a, b, type)
+    // Date bounds are day counts at midnight, but timestamp literals can
+    // include a time of day. Preserve it instead of truncating to a date.
+    const c = typeName(type) === 'date'
+      ? dateComparisonMillis(a) - dateComparisonMillis(b)
+      : compare(a, b, type)
     return Number.isNaN(c) ? undefined : c
   } catch {
     return undefined
   }
+}
+
+/**
+ * @param {any} value
+ * @returns {number}
+ */
+function dateComparisonMillis(value) {
+  if (value instanceof Date) return value.getTime()
+  if (typeof value === 'string') return Date.parse(value)
+  if (typeof value === 'number' || typeof value === 'bigint') return Number(value) * 86400000
+  return NaN
 }
