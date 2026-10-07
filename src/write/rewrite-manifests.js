@@ -78,18 +78,11 @@ export async function prepareRewriteManifests({ tableUrl, metadata, resolver, sp
   const target = targetSizeBytes ?? targetSizeProperty(metadata.properties)
   if (!currentSnapshot(metadata)) return undefined
 
-  let schema = metadata.schemas.find(s => s['schema-id'] === metadata['current-schema-id'])
-  if (!schema) throw new Error('current schema not found in metadata')
   const rewriteSpecId = specId ?? metadata['default-spec-id']
   const spec = metadata['partition-specs'].find(s => s['spec-id'] === rewriteSpecId)
   if (!spec) throw new Error(`partition spec ${rewriteSpecId} not found in metadata`)
-  // Historical specs can reference dropped columns. Use the newest retained
-  // schema containing every source ID for sorting, encoding, and summaries.
-  // Keep a real schema so the manifest's embedded schema and ID agree.
-  if (!hasPartitionSources(schema, spec)) {
-    schema = metadata.schemas.filter(s => hasPartitionSources(s, spec)).sort((a, b) => b['schema-id'] - a['schema-id'])[0]
-    if (!schema) throw new Error(`partition spec ${rewriteSpecId} source fields not found in retained schemas`)
-  }
+  const schema = partitionSchema(metadata, spec)
+  if (!schema) throw new Error(`partition spec ${rewriteSpecId} source fields not found in retained schemas`)
   if (!canRewriteSpec(schema, spec)) {
     throw new Error(`partition spec ${rewriteSpecId} cannot be rewritten losslessly (timestamp or decimal partition values)`)
   }
@@ -202,6 +195,8 @@ export async function stageSnapshotForRewriteManifests({ tableUrl, metadata, pre
     writtenFiles: [],
     priorManifests: priors,
     skipPriorManifestPaths: prepared.replacedPaths,
+    // Java's RewriteManifests does not merge; the rewrite is the merge.
+    mergeManifests: false,
   })
 }
 
@@ -225,6 +220,22 @@ function partitionComparator(schema, spec) {
     }
     return 0
   }
+}
+
+/**
+ * The schema to decode, encode, and summarize a spec's partition values with:
+ * the current schema, or for a historical spec that references dropped
+ * columns, the newest retained schema containing every source id. A real
+ * schema keeps the manifest's embedded schema and schema id in agreement.
+ *
+ * @param {TableMetadata} metadata
+ * @param {PartitionSpec} spec
+ * @returns {Schema | undefined}
+ */
+export function partitionSchema(metadata, spec) {
+  const current = metadata.schemas.find(s => s['schema-id'] === metadata['current-schema-id'])
+  if (current && hasPartitionSources(current, spec)) return current
+  return metadata.schemas.filter(s => hasPartitionSources(s, spec)).sort((a, b) => b['schema-id'] - a['schema-id'])[0]
 }
 
 /**
@@ -306,6 +317,18 @@ export async function writeManifestFile({
   resolver, manifestPath, schema, spec, content, entries, snapshotId, sequenceNumber, formatVersion,
 }) {
   if (!resolver.writer) throw new Error('resolver.writer is required')
+  // Some writers encode day transforms with Avro's date logical type.
+  // Decode gives Dates, but our day partition schema and bounds use ordinals.
+  entries = entries.map(entry => {
+    const partition = { ...entry.data_file.partition }
+    for (const field of spec.fields) {
+      const value = partition[field.name]
+      if (field.transform === 'day' && value instanceof Date) {
+        partition[field.name] = Math.floor(value.getTime() / 86400000)
+      }
+    }
+    return { ...entry, data_file: { ...entry.data_file, partition } }
+  })
   const writer = resolver.writer(manifestPath)
   await writeCarriedManifest({ writer, schema, partitionSpec: spec, snapshotId, entries, content, formatVersion })
 
@@ -364,7 +387,7 @@ export async function writeManifestFile({
  * @param {Record<string, string> | undefined} properties
  * @returns {number}
  */
-function targetSizeProperty(properties) {
+export function targetSizeProperty(properties) {
   const n = Number(properties?.['commit.manifest.target-size-bytes'])
   return Number.isFinite(n) && n > 0 ? n : DEFAULT_TARGET_SIZE_BYTES
 }

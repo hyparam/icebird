@@ -1,6 +1,7 @@
 import { fetchAvroRecords } from '../fetch.js'
 import { resolveInlineManifests } from '../manifest.js'
 import { writeManifestList } from './manifest-list.js'
+import { manifestMergeConfig, mergeManifests } from './merge.js'
 import { unassignedRowCounts } from './rewrite-manifests.js'
 import { computeFieldSummary } from './stats.js'
 import { transformResultType } from './transform.js'
@@ -52,9 +53,10 @@ export async function loadPriorManifests(metadata, resolver) {
 }
 
 /**
- * Carry forward priors from the current snapshot, prepend the new manifests,
- * assign v3 row IDs across the combined list, write the new manifest list,
- * and assemble the Snapshot + StagedUpdate. Each caller still builds its own
+ * Carry forward priors from the current snapshot, append the new manifests,
+ * merge small manifests per the `commit.manifest*` table properties, assign v3
+ * row IDs across the combined list, write the new manifest list, and assemble
+ * the Snapshot + StagedUpdate. Each caller still builds its own
  * `summary` (the per-operation counters differ); everything else around it is
  * shared.
  *
@@ -72,12 +74,14 @@ export async function loadPriorManifests(metadata, resolver) {
  * @param {string[]} options.writtenFiles - Files this stage already wrote (data, manifests).
  * @param {Manifest[]} [options.priorManifests] - Already loaded prior manifests.
  * @param {Set<string>} [options.skipPriorManifestPaths] - Prior manifests to omit from the new list.
+ * @param {boolean} [options.mergeManifests] - Set false to skip merge-on-commit (manifest rewrites).
  * @returns {Promise<StagedUpdate>}
  */
 export async function buildSnapshotUpdate({
   tableUrl, metadata, resolver,
   snapshotId, sequenceNumber, manifestUuid, timestampMs, formatVersion,
   newManifests, summary, writtenFiles, priorManifests, skipPriorManifestPaths,
+  mergeManifests: merge = true,
 }) {
   const writerFn = resolver.writer
   if (!writerFn) throw new Error('resolver.writer is required')
@@ -91,7 +95,21 @@ export async function buildSnapshotUpdate({
   // Append the new manifests after priors so reads preserve append order.
   // Iceberg's scan semantics don't pin an order, but our Promise.all scanner
   // returns rows in dataEntries order, which is manifest-list order.
-  const allManifests = [...priorManifests, ...newManifests]
+  let allManifests = [...priorManifests, ...newManifests]
+  /** @type {string[]} */
+  let mergedFiles = []
+  // Merge-on-commit, as Java's default MergeAppend does. It runs inside every
+  // commit attempt against that attempt's base, so a retry never reuses a
+  // merge computed over a stale manifest list.
+  const mergeConfig = manifestMergeConfig(metadata.properties)
+  if (merge && mergeConfig.enabled) {
+    const merged = await mergeManifests({
+      tableUrl, metadata, resolver, manifests: allManifests,
+      snapshotId, sequenceNumber, formatVersion, config: mergeConfig,
+    })
+    allManifests = merged.manifests
+    mergedFiles = merged.writtenFiles
+  }
   const addedRows = rowLineage ? assignFirstRowIds(allManifests, firstRowId) : 0n
   const manifestListPath = `${tableUrl}/metadata/snap-${snapshotId}-1-${manifestUuid}.avro`
   const listWriter = writerFn(manifestListPath)
@@ -141,7 +159,7 @@ export async function buildSnapshotUpdate({
         'snapshot-id': snapshot['snapshot-id'],
       },
     ],
-    writtenFiles: [...writtenFiles, manifestListPath],
+    writtenFiles: [...writtenFiles, ...mergedFiles, manifestListPath],
   }
 }
 
@@ -184,7 +202,7 @@ function assignFirstRowIds(manifests, firstRowId) {
 
     const rowIdRange = BigInt(manifest.added_rows_count ?? 0) + BigInt(manifest.existing_rows_count ?? 0)
     if (manifest.first_row_id == null) {
-      // A rewritten manifest knows exactly how many of its rows lack ids.
+      // A rewritten or merged manifest knows exactly how many of its rows lack ids.
       const unassigned = unassignedRowCounts.get(manifest) ?? rowIdRange
       manifest.first_row_id = nextFirstRowId
       nextFirstRowId += unassigned

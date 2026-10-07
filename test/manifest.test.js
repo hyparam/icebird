@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import fs from 'fs'
-import { icebergManifests } from '../src/manifest.js'
+import { avroWrite } from '../src/avro/avro.write.js'
+import { fetchManifestEntries, icebergManifests } from '../src/manifest.js'
 import { icebergMetadata } from '../src/metadata.js'
 import { writeDataManifest } from '../src/write/manifest.js'
 import { localResolver, memResolver } from './helpers.js'
@@ -116,5 +117,50 @@ describe('Iceberg Manifests', () => {
 
     const manifests = await icebergManifests({ metadata, resolver: memory })
     expect(manifests[0].entries[0].snapshot_id).toBe(77n)
+  })
+})
+
+
+describe('manifest sequence inheritance', () => {
+  it.each([0, 1, 2])('defaults both v1 sequences to zero for status %s', async status => {
+    const { resolver } = memResolver()
+    const path = 'http://test/v1.avro'
+    const writer = resolver.writer?.(path)
+    if (!writer) throw new Error('writer required')
+    await avroWrite({
+      writer,
+      schema: { type: 'record', name: 'manifest_entry', fields: [
+        { name: 'status', type: 'int' },
+        { name: 'snapshot_id', type: 'long' },
+        { name: 'data_file', type: { type: 'record', name: 'data_file', fields: [] } },
+      ] },
+      records: [{ status, snapshot_id: 1n, data_file: {} }],
+    })
+    const entries = await fetchManifestEntries(/** @type {any} */ ({
+      manifest_path: path, manifest_length: writer.offset, sequence_number: 9n,
+    }), resolver)
+    expect(entries[0]).toMatchObject({ status, sequence_number: 0n, file_sequence_number: 0n })
+  })
+
+  it.each([0, 2])('rejects missing v2 sequences for status %s', async status => {
+    for (const missing of ['sequence_number', 'file_sequence_number']) {
+      const { resolver } = memResolver()
+      const path = 'http://test/v2.avro'
+      const writer = resolver.writer?.(path)
+      if (!writer) throw new Error('writer required')
+      await avroWrite({
+        writer,
+        schema: { type: 'record', name: 'manifest_entry', fields: [
+          { name: 'status', type: 'int' },
+          { name: 'sequence_number', type: ['null', 'long'] },
+          { name: 'file_sequence_number', type: ['null', 'long'] },
+          { name: 'data_file', type: { type: 'record', name: 'data_file', fields: [] } },
+        ] },
+        records: [{ status, sequence_number: 1n, file_sequence_number: 1n, [missing]: null, data_file: {} }],
+      })
+      await expect(fetchManifestEntries(/** @type {any} */ ({
+        manifest_path: path, manifest_length: writer.offset, sequence_number: 9n,
+      }), resolver)).rejects.toThrow('iceberg manifest entry missing sequence number')
+    }
   })
 })

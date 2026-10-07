@@ -56,7 +56,11 @@ async function clusteredTable(partitionSpec) {
   const { resolver, lister } = memResolver()
   const catalog = fileCatalog({ resolver, lister, conditionalCommits: true })
   const tableUrl = `http://test/prune-${Math.random().toString(36).slice(2)}`
-  await icebergCreateTable({ catalog, tableUrl, schema, partitionSpec })
+  // Fast append, so manifests start out unclustered.
+  await icebergCreateTable({
+    catalog, tableUrl, schema, partitionSpec,
+    properties: { 'commit.manifest-merge.enabled': 'false' },
+  })
   for (let i = 0; i < 200; i++) {
     const day = i * 37 % 50
     await icebergAppend({

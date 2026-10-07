@@ -139,28 +139,31 @@ async function fetchManifests(manifests, resolver) {
  * @returns {Promise<ManifestEntry[]>}
  */
 export async function fetchManifestEntries(manifest, resolver) {
-  const entries = /** @type {ManifestEntry[]} */ (
-    await fetchAvroRecords(manifest.manifest_path, resolver, Number(manifest.manifest_length))
-  )
+  const length = Number(manifest.manifest_length)
+  const file = await resolver.reader(manifest.manifest_path, Number.isFinite(length) ? length : undefined)
+  const reader = { view: new DataView(await file.slice(0, file.byteLength)), offset: 0 }
+  const { metadata, syncMarker } = avroMetadata(reader)
+  const schema = /** @type {import('./avro/types.js').AvroRecord} */ (metadata['avro.schema'])
+  const isV1 = !schema.fields.some(f => f.name === 'sequence_number' || f.name === 'file_sequence_number')
+  const entries = /** @type {ManifestEntry[]} */ (await avroRead({ reader, metadata, syncMarker }))
 
   // Inherit sequence number from manifest if not present in entry
   for (const entry of entries) {
     entry.partition_spec_id = manifest.partition_spec_id ?? 0
     if (entry.snapshot_id == null) entry.snapshot_id = manifest.added_snapshot_id
 
-    if (entry.sequence_number === undefined) {
-      // When reading v1 manifests with no sequence number column,
-      // sequence numbers for all files must default to 0.
-      entry.sequence_number = manifest.sequence_number ?? 0n
-    }
-
-    if (entry.status === 1) {
+    if (isV1) {
+      // V1 has neither sequence column. All statuses retain sequence zero,
+      // even when a newer manifest list carries this file after an upgrade.
+      entry.sequence_number = 0n
+      entry.file_sequence_number = 0n
+    } else if (entry.status === 1) {
       // only ADDED can inherit sequence number
       if (entry.sequence_number === undefined) {
-        entry.sequence_number = manifest.sequence_number
+        entry.sequence_number = manifest.sequence_number ?? 0n
       }
       if (entry.file_sequence_number === undefined) {
-        entry.file_sequence_number = manifest.sequence_number
+        entry.file_sequence_number = manifest.sequence_number ?? 0n
       }
     } else {
       if (entry.sequence_number === undefined || entry.file_sequence_number === undefined) {

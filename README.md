@@ -259,7 +259,17 @@ A rewrite is not retried on a concurrent commit (it would risk dropping rows ano
 
 ### Manifest maintenance
 
-Every append adds a manifest, so a long-lived table accumulates many small ones and every scan has to read them all. `icebergRewriteManifests` rewrites all data manifests of a partition spec into target-size manifests sorted by partition value, without touching data files (Java's `RewriteManifests`). Entries keep their snapshot ids and sequence numbers, so delete applicability is unchanged. The target size defaults to the `commit.manifest.target-size-bytes` table property (8 MB):
+Every commit writes new manifests. Like Java's default `MergeAppend`, commits also merge small manifests so the manifest list stays bounded. Merging is on by default and follows the standard table properties:
+
+| Property | Default | |
+| -------- | ------- | - |
+| `commit.manifest-merge.enabled` | `true` | Set `false` for fast append (never merge). |
+| `commit.manifest.min-count-to-merge` | `100` | The bin holding the newest manifests merges only once it has this many. |
+| `commit.manifest.target-size-bytes` | `8388608` | Manifests are packed into bins of this size; each full bin is merged into one manifest. |
+
+Data and delete manifests never merge together, and merged entries keep their snapshot ids and sequence numbers, so delete applicability is unchanged. Manifests partitioned by identity or truncate on a timestamp or decimal column are left unmerged. On a table that already has thousands of manifests, the first commit merges most of them at once; run `icebergRewriteManifests` first to pay that cost up front and get manifests clustered by partition.
+
+A table written by fast append accumulates many small manifests, and every scan has to read them all. `icebergRewriteManifests` rewrites all data manifests of a partition spec into target-size manifests sorted by partition value, without touching data files (Java's `RewriteManifests`). Entries keep their snapshot ids and sequence numbers, so delete applicability is unchanged. The target size defaults to the `commit.manifest.target-size-bytes` table property (8 MB):
 
 ```javascript
 await icebergRewriteManifests({ catalog, tableUrl })
@@ -315,6 +325,7 @@ Icebird aims to support reading any Iceberg table, but currently only supports a
 | Row Lineage | ✅ | v3 `_row_id` and `_last_updated_sequence_number` inheritance. |
 | Sorting | ✅ | Orders rows by the declared sort order on append; `icebergRewrite` compacts to sorted, non-overlapping files (v2). |
 | Scan Pruning | ✅ | Skips manifests via manifest-list partition summaries, data files via partition tuples and manifest column bounds, and parquet row groups via column statistics. |
+| Manifest Merging | ✅ | Merge-on-commit per `commit.manifest*` properties; `icebergRewriteManifests` for explicit maintenance. |
 | Encryption | ❌ | |
 
 ## References
