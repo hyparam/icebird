@@ -164,6 +164,32 @@ describe('merge on commit', () => {
     expect(ids(await icebergRead({ tableUrl, metadata: after, resolver }))).toEqual([1n, 2n])
   })
 
+  it.each([0, 1, 2])('merges upgraded v1 manifests with entry status %s', async status => {
+    const { catalog, tableUrl, resolver } = await setup({ 'commit.manifest.min-count-to-merge': '2' })
+    const before = await icebergAppend({ catalog, tableUrl, records: [{ id: 1n, name: 'old' }] })
+    await replaceSnapshotManifest(before, resolver, (avroSchema, entries) => {
+      avroSchema.fields = avroSchema.fields.filter(f => !['sequence_number', 'file_sequence_number'].includes(f.name))
+      const dataFile = /** @type {AvroRecord} */ (avroSchema.fields.find(f => f.name === 'data_file')?.type)
+      dataFile.fields = dataFile.fields.filter(f => f.name !== 'content')
+      return entries.map(entry => ({ ...entry, status }))
+    })
+    const after = await icebergAppend({ catalog, tableUrl, records: [{ id: 2n, name: 'new' }] })
+    const list = await manifestList(after, resolver)
+    expect(list).toHaveLength(1)
+    expect(list[0].min_sequence_number).toBe(status === 2 ? 2n : 0n)
+    const [{ entries }] = await icebergManifests({ metadata: after, resolver })
+    expect(entries).toHaveLength(status === 2 ? 1 : 2)
+    if (status !== 2) {
+      expect(entries[0]).toMatchObject({
+        status: 0, snapshot_id: BigInt(before['current-snapshot-id'] ?? -1),
+        sequence_number: 0n, file_sequence_number: 0n,
+        data_file: { content: 0 },
+      })
+    }
+    expect(entries.at(-1)).toMatchObject({ status: 1, sequence_number: 2n, file_sequence_number: 2n })
+    expect(ids(await icebergRead({ tableUrl, metadata: after, resolver }))).toEqual(status === 2 ? [2n] : [1n, 2n])
+  })
+
   it('bounds manifest count at the Java defaults and reads like fast append', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
     const merged = await setup()
