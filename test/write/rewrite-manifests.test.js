@@ -4,13 +4,14 @@ import { fetchAvroRecords } from '../../src/fetch.js'
 import { icebergManifests } from '../../src/manifest.js'
 import { loadLatestFileCatalogMetadata } from '../../src/metadata.js'
 import { icebergRead } from '../../src/read.js'
+import { fileCatalogCommit } from '../../src/write/commit.js'
 import { deserializeValue } from '../../src/write/serde.js'
 import { prepareRewriteManifests, stageSnapshotForRewriteManifests } from '../../src/write/rewrite-manifests.js'
 import { icebergAppend, icebergCreateTable, icebergDelete, icebergRewriteManifests } from '../../src/write/write.js'
 import { memResolver } from '../helpers.js'
 
 /**
- * @import {Manifest, PartitionSpec, Schema, TableMetadata} from '../../src/types.js'
+ * @import {Manifest, PartitionSpec, Resolver, Schema, TableMetadata} from '../../src/types.js'
  */
 
 /** @type {Schema} */
@@ -235,6 +236,89 @@ describe('icebergRewriteManifests', () => {
     const { metadata } = await loadLatestFileCatalogMetadata({ tableUrl, resolver, lister })
     const rows = await icebergRead({ tableUrl, metadata, resolver })
     expect(rows.map(r => r.id).sort((a, b) => Number(a - b))).toEqual([...Array.from({ length: 10 }, (_, i) => BigInt(i)), 50n, 51n])
+  })
+
+  it('preserves row ids assigned by a concurrent append after a v3 upgrade', async () => {
+    const { resolver, lister } = memResolver()
+    const catalog = fileCatalog({ resolver, lister, conditionalCommits: true })
+    const tableUrl = 'http://test/rm-upgrade-retry'
+    await icebergCreateTable({
+      catalog, tableUrl, schema, partitionSpec: daySpec,
+      properties: { 'commit.retry.min-wait-ms': '0', 'commit.retry.max-wait-ms': '0' },
+    })
+    // The rewrite reverses these files, so stale inheritance would swap IDs.
+    await icebergAppend({ catalog, tableUrl, records: [{ id: 10n, created: new Date(DAY) }] })
+    const before = await icebergAppend({ catalog, tableUrl, records: [{ id: 20n, created: new Date(0) }] })
+    const upgraded = await fileCatalogCommit({
+      tableUrl, resolver, conditionalCommits: true,
+      metadata: { ...before, 'format-version': 3, 'next-row-id': 0 },
+      staged: { requirements: [], updates: [], writtenFiles: [] },
+    })
+    const originalManifests = await manifestList(upgraded, resolver)
+    expect(originalManifests.map(m => m.first_row_id)).toEqual([undefined, undefined])
+
+    const realWriter = resolver.writer
+    if (!realWriter) throw new Error('writer required')
+    /** @type {TableMetadata | undefined} */
+    let appended
+    let attempts = 0
+    /** @type {Resolver} */
+    const racingResolver = {
+      ...resolver,
+      writer(path, options) {
+        const writer = realWriter(path, options)
+        if (options?.ifNoneMatch === '*') {
+          const finish = writer.finish.bind(writer)
+          writer.finish = async () => {
+            attempts++
+            if (attempts === 1) {
+              // Assign inherited row IDs after the rewrite has been staged,
+              // then let its metadata commit encounter a real conflict.
+              appended = await icebergAppend({
+                catalog, tableUrl, records: [{ id: 30n, created: new Date(2 * DAY) }],
+              })
+            }
+            await finish()
+          }
+        }
+        return writer
+      },
+    }
+    const after = await icebergRewriteManifests({
+      catalog: fileCatalog({ resolver: racingResolver, lister, conditionalCommits: true }),
+      tableUrl,
+    })
+    expect(attempts).toBe(2)
+    if (!appended) throw new Error('expected concurrent append')
+    const appendedManifests = await manifestList(appended, resolver)
+    expect(appendedManifests.slice(0, 2).map(m => m.manifest_path))
+      .toEqual(originalManifests.map(m => m.manifest_path))
+    expect(appendedManifests.slice(0, 2).map(m => m.first_row_id)).toEqual([0n, 1n])
+    const committedRows = byId(await icebergRead({ tableUrl, metadata: appended, resolver }))
+    expect(committedRows.map(r => [r.id, r._row_id])).toEqual([[10n, 0n], [20n, 1n], [30n, 2n]])
+    expect(byId(await icebergRead({ tableUrl, metadata: after, resolver }))).toEqual(committedRows)
+    expect(after['next-row-id']).toBe(appended['next-row-id'])
+  })
+
+  it('reuses prepared v3 manifests when a concurrent append leaves inherited row ids unchanged', async () => {
+    const { resolver, lister } = memResolver()
+    const catalog = fileCatalog({ resolver, lister, conditionalCommits: true })
+    const tableUrl = 'http://test/rm-v3-reuse'
+    await icebergCreateTable({ catalog, tableUrl, schema, partitionSpec: daySpec, formatVersion: 3 })
+    await icebergAppend({ catalog, tableUrl, records: [{ id: 10n, created: new Date(DAY) }] })
+    const before = await icebergAppend({ catalog, tableUrl, records: [{ id: 20n, created: new Date(0) }] })
+    const prepared = await prepareRewriteManifests({ tableUrl, metadata: before, resolver })
+    if (!prepared) throw new Error('expected a rewrite')
+    const appended = await icebergAppend({ catalog, tableUrl, records: [{ id: 30n, created: new Date(2 * DAY) }] })
+    expect(appended['next-row-id']).toBe(3)
+    const staged = await stageSnapshotForRewriteManifests({ tableUrl, metadata: appended, prepared, resolver })
+    if (!staged) throw new Error('expected prepared manifests to remain reusable')
+    const after = await fileCatalogCommit({ tableUrl, metadata: appended, staged, resolver, conditionalCommits: true })
+    const list = await manifestList(after, resolver)
+    expect(list.map(m => m.manifest_path)).toContain(prepared.manifests[0].manifest_path)
+    expect(after['next-row-id']).toBe(3)
+    expect(byId(await icebergRead({ tableUrl, metadata: after, resolver })))
+      .toEqual(byId(await icebergRead({ tableUrl, metadata: appended, resolver })))
   })
 
   it('re-plans when a replaced manifest disappears', async () => {

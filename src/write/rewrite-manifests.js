@@ -26,13 +26,15 @@ const DEFAULT_TARGET_SIZE_BYTES = 8 * 1024 * 1024
 
 /**
  * Manifests written by `prepareRewriteManifests`, reusable across commit
- * attempts while every manifest they replace is still in the table.
+ * attempts while every manifest they replace is still in the table with
+ * unchanged row-ID inheritance.
  *
  * @typedef {object} PreparedRewriteManifests
  * @property {bigint} snapshotId
  * @property {string} manifestUuid
  * @property {2|3} formatVersion
  * @property {Set<string>} replacedPaths - Data manifests superseded by the rewrite.
+ * @property {Map<string, bigint | undefined>} replacedFirstRowIds - Row-ID inheritance used to decode each replaced manifest.
  * @property {Manifest[]} manifests - The rewritten manifests.
  * @property {number} entriesProcessed
  * @property {string[]} writtenFiles
@@ -126,6 +128,7 @@ export async function prepareRewriteManifests({ tableUrl, metadata, resolver, sp
     manifestUuid,
     formatVersion,
     replacedPaths: new Set(selected.map(m => m.manifest_path)),
+    replacedFirstRowIds: new Map(selected.map(m => [m.manifest_path, m.first_row_id == null ? undefined : BigInt(m.first_row_id)])),
     manifests,
     entriesProcessed: entries.length,
     writtenFiles,
@@ -136,8 +139,8 @@ export async function prepareRewriteManifests({ tableUrl, metadata, resolver, sp
  * Build the `replace` snapshot for prepared manifest rewrites against the
  * freshest metadata. Manifests committed concurrently are carried forward.
  * Returns undefined when a manifest the rewrite replaces is no longer in the
- * table (a concurrent rewrite or compaction replaced it), in which case the
- * caller must prepare again against this metadata.
+ * table or its inherited first row ID changed, in which case the caller must
+ * prepare again against this metadata.
  *
  * @param {object} options
  * @param {string} options.tableUrl
@@ -148,9 +151,14 @@ export async function prepareRewriteManifests({ tableUrl, metadata, resolver, sp
  */
 export async function stageSnapshotForRewriteManifests({ tableUrl, metadata, prepared, resolver }) {
   const priors = await loadPriorManifests(metadata, resolver)
-  const priorPaths = new Set(priors.map(m => m.manifest_path))
+  const priorsByPath = new Map(priors.map(m => [m.manifest_path, m]))
   for (const path of prepared.replacedPaths) {
-    if (!priorPaths.has(path)) return undefined
+    const prior = priorsByPath.get(path)
+    if (!prior) return undefined
+    // An append after a v3 upgrade can assign IDs without replacing the file.
+    // Re-decode using the fresh inheritance before sorting the entries again.
+    const firstRowId = prior.first_row_id == null ? undefined : BigInt(prior.first_row_id)
+    if (firstRowId !== prepared.replacedFirstRowIds.get(path)) return undefined
   }
   const sequenceNumber = BigInt(metadata['last-sequence-number'] ?? 0) + 1n
   for (const manifest of prepared.manifests) manifest.sequence_number = sequenceNumber

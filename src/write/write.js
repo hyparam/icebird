@@ -144,7 +144,7 @@ export async function icebergRewriteManifests({ catalog, namespace, table, table
             tableUrl: workingCtx.tableUrl, metadata: workingCtx.metadata, prepared, resolver: workingResolver,
           })
           if (staged) return staged
-          // A manifest we replace was itself replaced concurrently: re-plan.
+          // A source manifest disappeared or its row-ID inheritance changed.
           prepared = await prepareRewriteManifests({
             tableUrl: workingCtx.tableUrl, metadata: workingCtx.metadata, resolver: workingResolver, specId, targetSizeBytes,
           })
