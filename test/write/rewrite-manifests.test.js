@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { avroWrite } from '../../src/avro/avro.write.js'
 import { fileCatalog } from '../../src/catalog/file.js'
 import { fetchAvroRecords } from '../../src/fetch.js'
 import { icebergManifests } from '../../src/manifest.js'
@@ -80,6 +81,71 @@ async function scrambledTable(commits, days, properties) {
 }
 
 describe('icebergRewriteManifests', () => {
+  it('rewrites inherited v1 data manifests without a content column', async () => {
+    const { resolver, catalog, tableUrl, metadata } = await scrambledTable(2, 2)
+    const originalEntries = (await icebergManifests({ metadata, resolver })).flatMap(m => m.entries)
+    const originalRows = byId(await icebergRead({ tableUrl, metadata, resolver }))
+    const paths = []
+    for (const [i, entry] of originalEntries.entries()) {
+      const path = `${tableUrl}/metadata/v1-${i}.avro`
+      const writer = resolver.writer?.(path)
+      if (!writer) throw new Error('writer required')
+      // V1 omits content and sequence columns entirely, rather than storing null.
+      await avroWrite({
+        writer,
+        schema: {
+          type: 'record', name: 'manifest_entry', fields: [
+            { name: 'status', type: 'int', 'field-id': 0 },
+            { name: 'snapshot_id', type: 'long', 'field-id': 1 },
+            { name: 'data_file', 'field-id': 2, type: {
+              type: 'record', name: 'r2', fields: [
+                { name: 'file_path', type: 'string', 'field-id': 100 },
+                { name: 'file_format', type: 'string', 'field-id': 101 },
+                { name: 'partition', 'field-id': 102, type: {
+                  type: 'record', name: 'r102', fields: [
+                    { name: 'created_day', type: ['null', 'int'], 'field-id': 1000 },
+                  ],
+                } },
+                { name: 'record_count', type: 'long', 'field-id': 103 },
+                { name: 'file_size_in_bytes', type: 'long', 'field-id': 104 },
+                { name: 'block_size_in_bytes', type: 'long', 'field-id': 105 },
+              ],
+            } },
+          ],
+        },
+        records: [{ ...entry, data_file: { ...entry.data_file, block_size_in_bytes: 0n } }],
+        metadata: { 'format-version': '1', 'partition-spec-id': '0' },
+      })
+      paths.push(path)
+    }
+    const snapshot = metadata.snapshots?.find(s => s['snapshot-id'] === metadata['current-snapshot-id'])
+    if (!snapshot) throw new Error('snapshot required')
+    const inherited = await fileCatalogCommit({
+      tableUrl, resolver,
+      metadata: { ...metadata, snapshots: [{ ...snapshot, 'manifest-list': '', manifests: paths }] },
+      staged: { requirements: [], updates: [], writtenFiles: [] },
+    })
+    expect(inherited['format-version']).toBe(2)
+    const inheritedEntries = (await icebergManifests({ metadata: inherited, resolver })).flatMap(m => m.entries)
+    expect(inheritedEntries.map(e => e.data_file.content)).toEqual([undefined, undefined])
+
+    const after = await icebergRewriteManifests({ catalog, tableUrl })
+    const manifests = await icebergManifests({ metadata: after, resolver })
+    expect(manifests).toHaveLength(1)
+    expect(manifests[0].entries).toHaveLength(2)
+    for (const entry of manifests[0].entries) {
+      const original = originalEntries.find(e => e.data_file.file_path === entry.data_file.file_path)
+      expect(entry).toMatchObject({
+        status: 0,
+        snapshot_id: original?.snapshot_id,
+        sequence_number: 0n,
+        file_sequence_number: 0n,
+        data_file: { content: 0 },
+      })
+    }
+    expect(byId(await icebergRead({ tableUrl, metadata: after, resolver }))).toEqual(originalRows)
+  })
+
   it('preserves UUID partition bounds when rewriting manifests', async () => {
     const { resolver, lister } = memResolver()
     const catalog = fileCatalog({ resolver, lister, conditionalCommits: true })

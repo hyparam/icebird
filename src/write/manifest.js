@@ -348,7 +348,8 @@ export function writeExistingDeleteManifest({ writer, schema, partitionSpec, ent
  */
 export function writeCarriedManifest({ writer, schema, partitionSpec, snapshotId, entries, content, formatVersion = 2 }) {
   const records = entries.map(entry => {
-    const dataFile = entry.data_file
+    // Inherited v1 manifests omit content; every v1 file is a data file.
+    const dataFile = { ...entry.data_file, content: entry.data_file.content ?? 0 }
     if (content === 0 ? dataFile.content !== 0 : dataFile.content === 0) {
       throw new Error(`cannot write content=${dataFile.content} file into a ${content ? 'delete' : 'data'} manifest`)
     }
