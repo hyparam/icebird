@@ -267,6 +267,8 @@ await icebergRewriteManifests({ catalog, tableUrl })
 await icebergRewriteManifests({ catalog, tableUrl, specId: 0, targetSizeBytes: 8 * 1024 * 1024 })
 ```
 
+Clustered manifests have tight partition ranges in the manifest list, so filtered `icebergDataSource` / `icebergQuery` scans skip whole manifests without fetching them.
+
 Unlike `icebergRewrite`, it retries on concurrent commits, carrying forward manifests committed in the meantime. Specs partitioned by identity or truncate on a timestamp or decimal column cannot be rewritten yet.
 
 Old `vN.metadata.json` files are kept unless the table sets `write.metadata.delete-after-commit.enabled=true` (with `write.metadata.previous-versions-max`, default 100).
@@ -312,7 +314,7 @@ Icebird aims to support reading any Iceberg table, but currently only supports a
 | Geography Types | ✅ | |
 | Row Lineage | ✅ | v3 `_row_id` and `_last_updated_sequence_number` inheritance. |
 | Sorting | ✅ | Orders rows by the declared sort order on append; `icebergRewrite` compacts to sorted, non-overlapping files (v2). |
-| Scan Pruning | ✅ | Skips data files via partition tuples and manifest column bounds, and parquet row groups via column statistics. |
+| Scan Pruning | ✅ | Skips manifests via manifest-list partition summaries, data files via partition tuples and manifest column bounds, and parquet row groups via column statistics. |
 | Encryption | ❌ | |
 
 ## References

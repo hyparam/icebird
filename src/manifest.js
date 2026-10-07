@@ -1,21 +1,50 @@
 import { avroMetadata } from './avro/avro.metadata.js'
 import { avroRead } from './avro/avro.read.js'
 import { fetchAvroRecords, urlResolver } from './fetch.js'
+import { manifestMightMatch } from './prune.js'
 
 /**
  * Returns manifest entries for a snapshot. Defaults to the current snapshot;
  * pass `snapshotId` to time-travel to a prior snapshot in the metadata's
- * snapshot log.
+ * snapshot log. Pass `filter` to skip data manifests whose partition
+ * summaries prove no file can match it; delete manifests are always read.
  *
+ * @import {ParquetQueryFilter} from 'hyparquet'
  * @import {Resolver, TableMetadata, Manifest, ManifestEntry, Snapshot} from '../src/types.js'
  * @typedef {{ url: string, entries: ManifestEntry[] }[]} ManifestList
  * @param {object} options
  * @param {TableMetadata} options.metadata
  * @param {Resolver} [options.resolver]
  * @param {number | bigint} [options.snapshotId] - Optional snapshot id; defaults to `current-snapshot-id`.
+ * @param {ParquetQueryFilter} [options.filter] - Predicate keyed by iceberg field name, used to prune data manifests.
  * @returns {Promise<ManifestList>}
  */
-export async function icebergManifests({ metadata, resolver, snapshotId }) {
+export async function icebergManifests({ metadata, resolver, snapshotId, filter }) {
+  resolver ??= urlResolver()
+  const { snapshot, manifests } = await icebergManifestList({ metadata, resolver, snapshotId })
+  let selected = manifests
+  if (filter) {
+    const schemaId = snapshot['schema-id'] ?? metadata['current-schema-id']
+    const schema = metadata.schemas.find(s => s['schema-id'] === schemaId)
+    if (schema) {
+      selected = manifests.filter(m => m.content === 1 || manifestMightMatch(filter, m, schema, metadata))
+    }
+  }
+  return await fetchManifests(selected, resolver)
+}
+
+/**
+ * Returns a snapshot's manifest list records (one per manifest, with file
+ * counts and partition summaries) without reading the manifests themselves.
+ * Defaults to the current snapshot.
+ *
+ * @param {object} options
+ * @param {TableMetadata} options.metadata
+ * @param {Resolver} [options.resolver]
+ * @param {number | bigint} [options.snapshotId] - Optional snapshot id; defaults to `current-snapshot-id`.
+ * @returns {Promise<{ snapshot: Snapshot, manifests: Manifest[] }>}
+ */
+export async function icebergManifestList({ metadata, resolver, snapshotId }) {
   resolver ??= urlResolver()
   const rawTarget = snapshotId ?? metadata['current-snapshot-id']
   if (rawTarget == null || rawTarget < 0) {
@@ -31,21 +60,17 @@ export async function icebergManifests({ metadata, resolver, snapshotId }) {
     throw new Error(`Snapshot ${rawTarget} not found in metadata`)
   }
 
-  // Get manifest URLs from snapshot
   /** @type {Manifest[]} */
   let manifests
   if (snapshot['manifest-list']) {
-    // Fetch manifest list and extract manifest URLs
-    const manifestListUrl = snapshot['manifest-list']
-    manifests = /** @type {Manifest[]} */ (await fetchAvroRecords(manifestListUrl, resolver))
+    manifests = /** @type {Manifest[]} */ (await fetchAvroRecords(snapshot['manifest-list'], resolver))
   } else if (snapshot.manifests) {
     // v1 snapshots list manifests inline instead of pointing at a manifest list
     manifests = await resolveInlineManifests(snapshot, resolver)
   } else {
     throw new Error('No manifest information found in snapshot')
   }
-
-  return await fetchManifests(manifests, resolver)
+  return { snapshot, manifests }
 }
 
 /**

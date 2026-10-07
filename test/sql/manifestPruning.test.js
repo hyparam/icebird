@@ -1,0 +1,193 @@
+import { collect } from 'squirreling'
+import { describe, expect, it, vi } from 'vitest'
+import { fileCatalog } from '../../src/catalog/file.js'
+import { icebergManifests } from '../../src/manifest.js'
+import { manifestMightMatch } from '../../src/prune.js'
+import { icebergQuery } from '../../src/sql/icebergQuery.js'
+import { icebergAppend, icebergCreateTable, icebergRewriteManifests } from '../../src/write/write.js'
+import { memResolver } from '../helpers.js'
+
+/**
+ * @import {Manifest, PartitionSpec, Resolver, Schema, TableMetadata} from '../../src/types.js'
+ */
+
+/** @type {Schema} */
+const schema = {
+  type: 'struct',
+  'schema-id': 0,
+  fields: [
+    { id: 1, name: 'id', required: true, type: 'long' },
+    { id: 2, name: 'created', required: false, type: 'timestamptz' },
+    { id: 3, name: 'kind', required: false, type: 'string' },
+  ],
+}
+
+const DAY = 86400000
+
+/**
+ * Count manifest file reads (not manifest lists, not data files).
+ *
+ * @param {Resolver} inner
+ * @returns {{ resolver: Resolver, manifestsRead: () => number, reset: () => void }}
+ */
+function countingResolver(inner) {
+  let count = 0
+  return {
+    resolver: {
+      reader(url, byteLength) {
+        if (/\/metadata\/[^/]*\.avro$/.test(url) && !/\/snap-[^/]*\.avro$/.test(url)) count++
+        return inner.reader(url, byteLength)
+      },
+    },
+    manifestsRead: () => count,
+    reset() { count = 0 },
+  }
+}
+
+/**
+ * A day-partitioned table of 200 single-row commits over 50 days, appended in
+ * scrambled day order, then rewritten into manifests clustered by day.
+ *
+ * @param {PartitionSpec} partitionSpec
+ * @returns {Promise<{ resolver: Resolver, tableUrl: string, metadata: TableMetadata }>}
+ */
+async function clusteredTable(partitionSpec) {
+  const { resolver, lister } = memResolver()
+  const catalog = fileCatalog({ resolver, lister, conditionalCommits: true })
+  const tableUrl = `http://test/prune-${Math.random().toString(36).slice(2)}`
+  await icebergCreateTable({ catalog, tableUrl, schema, partitionSpec })
+  for (let i = 0; i < 200; i++) {
+    const day = i * 37 % 50
+    await icebergAppend({
+      catalog, tableUrl,
+      records: [{ id: BigInt(i), created: new Date(day * DAY + i * 1000), kind: `k${i % 3}` }],
+    })
+  }
+  // About four entries per manifest, so each covers one or two days.
+  const metadata = await icebergRewriteManifests({ catalog, tableUrl, targetSizeBytes: 4 * 1024 })
+  return { resolver, tableUrl, metadata }
+}
+
+/**
+ * @param {Resolver} resolver
+ * @param {string} tableUrl
+ * @param {string} where
+ * @returns {Promise<bigint[]>}
+ */
+async function query(resolver, tableUrl, where) {
+  const results = await icebergQuery({ query: `SELECT id FROM t WHERE ${where}`, tables: { t: tableUrl }, resolver })
+  const rows = await collect(results)
+  return rows.map(r => /** @type {bigint} */ (r.id)).sort((a, b) => Number(a) - Number(b))
+}
+
+describe('manifest list pruning', () => {
+  it('reads only manifests whose day range matches a one-day predicate', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const { resolver, tableUrl, metadata } = await clusteredTable({
+      'spec-id': 0,
+      fields: [{ 'source-id': 2, 'field-id': 1000, name: 'created_day', transform: 'day' }],
+    })
+    const totalManifests = (await icebergManifests({ metadata, resolver })).length
+    expect(totalManifests).toBeGreaterThan(30)
+
+    const counting = countingResolver(resolver)
+    const where = 'created >= TIMESTAMP \'1970-01-11T00:00:00Z\' AND created < TIMESTAMP \'1970-01-12T00:00:00Z\''
+    const pruned = await query(counting.resolver, tableUrl, where)
+    expect(counting.manifestsRead()).toBeLessThanOrEqual(3)
+
+    // Same rows as a scan that cannot prune manifests (`+ 0` stays in the engine).
+    counting.reset()
+    const unpruned = await query(counting.resolver, tableUrl, `${where} OR id + 0 < 0`)
+    expect(counting.manifestsRead()).toBe(totalManifests)
+    expect(pruned).toEqual(unpruned)
+    const expected = Array.from({ length: 200 }, (_, i) => i).filter(i => i * 37 % 50 === 10)
+    expect(pruned.map(Number)).toEqual(expected)
+
+    // icebergManifests takes the same filter.
+    const filter = { created: { $gte: new Date(10 * DAY), $lt: new Date(11 * DAY) } }
+    const filtered = await icebergManifests({ metadata, resolver, filter })
+    expect(filtered.length).toBeLessThanOrEqual(3)
+    const days = filtered.flatMap(m => m.entries).map(e => Number(e.data_file.partition.created_day))
+    expect(days).toContain(10)
+  }, 60000)
+
+  it('prunes on identity partitions and keeps manifests a predicate cannot exclude', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const { resolver, tableUrl, metadata } = await clusteredTable({
+      'spec-id': 0,
+      fields: [{ 'source-id': 3, 'field-id': 1000, name: 'kind', transform: 'identity' }],
+    })
+    const counting = countingResolver(resolver)
+    const rows = await query(counting.resolver, tableUrl, 'kind = \'k1\'')
+    const totalManifests = (await icebergManifests({ metadata, resolver })).length
+    expect(counting.manifestsRead()).toBeLessThan(totalManifests / 2)
+    expect(rows.map(Number)).toEqual(Array.from({ length: 200 }, (_, i) => i).filter(i => i % 3 === 1))
+
+    // A predicate on a non-partition column reads every manifest.
+    counting.reset()
+    await query(counting.resolver, tableUrl, 'id = 5')
+    expect(counting.manifestsRead()).toBe(totalManifests)
+  }, 60000)
+})
+
+describe('manifestMightMatch', () => {
+  /** @type {any} */
+  const raw = {
+    'partition-specs': [{
+      'spec-id': 0,
+      fields: [
+        { 'source-id': 2, 'field-id': 1000, name: 'created_day', transform: 'day' },
+        { 'source-id': 1, 'field-id': 1001, name: 'id_bucket', transform: 'bucket[4]' },
+      ],
+    }],
+  }
+  /** @type {TableMetadata} */
+  const metadata = raw
+
+  /**
+   * @param {number} value
+   * @returns {Uint8Array}
+   */
+  function int(value) {
+    const bytes = new Uint8Array(4)
+    new DataView(bytes.buffer).setInt32(0, value, true)
+    return bytes
+  }
+
+  /** @type {Manifest} */
+  const manifest = /** @type {any} */ ({
+    partition_spec_id: 0,
+    partitions: [
+      { contains_null: false, lower_bound: int(10), upper_bound: int(12) },
+      { contains_null: false, lower_bound: int(1), upper_bound: int(1) },
+    ],
+  })
+
+  it('evaluates monotonic transforms against the range', () => {
+    expect(manifestMightMatch({ created: { $gte: new Date(13 * DAY) } }, manifest, schema, metadata)).toBe(false)
+    expect(manifestMightMatch({ created: { $gte: new Date(12 * DAY + 5) } }, manifest, schema, metadata)).toBe(true)
+    expect(manifestMightMatch({ created: { $lt: new Date(10 * DAY + 1) } }, manifest, schema, metadata)).toBe(true)
+    // Strict bounds at a day boundary cannot reach that day.
+    expect(manifestMightMatch({ created: { $lt: new Date(10 * DAY) } }, manifest, schema, metadata)).toBe(false)
+    expect(manifestMightMatch({ created: { $lte: new Date(10 * DAY) } }, manifest, schema, metadata)).toBe(true)
+    expect(manifestMightMatch({ created: { $gt: new Date(13 * DAY - 1) } }, manifest, schema, metadata)).toBe(false)
+    expect(manifestMightMatch({ created: { $gt: new Date(13 * DAY - 2) } }, manifest, schema, metadata)).toBe(true)
+    expect(manifestMightMatch({ created: { $eq: new Date(11 * DAY) } }, manifest, schema, metadata)).toBe(true)
+    expect(manifestMightMatch({ created: { $in: [new Date(1 * DAY), new Date(20 * DAY)] } }, manifest, schema, metadata)).toBe(false)
+    expect(manifestMightMatch({ created: { $ne: new Date(11 * DAY) } }, manifest, schema, metadata)).toBe(true)
+  })
+
+  it('evaluates bucket equality', () => {
+    // bucket[4] of long 1 is 0; ids 2..4 land elsewhere, keep only matches.
+    const results = [0n, 1n, 2n, 3n, 4n, 5n, 6n, 7n].map(id => manifestMightMatch({ id: { $eq: id } }, manifest, schema, metadata))
+    expect(results).toContain(true)
+    expect(results).toContain(false)
+  })
+
+  it('handles AND / OR and keeps on missing summaries', () => {
+    expect(manifestMightMatch({ $or: [{ created: { $lt: new Date(0) } }, { created: { $gt: new Date(30 * DAY) } }] }, manifest, schema, metadata)).toBe(false)
+    expect(manifestMightMatch({ $or: [{ created: { $lt: new Date(0) } }, { kind: { $eq: 'x' } }] }, manifest, schema, metadata)).toBe(true)
+    const bare = /** @type {Manifest} */ ({ ...manifest, partitions: undefined })
+    expect(manifestMightMatch({ created: { $lt: new Date(0) } }, bare, schema, metadata)).toBe(true)
+  })
+})

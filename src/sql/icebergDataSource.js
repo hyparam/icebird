@@ -1,17 +1,18 @@
 import { asyncRow } from 'squirreling'
 import { applicablePositionDeletes } from '../delete.js'
 import { fetchDeleteMaps, urlResolver } from '../fetch.js'
-import { icebergManifests, splitManifestEntries } from '../manifest.js'
+import { fetchManifestEntries, icebergManifestList } from '../manifest.js'
 import { icebergMetadata } from '../metadata.js'
 import { readDataFile, readDataFileBatches, readDataFileColumn } from '../read.js'
-import { fileMightMatch, partitionMightMatch } from '../prune.js'
+import { fileMightMatch, manifestMightMatch, partitionMightMatch } from '../prune.js'
 import { whereToParquetFilter } from './whereFilter.js'
 import { pruneTopKFiles, scanTopKFiles } from './topK.js'
 
 /**
  * @import {AsyncDataSource, ExprNode, PrepareScan, RelationSchema, ScanOptions, ScanResults, SqlPrimitive} from 'squirreling'
  * @import {ScanColumnResults} from 'squirreling/src/types.js'
- * @import {Lister, Resolver, TableMetadata} from '../../src/types.js'
+ * @import {ParquetQueryFilter} from 'hyparquet'
+ * @import {Lister, Manifest, ManifestEntry, Resolver, TableMetadata} from '../../src/types.js'
  */
 
 /**
@@ -33,9 +34,14 @@ import { pruneTopKFiles, scanTopKFiles } from './topK.js'
  * scans expose lazy native column batches; legacy scan hooks stream materialized
  * rows for compatibility.
  *
- * Metadata, manifests, schema, and delete maps are resolved once at
- * construction; each `scan()` walks the data files in record-count order and
- * yields rows on demand. Pushdowns:
+ * Metadata, the manifest list, delete manifests, schema, and delete maps are
+ * resolved once at construction. Each scan fetches the data manifests it
+ * needs and walks their data files in manifest order, yielding rows on
+ * demand. Pushdowns:
+ * - WHERE skips whole data manifests before they are fetched, using the
+ *   manifest list's per-partition-field summaries (Java `ManifestEvaluator`).
+ *   This pays off on tables whose manifests are clustered by partition (see
+ *   `icebergRewriteManifests`).
  * - Column projection (`columns`) is pushed into the parquet read so only the
  *   requested columns are decoded. Equality-delete predicate columns and row
  *   lineage columns are read regardless when needed.
@@ -88,6 +94,8 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
   const schemaId = snapshot?.['schema-id'] ?? tableMetadata['current-schema-id']
   const schema = tableMetadata.schemas.find(s => s['schema-id'] === schemaId)
   if (!schema) throw new Error('schema not found in metadata')
+  // Narrowed for the hoisted helpers below.
+  const scanSchema = schema
   const columns = schema.fields.map(f => f.name)
   /** @type {RelationSchema} */
   const relationSchema = {
@@ -100,23 +108,76 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
   }
   const rowLineage = tableMetadata['format-version'] >= 3
 
-  const manifestList = await icebergManifests({ metadata: tableMetadata, resolver: fetchResolver, snapshotId })
-  const { dataEntries, deleteEntries } = splitManifestEntries(manifestList)
+  const { manifests } = await icebergManifestList({ metadata: tableMetadata, resolver: fetchResolver, snapshotId })
+  const dataManifests = manifests.filter(m => (m.content ?? 0) === 0)
+  const deleteEntries = liveEntries(await Promise.all(
+    manifests.filter(m => m.content === 1).map(m => fetchManifestEntries(m, fetchResolver))
+  ))
   const hasDeletes = deleteEntries.length > 0
 
   // Pre-fetch delete maps once; reused by every scan.
   const deleteMapsPromise = fetchDeleteMaps(deleteEntries, fetchResolver)
 
-  // Sum record_count across data manifest entries for an exact row count.
-  // When delete files exist the sum is pre-delete and overstates the visible
-  // count, so leave numRows undefined rather than reporting a wrong total.
+  /**
+   * Live data entries of the manifests that might match `filter`, in
+   * manifest-list order.
+   *
+   * @param {ParquetQueryFilter | undefined} filter
+   * @returns {Promise<ManifestEntry[]>}
+   */
+  async function dataEntriesFor(filter) {
+    const selected = filter
+      ? dataManifests.filter(m => manifestMightMatch(filter, m, scanSchema, tableMetadata))
+      : dataManifests
+    return liveEntries(await Promise.all(selected.map(m => fetchManifestEntries(m, fetchResolver))))
+  }
+  /**
+   * Live rows the data files of `selected` manifests hold, before deletes,
+   * from the manifest list's counts; undefined when a count is missing.
+   *
+   * @param {Manifest[]} selected
+   * @returns {number | undefined}
+   */
+  function manifestRows(selected) {
+    let rows = 0
+    for (const m of selected) {
+      if (m.added_rows_count == null || m.existing_rows_count == null) return undefined
+      rows += Number(m.added_rows_count) + Number(m.existing_rows_count)
+    }
+    return rows
+  }
+
+  // Exact row count from the manifest list, or by reading every data manifest
+  // if a count is missing. When delete files exist the sum is pre-delete and
+  // overstates the visible count, so leave numRows undefined rather than
+  // reporting a wrong total.
   /** @type {number | undefined} */
   let numRows
   if (!hasDeletes) {
-    numRows = 0
-    for (const entry of dataEntries) {
-      numRows += Number(entry.data_file.record_count)
+    numRows = manifestRows(dataManifests)
+    if (numRows === undefined) {
+      numRows = 0
+      for (const entry of await dataEntriesFor(undefined)) {
+        numRows += Number(entry.data_file.record_count)
+      }
     }
+  }
+
+  /**
+   * Scan pruning: skip manifests whose partition summaries, then data files
+   * whose partition tuple or per-column bounds, prove no row can match the
+   * filter. All pruners are inclusive projections (they never drop a file
+   * with a matching row), so query results are unchanged.
+   *
+   * @param {ParquetQueryFilter | undefined} filter
+   * @returns {Promise<ManifestEntry[]>}
+   */
+  async function pruneEntries(filter) {
+    const dataEntries = await dataEntriesFor(filter)
+    if (!filter) return dataEntries
+    return dataEntries.filter(entry =>
+      partitionMightMatch(filter, entry, scanSchema, tableMetadata) &&
+        fileMightMatch(filter, entry, scanSchema))
   }
 
   /** @type {IcebergAsyncDataSource} */
@@ -132,16 +193,12 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
       })
       const exactFilter = whereToParquetFilter(request.filter)
       const filter = exactFilter ?? whereToParquetFilter(request.filter, { allowPartial: true })
-      const candidates = request.topK && !request.filter && !hasDeletes
-        ? pruneTopKFiles(dataEntries, schema, request.topK)
-        : dataEntries
-      const scanEntries = filter
-        ? candidates.filter(entry =>
-          partitionMightMatch(filter, entry, schema, tableMetadata) &&
-            fileMightMatch(filter, entry, schema))
-        : candidates
-      let maxRows = 0
-      for (const entry of scanEntries) maxRows += Number(entry.data_file.record_count)
+      // Bounds come from the manifest list so preparing a scan fetches no
+      // manifests: the rows of every manifest the filter might match.
+      const maxRows = manifestRows(filter
+        ? dataManifests.filter(m => manifestMightMatch(filter, m, schema, tableMetadata))
+        : dataManifests)
+      const topKPrunes = request.topK && !request.filter && !hasDeletes
 
       return {
         schema: { fields: requestedFields },
@@ -151,11 +208,20 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
           offset: request.offset,
         },
         properties: {
-          exactRows: request.filter || hasDeletes ? undefined : maxRows,
+          exactRows: request.filter || hasDeletes || topKPrunes ? undefined : maxRows,
           maxRows,
         },
         async *batches({ signal } = {}) {
           signal?.throwIfAborted()
+          const dataEntries = await dataEntriesFor(filter)
+          const candidates = topKPrunes
+            ? pruneTopKFiles(dataEntries, schema, /** @type {NonNullable<typeof request.topK>} */ (request.topK))
+            : dataEntries
+          const scanEntries = filter
+            ? candidates.filter(entry =>
+              partitionMightMatch(filter, entry, schema, tableMetadata) &&
+                fileMightMatch(filter, entry, schema))
+            : candidates
           const { positionDeletesMap, equalityDeleteGroups } = await deleteMapsPromise
           // Delete maps are already needed by the reader. Once loaded, use
           // exact surviving counts without opening the data files. Equality
@@ -215,18 +281,6 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
       const exactFilter = whereToParquetFilter(where)
       const filter = exactFilter ?? whereToParquetFilter(where, { allowPartial: true })
       const appliedWhere = where !== undefined && exactFilter !== undefined
-      // Scan pruning: drop data files whose partition tuple OR per-column
-      // manifest bounds prove no row can match the filter. Manifest entries are
-      // already in memory, so this is a cheap synchronous pre-filter that
-      // avoids opening the pruned files entirely. Both pruners are inclusive
-      // projections (they never drop a file with a matching row), so query
-      // results are unchanged.
-      const scanEntries = filter
-        ? dataEntries.filter(entry =>
-          partitionMightMatch(filter, entry, schema, tableMetadata) &&
-            fileMightMatch(filter, entry, schema))
-        : dataEntries
-      const pruned = scanEntries.length < dataEntries.length
       // Treat a fully-pushed-down WHERE the same as "no WHERE" for the
       // purpose of capping how many rows the source emits (LIMIT).
       const whereResolved = !where || appliedWhere
@@ -239,11 +293,11 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
       // (or zero) matches; bounding by position would silently drop matching
       // rows that sort later in the file (e.g. WHERE node_type='File' LIMIT 5
       // when the leading rows are all 'Session'). It is likewise unsafe with
-      // deletes (record_count is pre-delete) or once pruning has dropped a
-      // file (cumulative record_count no longer tracks row positions). In all
-      // those cases we keep emitting up to `offset + limit` matched rows and
-      // let the engine apply the final LIMIT/OFFSET slice.
-      const canPushOffset = !where && !hasDeletes && !pruned
+      // deletes (record_count is pre-delete). Pruning, which would break the
+      // cumulative record_count to row position mapping, only happens with a
+      // WHERE. In all those cases we keep emitting up to `offset + limit`
+      // matched rows and let the engine apply the final LIMIT/OFFSET slice.
+      const canPushOffset = !where && !hasDeletes
       const skip = canPushOffset ? offset ?? 0 : 0
       // LIMIT (early termination) is safe whenever WHERE is resolved: we yield
       // at most offset+limit rows and, when offset isn't pushed, let the engine
@@ -259,7 +313,9 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
         appliedLimitOffset,
         async *rows() {
           if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
-          if (take === 0 || scanEntries.length === 0) return
+          if (take === 0) return
+          const scanEntries = await pruneEntries(filter)
+          if (scanEntries.length === 0) return
 
           const { positionDeletesMap, equalityDeleteGroups } = await deleteMapsPromise
 
@@ -350,14 +406,8 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
       const exactFilter = whereToParquetFilter(where)
       const filter = exactFilter ?? whereToParquetFilter(where, { allowPartial: true })
       const appliedWhere = where !== undefined && exactFilter !== undefined
-      const scanEntries = filter
-        ? dataEntries.filter(entry =>
-          partitionMightMatch(filter, entry, schema, tableMetadata) &&
-            fileMightMatch(filter, entry, schema))
-        : dataEntries
-      const pruned = scanEntries.length < dataEntries.length
       const whereResolved = !where || appliedWhere
-      const canPushOffset = !where && !hasDeletes && !pruned
+      const canPushOffset = !where && !hasDeletes
       const skip = canPushOffset ? offset ?? 0 : 0
       let take = Infinity
       if (whereResolved && limit !== undefined) {
@@ -369,7 +419,9 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
         appliedLimitOffset,
         async *chunks() {
           if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
-          if (take === 0 || scanEntries.length === 0) return
+          if (take === 0) return
+          const scanEntries = await pruneEntries(filter)
+          if (scanEntries.length === 0) return
 
           const { positionDeletesMap, equalityDeleteGroups } = await deleteMapsPromise
 
@@ -428,4 +480,21 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
     },
   }
   return thisSource
+}
+
+/**
+ * Flatten per-manifest entries, dropping logically deleted ones.
+ *
+ * @param {ManifestEntry[][]} perManifest
+ * @returns {ManifestEntry[]}
+ */
+function liveEntries(perManifest) {
+  /** @type {ManifestEntry[]} */
+  const out = []
+  for (const entries of perManifest) {
+    for (const entry of entries) {
+      if (entry.status !== 2) out.push(entry)
+    }
+  }
+  return out
 }
