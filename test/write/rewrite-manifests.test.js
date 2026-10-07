@@ -66,9 +66,10 @@ async function scrambledTable(commits, days, properties) {
   const { resolver, lister } = memResolver()
   const catalog = fileCatalog({ resolver, lister, conditionalCommits: true })
   const tableUrl = `http://test/rm-${Math.random().toString(36).slice(2)}`
+  // Fast append keeps one manifest per commit for the rewrite to consolidate.
   await icebergCreateTable({
     catalog, tableUrl, schema, partitionSpec: daySpec,
-    properties,
+    properties: { 'commit.manifest-merge.enabled': 'false', ...properties },
   })
   let metadata
   for (let i = 0; i < commits; i++) {
