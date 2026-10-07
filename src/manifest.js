@@ -24,7 +24,8 @@ export async function icebergManifests({ metadata, resolver, snapshotId, filter 
   const { snapshot, manifests } = await icebergManifestList({ metadata, resolver, snapshotId })
   let selected = manifests
   if (filter) {
-    const schemaId = snapshot['schema-id'] ?? metadata['current-schema-id']
+    // Schema-only commits can leave the current snapshot on an older schema.
+    const schemaId = (snapshotId !== undefined ? snapshot['schema-id'] : undefined) ?? metadata['current-schema-id']
     const schema = metadata.schemas.find(s => s['schema-id'] === schemaId)
     if (schema) {
       selected = manifests.filter(m => m.content === 1 || manifestMightMatch(filter, m, schema, metadata))

@@ -4,7 +4,7 @@ import { fileCatalog } from '../../src/catalog/file.js'
 import { icebergManifests } from '../../src/manifest.js'
 import { manifestMightMatch } from '../../src/prune.js'
 import { icebergQuery } from '../../src/sql/icebergQuery.js'
-import { icebergAppend, icebergCreateTable, icebergRewriteManifests } from '../../src/write/write.js'
+import { icebergAppend, icebergCreateTable, icebergRewriteManifests, icebergUpdateSchema } from '../../src/write/write.js'
 import { memResolver } from '../helpers.js'
 
 /**
@@ -81,6 +81,45 @@ async function query(resolver, tableUrl, where) {
 }
 
 describe('manifest list pruning', () => {
+  it.each([false, true])('binds filters by field id after a schema-only name swap (pinned: %s)', async pinned => {
+    const { resolver, lister } = memResolver()
+    const catalog = fileCatalog({ resolver, lister, conditionalCommits: true })
+    const tableUrl = 'http://test/prune-renamed'
+    /** @type {Schema} */
+    const originalSchema = {
+      type: 'struct',
+      'schema-id': 0,
+      fields: [
+        { id: 1, name: 'a', required: true, type: 'int' },
+        { id: 2, name: 'b', required: true, type: 'int' },
+      ],
+    }
+    await icebergCreateTable({
+      catalog, tableUrl, schema: originalSchema,
+      partitionSpec: {
+        'spec-id': 0,
+        fields: [{ 'source-id': 1, 'field-id': 1000, name: 'a', transform: 'identity' }],
+      },
+    })
+    const appended = await icebergAppend({ catalog, tableUrl, records: [{ a: 1, b: 2 }] })
+    const metadata = await icebergUpdateSchema({
+      catalog, tableUrl,
+      schema: {
+        ...originalSchema,
+        fields: originalSchema.fields.map(f => ({ ...f, name: f.name === 'a' ? 'b' : 'a' })),
+      },
+    })
+    expect(metadata['current-snapshot-id']).toBe(appended['current-snapshot-id'])
+    expect(metadata.snapshots?.[0]['schema-id']).toBe(0)
+    expect(metadata['current-schema-id']).toBe(1)
+
+    const snapshotId = pinned ? metadata['current-snapshot-id'] : undefined
+    const matching = await icebergManifests({ metadata, resolver, snapshotId, filter: { a: { $eq: 2 } } })
+    expect(matching).toHaveLength(pinned ? 0 : 1)
+    const other = await icebergManifests({ metadata, resolver, snapshotId, filter: { b: { $eq: 2 } } })
+    expect(other).toHaveLength(pinned ? 1 : 0)
+  })
+
   it('reads only manifests whose day range matches a one-day predicate', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
     const { resolver, tableUrl, metadata } = await clusteredTable({
