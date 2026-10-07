@@ -111,8 +111,8 @@ function summaryMightMatch(op, value, summary, transform, sourceType) {
     return b === undefined || eqInRange(b, lo, hi, resultType)
   }
   // Monotonic: compare the projected literal against the partition range.
-  // Projection floors, so a strict bound projects the adjacent source value
-  // instead (Java does the same): `ts < midnight` cannot reach that day.
+  // Projection floors, so tighten strict bounds only when an exact source
+  // neighbor is available. Otherwise retain the boundary partition.
   let t = project(transform, value, sourceType)
   if (t === undefined) return true
   if (op === '$lt' || op === '$gt') {
@@ -141,8 +141,9 @@ function summaryMightMatch(op, value, summary, transform, sourceType) {
 /**
  * The source value one unit below (`step` -1) or above (+1) `value`, for
  * integer and temporal source types, or undefined when there is no exact
- * neighbor (decimals, strings, non-integer numbers). Date literals carry
- * millisecond precision, so their neighbor is one millisecond away.
+ * neighbor (decimals, strings, non-integer numbers). Date literals have only
+ * millisecond precision, so keep their projection conservative: a millisecond
+ * step can skip matching microsecond or nanosecond timestamps.
  *
  * @param {any} value
  * @param {-1|1} step
@@ -158,7 +159,6 @@ function adjacentValue(value, step, sourceType) {
   case 'timestamptz':
   case 'timestamp_ns':
   case 'timestamptz_ns':
-    if (value instanceof Date) return new Date(value.getTime() + step)
     if (typeof value === 'bigint') return value + BigInt(step)
     if (Number.isSafeInteger(value)) return value + step
     return undefined
@@ -689,9 +689,24 @@ function eqInRange(value, lo, hi, type) {
 function safeCompare(a, b, type) {
   if (a === null || a === undefined || b === null || b === undefined) return undefined
   try {
-    const c = compare(a, b, type)
+    // Date bounds are day counts at midnight, but timestamp literals can
+    // include a time of day. Preserve it instead of truncating to a date.
+    const c = typeName(type) === 'date'
+      ? dateComparisonMillis(a) - dateComparisonMillis(b)
+      : compare(a, b, type)
     return Number.isNaN(c) ? undefined : c
   } catch {
     return undefined
   }
+}
+
+/**
+ * @param {any} value
+ * @returns {number}
+ */
+function dateComparisonMillis(value) {
+  if (value instanceof Date) return value.getTime()
+  if (typeof value === 'string') return Date.parse(value)
+  if (typeof value === 'number' || typeof value === 'bigint') return Number(value) * 86400000
+  return NaN
 }

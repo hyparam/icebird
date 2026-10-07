@@ -81,6 +81,30 @@ async function query(resolver, tableUrl, where) {
 }
 
 describe('manifest list pruning', () => {
+  it('keeps identity dates before a timestamp later on the same day', async () => {
+    const { resolver, lister } = memResolver()
+    const catalog = fileCatalog({ resolver, lister, conditionalCommits: true })
+    const tableUrl = 'http://test/prune-date-timestamp'
+    await icebergCreateTable({
+      catalog, tableUrl,
+      schema: {
+        type: 'struct', 'schema-id': 0,
+        fields: [
+          { id: 1, name: 'id', required: true, type: 'long' },
+          { id: 2, name: 'd', required: true, type: 'date' },
+        ],
+      },
+      partitionSpec: {
+        'spec-id': 0,
+        fields: [{ 'source-id': 2, 'field-id': 1000, name: 'd', transform: 'identity' }],
+      },
+    })
+    await icebergAppend({ catalog, tableUrl, records: [{ id: 1n, d: new Date('2026-01-01') }] })
+    const where = 'd < TIMESTAMP \'2026-01-01T12:00:00Z\''
+    expect(await query(resolver, tableUrl, `${where} OR id + 0 < 0`)).toEqual([1n])
+    expect(await query(resolver, tableUrl, where)).toEqual([1n])
+  })
+
   it.each([false, true])('binds filters by field id after a schema-only name swap (pinned: %s)', async pinned => {
     const { resolver, lister } = memResolver()
     const catalog = fileCatalog({ resolver, lister, conditionalCommits: true })
@@ -132,7 +156,8 @@ describe('manifest list pruning', () => {
     const counting = countingResolver(resolver)
     const where = 'created >= TIMESTAMP \'1970-01-11T00:00:00Z\' AND created < TIMESTAMP \'1970-01-12T00:00:00Z\''
     const pruned = await query(counting.resolver, tableUrl, where)
-    expect(counting.manifestsRead()).toBeLessThanOrEqual(3)
+    // Include the conservative boundary day for the strict timestamp cutoff.
+    expect(counting.manifestsRead()).toBeLessThanOrEqual(4)
 
     // Same rows as a scan that cannot prune manifests (`+ 0` stays in the engine).
     counting.reset()
@@ -145,7 +170,7 @@ describe('manifest list pruning', () => {
     // icebergManifests takes the same filter.
     const filter = { created: { $gte: new Date(10 * DAY), $lt: new Date(11 * DAY) } }
     const filtered = await icebergManifests({ metadata, resolver, filter })
-    expect(filtered.length).toBeLessThanOrEqual(3)
+    expect(filtered.length).toBeLessThanOrEqual(4)
     const days = filtered.flatMap(m => m.entries).map(e => Number(e.data_file.partition.created_day))
     expect(days).toContain(10)
   }, 60000)
@@ -206,10 +231,10 @@ describe('manifestMightMatch', () => {
     expect(manifestMightMatch({ created: { $gte: new Date(13 * DAY) } }, manifest, schema, metadata)).toBe(false)
     expect(manifestMightMatch({ created: { $gte: new Date(12 * DAY + 5) } }, manifest, schema, metadata)).toBe(true)
     expect(manifestMightMatch({ created: { $lt: new Date(10 * DAY + 1) } }, manifest, schema, metadata)).toBe(true)
-    // Strict bounds at a day boundary cannot reach that day.
-    expect(manifestMightMatch({ created: { $lt: new Date(10 * DAY) } }, manifest, schema, metadata)).toBe(false)
+    // Date literals keep the boundary partition conservatively.
+    expect(manifestMightMatch({ created: { $lt: new Date(10 * DAY) } }, manifest, schema, metadata)).toBe(true)
     expect(manifestMightMatch({ created: { $lte: new Date(10 * DAY) } }, manifest, schema, metadata)).toBe(true)
-    expect(manifestMightMatch({ created: { $gt: new Date(13 * DAY - 1) } }, manifest, schema, metadata)).toBe(false)
+    expect(manifestMightMatch({ created: { $gt: new Date(13 * DAY - 1) } }, manifest, schema, metadata)).toBe(true)
     expect(manifestMightMatch({ created: { $gt: new Date(13 * DAY - 2) } }, manifest, schema, metadata)).toBe(true)
     expect(manifestMightMatch({ created: { $eq: new Date(11 * DAY) } }, manifest, schema, metadata)).toBe(true)
     expect(manifestMightMatch({ created: { $in: [new Date(1 * DAY), new Date(20 * DAY)] } }, manifest, schema, metadata)).toBe(false)
@@ -221,6 +246,47 @@ describe('manifestMightMatch', () => {
     const results = [0n, 1n, 2n, 3n, 4n, 5n, 6n, 7n].map(id => manifestMightMatch({ id: { $eq: id } }, manifest, schema, metadata))
     expect(results).toContain(true)
     expect(results).toContain(false)
+  })
+
+  it.each(/** @type {const} */ (['timestamp', 'timestamptz', 'timestamp_ns', 'timestamptz_ns']))(
+    'keeps submillisecond %s matches at temporal partition boundaries', type => {
+      const temporalSchema = { ...schema, fields: [{ ...schema.fields[1], type }] }
+      for (const transform of ['year', 'month', 'day', 'hour']) {
+        const temporalMetadata = {
+          ...metadata,
+          'partition-specs': [{
+            'spec-id': 0,
+            fields: [{ 'source-id': 2, 'field-id': 1000, name: 'created_partition', transform }],
+          }],
+        }
+        // -500 microseconds (or nanoseconds) belongs to partition -1 and is > -1 ms.
+        const temporalManifest = {
+          ...manifest,
+          partitions: [{ contains_null: false, lower_bound: int(-1), upper_bound: int(-1) }],
+        }
+        expect(manifestMightMatch({ created: { $gt: new Date(-1) } }, temporalManifest, temporalSchema, temporalMetadata)).toBe(true)
+        expect(manifestMightMatch({ created: { $gt: new Date(0) } }, temporalManifest, temporalSchema, temporalMetadata)).toBe(false)
+      }
+    }
+  )
+
+  it('compares identity date summaries against the full timestamp literal', () => {
+    /** @type {Schema} */
+    const dateSchema = { ...schema, fields: [{ ...schema.fields[1], type: 'date' }] }
+    const dateMetadata = {
+      ...metadata,
+      'partition-specs': [{
+        'spec-id': 0,
+        fields: [{ 'source-id': 2, 'field-id': 1000, name: 'created', transform: 'identity' }],
+      }],
+    }
+    const day = Date.parse('2026-01-01') / DAY
+    const dateManifest = {
+      ...manifest,
+      partitions: [{ contains_null: false, lower_bound: int(day), upper_bound: int(day) }],
+    }
+    expect(manifestMightMatch({ created: { $lt: new Date('2026-01-01T12:00:00Z') } }, dateManifest, dateSchema, dateMetadata)).toBe(true)
+    expect(manifestMightMatch({ created: { $lt: new Date('2026-01-01') } }, dateManifest, dateSchema, dateMetadata)).toBe(false)
   })
 
   it('handles AND / OR and keeps on missing summaries', () => {
