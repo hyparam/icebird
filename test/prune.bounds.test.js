@@ -228,14 +228,27 @@ describe('fileMightMatch — string bounds (byte-ordered family)', () => {
     expect(fileMightMatch({ name: { $eq: 'aaaa' } }, t, schema)).toBe(true)
   })
 
-  it('orders by code point (UTF-8 byte order), not UTF-16 code units', () => {
+  it('uses UTF-8 bounds for equality but keeps uncertain Unicode ranges', () => {
     // U+E000 sorts below U+10000 in code point/UTF-8 order but above its
     // surrogate pair in UTF-16 unit order. A file bounded at ['a', U+E000]
     // cannot contain U+10000; UTF-16 ordering would wrongly keep it.
     const u = entry({ 2: { min: 'a', max: '\uE000', type: 'string' } })
     expect(fileMightMatch({ name: { $eq: '\u{10000}' } }, u, schema)).toBe(false)
-    expect(fileMightMatch({ name: { $gt: '\uE000' } }, u, schema)).toBe(false)
+    expect(fileMightMatch({ name: { $gt: '\uE000' } }, u, schema)).toBe(true)
     expect(fileMightMatch({ name: { $eq: '\uE000' } }, u, schema)).toBe(true)
+  })
+
+  it('keeps matching Unicode ranges inside mixed UTF-8 bounds', () => {
+    // U+E000 matches > U+10000 in SQL, even though the UTF-8 upper bound
+    // is below U+10000. The reverse ordering also affects < predicates.
+    const bmp = entry({ 2: { min: 'a', max: '\uFFFF', type: 'string' } })
+    const supplementary = entry({ 2: { min: '\u{10000}', max: '😀', type: 'string' } })
+    expect(fileMightMatch({ name: { $gt: '\u{10000}' } }, bmp, schema)).toBe(true)
+    expect(fileMightMatch({ name: { $gte: '\u{10000}' } }, bmp, schema)).toBe(true)
+    expect(fileMightMatch({ name: { $lt: '\uE000' } }, supplementary, schema)).toBe(true)
+    expect(fileMightMatch({ name: { $lte: '\uE000' } }, supplementary, schema)).toBe(true)
+    expect(fileMightMatch({ name: { $lt: 'a' } }, supplementary, schema)).toBe(false)
+    expect(fileMightMatch({ name: { $eq: '\u{10000}' } }, bmp, schema)).toBe(false)
   })
 
   it('a mismatched literal type keeps the file', () => {
