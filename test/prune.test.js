@@ -63,16 +63,17 @@ describe('partitionMightMatch — identity', () => {
     expect(partitionMightMatch({ id: { $nin: [1n] } }, entry({ id: 5 }), schema, m)).toBe(true)
   })
 
-  it('prunes string identity on equality and ranges (code-point order)', () => {
+  it('prunes string identity on equality and ranges using query ordering', () => {
     const sm = meta([{ 'source-id': 2, 'field-id': 1000, name: 'name', transform: 'identity' }])
     expect(partitionMightMatch({ name: { $eq: 'a' } }, entry({ name: 'a' }), schema, sm)).toBe(true)
     expect(partitionMightMatch({ name: { $eq: 'a' } }, entry({ name: 'b' }), schema, sm)).toBe(false)
-    // Strings order by code point (UTF-8 byte order), so ranges prune too.
     // Identity is exact: every row equals the partition value, so $gt 'a'
     // on a file whose value IS 'a' proves no row can match.
     expect(partitionMightMatch({ name: { $gt: 'a' } }, entry({ name: 'a' }), schema, sm)).toBe(false)
     expect(partitionMightMatch({ name: { $gt: 'a' } }, entry({ name: 'b' }), schema, sm)).toBe(true)
     expect(partitionMightMatch({ name: { $lt: 'a' } }, entry({ name: 'b' }), schema, sm)).toBe(false)
+    expect(partitionMightMatch({ name: { $gt: '\u{10000}' } }, entry({ name: '\uE000' }), schema, sm)).toBe(true)
+    expect(partitionMightMatch({ name: { $lt: '\uE000' } }, entry({ name: '\u{10000}' }), schema, sm)).toBe(true)
   })
 
   it('prunes a null partition value only on equality with a concrete literal', () => {

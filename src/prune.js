@@ -1,6 +1,6 @@
 import { typeName } from './schema.js'
 import { applyTransform, transformResultType } from './write/transform.js'
-import { compare, compareStringsCodePoint, deserializeValue } from './write/serde.js'
+import { compare, deserializeValue } from './write/serde.js'
 
 /**
  * Partition-level scan pruning. Given a hyparquet query filter (keyed by
@@ -81,6 +81,7 @@ export function manifestMightMatch(filter, manifest, schema, metadata) {
  */
 function summaryMightMatch(op, value, summary, transform, sourceType) {
   if (!summary) return true
+  if (unsafeStringRange(op, value, sourceType)) return true
   const kind = transformKind(transform)
   if (kind === 'other') return true
   /** @type {IcebergType} */
@@ -464,10 +465,9 @@ function equals(a, b) {
 
 /**
  * Order two partition values. Returns -1/0/1, or undefined when the values are
- * not safely orderable. Strings order by code point, which matches Iceberg's
- * UTF-8 byte order (JS `<` compares UTF-16 code units and disagrees, which is
- * why they were previously not ordered here). Booleans are intentionally not
- * ordered, so range predicates on them never prune.
+ * not safely orderable. These are actual partition values, not statistical
+ * bounds, so strings use the same UTF-16 order as SQL and row filtering.
+ * Booleans are intentionally not ordered, so range predicates never prune.
  *
  * @param {any} a
  * @param {any} b
@@ -482,7 +482,7 @@ function compareOrder(a, b) {
   if (aDate && bDate) return sign(a.getTime() - b.getTime())
 
   if (typeof a === 'bigint' && typeof b === 'bigint') return a < b ? -1 : a > b ? 1 : 0
-  if (typeof a === 'string' && typeof b === 'string') return compareStringsCodePoint(a, b)
+  if (typeof a === 'string' && typeof b === 'string') return a < b ? -1 : a > b ? 1 : 0
 
   const na = numericOf(a)
   const nb = numericOf(b)
@@ -618,6 +618,7 @@ function isOrderableForBounds(type) {
  * @returns {boolean}
  */
 function boundsOpMightMatch(op, value, lo, hi, type) {
+  if (unsafeStringRange(op, value, type)) return true
   switch (op) {
   case '$lt': {
     // need some x < value; smallest is lo. Skip if lo >= value.
@@ -652,6 +653,23 @@ function boundsOpMightMatch(op, value, lo, hi, type) {
   default:
     return true
   }
+}
+
+/**
+ * Iceberg string bounds use UTF-8 order, while query comparisons use UTF-16.
+ * A non-ASCII range literal can order differently relative to values inside
+ * those bounds, even when neither endpoint contains a surrogate pair. Keep
+ * such ranges, as hyparquet does for Parquet statistics. ASCII range literals
+ * order consistently in both encodings; equality and IN still use UTF-8 bounds.
+ *
+ * @param {string} op
+ * @param {any} value
+ * @param {IcebergType} type
+ * @returns {boolean}
+ */
+function unsafeStringRange(op, value, type) {
+  return typeName(type) === 'string' && ['$lt', '$lte', '$gt', '$gte'].includes(op) &&
+    (typeof value !== 'string' || /[\u0080-\uffff]/.test(value))
 }
 
 /**
