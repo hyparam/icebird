@@ -1,5 +1,12 @@
 # Icebird Changelog
 
+## [0.9.0]
+ - New `icebergRewriteManifests` rewrites a table's data manifests into target-size manifests sorted by partition value, without touching data files
+ - Commits merge small manifests by default, following the `commit.manifest-merge.enabled`, `commit.manifest.min-count-to-merge`, and `commit.manifest.target-size-bytes` table properties
+ - Reads skip whole manifests using manifest-list partition summaries
+ - SQL queries reuse fetched manifests within each data source
+ - Fix range filters with non-ASCII string literals incorrectly pruning partitions and data files
+
 ## [0.8.35]
  - SQL `ORDER BY ... LIMIT` queries with a `WHERE` clause scan the most promising data files first, so fewer files are read before the top K rows are found
 
