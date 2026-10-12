@@ -1079,7 +1079,7 @@ function columnNameByFieldId(schema, fieldId) {
  * @param {TableMetadata} metadata
  * @returns {NameMapping[] | undefined}
  */
-function tableNameMappings(metadata) {
+export function tableNameMappings(metadata) {
   const json = metadata.properties?.['schema.name-mapping.default']
   return json ? JSON.parse(json) : undefined
 }
@@ -1101,7 +1101,7 @@ function tableNameMappings(metadata) {
  * @param {NameMapping[] | undefined} nameMappings
  * @returns {Schema}
  */
-function fileIcebergSchema(parquetMetadata, schema, nameMappings) {
+export function fileIcebergSchema(parquetMetadata, schema, nameMappings) {
   const kv = parquetMetadata.key_value_metadata?.find(k => k.key === 'iceberg.schema')
   if (kv?.value) return JSON.parse(kv.value)
   const hasIds = parquetMetadata.schema.some(s => s.field_id !== undefined)

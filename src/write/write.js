@@ -8,6 +8,7 @@ import { icebergStagePositionDelete } from './stage-position-delete.js'
 import { icebergStageAppend, icebergStageExpireSnapshots, icebergStageSetRef, icebergStageUpdateSchema, prepareAppend, stageSnapshotForAppend } from './stage.js'
 import { icebergStageRewrite } from './rewrite.js'
 import { prepareRewriteManifests, stageSnapshotForRewriteManifests } from './rewrite-manifests.js'
+import { icebergStageUpsert } from './upsert.js'
 
 /**
  * @import {Catalog, IcebergTransaction, Lister, PartitionSpec, Resolver, Schema, Snapshot, SortOrder, StagedCommit, StagedUpdate, TableMetadata, TableRequirement, TableUpdate} from '../../src/types.js'
@@ -161,6 +162,41 @@ export async function icebergRewriteManifests({ catalog, namespace, table, table
 
 /** Internal signal: a retry found nothing left to rewrite. */
 class NothingToRewriteError extends Error {}
+
+/**
+ * Upsert rows by key in one call: replace every live row whose `joinCols`
+ * values match an incoming record and insert the rest, committed as a
+ * position delete plus an append in one atomic commit. Incoming records
+ * always win. See {@link icebergStageUpsert} for the supported tables and
+ * join columns.
+ *
+ * Like {@link icebergRewrite}, an upsert is NOT retried: its deletes are bound
+ * to the snapshot it scanned. On conflict the commit error surfaces and the
+ * caller should re-run the upsert. Staged files are never deleted after a
+ * failed commit, since a lost response may hide a successful one.
+ *
+ * @param {object} options
+ * @param {Catalog} options.catalog
+ * @param {string | string[]} [options.namespace] - REST catalog only.
+ * @param {string} [options.table] - REST catalog only.
+ * @param {string} [options.tableUrl] - File catalog only.
+ * @param {Resolver} [options.resolver]
+ * @param {Record<string, any>[]} options.records
+ * @param {string[]} [options.joinCols] - Defaults to the schema's identifier fields.
+ * @returns {Promise<TableMetadata>}
+ */
+export async function icebergUpsert({ catalog, namespace, table, tableUrl, resolver, records, joinCols }) {
+  const ctx = await loadTable({ catalog, namespace, table, tableUrl, resolver })
+  const staged = await icebergStageUpsert({
+    tableUrl: ctx.tableUrl,
+    metadata: ctx.metadata,
+    records,
+    joinCols,
+    resolver: requireResolver(ctx.resolver, 'icebergUpsert'),
+  })
+  // Single commit attempt: see the doc comment on why an upsert must not retry.
+  return await commitStaged(catalog, { namespace, table }, ctx, staged)
+}
 
 /**
  * Apply row-level position deletes in one call. Picks the v3 puffin deletion
