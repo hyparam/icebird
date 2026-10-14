@@ -165,9 +165,9 @@ class NothingToRewriteError extends Error {}
 
 /**
  * Upsert rows by key in one call: replace every live row whose `joinCols`
- * values match an incoming record and insert the rest, committed as a
- * position delete plus an append in one atomic commit. Incoming records
- * always win. See {@link icebergStageUpsert} for the supported tables and
+ * values match an incoming record and insert the rest, committed as one
+ * `overwrite` snapshot holding the position deletes and the new data.
+ * Incoming records always win. See {@link icebergStageUpsert} for the supported tables and
  * join columns.
  *
  * Like {@link icebergRewrite}, an upsert is NOT retried: its deletes are bound

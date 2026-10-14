@@ -1,27 +1,25 @@
-import { parquetReadObjects } from 'hyparquet'
-import { compressors } from 'hyparquet-compressors'
-import { applicablePositionDeletes } from '../delete.js'
-import { fetchDeleteMaps, readParquetMetadata } from '../fetch.js'
+import { concat } from 'hyparquet/src/utils.js'
+import { deleteFileAppliesToDataEntry } from '../delete.js'
+import { fetchDeleteMaps } from '../fetch.js'
 import { icebergManifests, splitManifestEntries } from '../manifest.js'
 import { fileMightMatch, partitionMightMatch } from '../prune.js'
-import { fileIcebergSchema, tableNameMappings } from '../read.js'
-import { sanitize } from '../utils.js'
-import { applyUpdates } from './commit.js'
-import { normalizeCurrentSnapshotId } from './snapshot.js'
-import { icebergStageAppend } from './stage.js'
-import { icebergStagePositionDelete } from './stage-position-delete.js'
+import { readDataFile } from '../read.js'
+import { uuid4 } from '../utils.js'
+import { buildSnapshotUpdate, currentSnapshot } from './snapshot.js'
+import { prepareAppend, preparedManifest, resolveParquetCodec } from './stage.js'
+import { writePositionDeletes } from './stage-position-delete.js'
 
 /**
- * @import {Field, Resolver, Schema, StagedUpdate, TableMetadata, TableRequirement} from '../../src/types.js'
+ * @import {DataFile, Field, ManifestEntry, Resolver, Schema, Snapshot, StagedUpdate, TableMetadata} from '../../src/types.js'
  */
 
 /**
- * Stage an upsert against the current snapshot: stage position deletes for
- * every live row whose `joinCols` values match an incoming record, then
- * stage an append of all `records` on top. Both snapshots are guarded by the
- * loaded table uuid, `main` snapshot, current schema, default partition spec,
- * and default sort order, so the commit fails rather than duplicating rows
- * if the table changed after it was scanned.
+ * Stage an upsert against the current snapshot as one `overwrite` snapshot:
+ * position deletes for every live row whose `joinCols` values match an
+ * incoming record, plus an append of all `records`. The commit is guarded by
+ * the loaded table uuid, `main` snapshot, current schema, default partition
+ * spec, and default sort order, so it fails rather than duplicating rows if
+ * the table changed after it was scanned.
  *
  * Format-version 2 only. Join columns default to the schema's
  * `identifier-field-ids` and must be top-level `int`, `long`, or `string`
@@ -58,27 +56,66 @@ export async function icebergStageUpsert({ tableUrl, metadata, records, joinCols
     keys.add(key)
   }
 
-  const deletes = await findMatchingRows({ metadata, resolver, schema, keyFields, records, keys })
-  /** @type {TableRequirement[]} */
-  const requirements = [
-    { type: 'assert-table-uuid', uuid: metadata['table-uuid'] },
-    { type: 'assert-ref-snapshot-id', ref: 'main', 'snapshot-id': normalizeCurrentSnapshotId(metadata['current-snapshot-id']) },
+  const { deletes, candidates } = await findMatchingRows({ metadata, resolver, schema, keyFields, records, keys })
+  // Write the data first: a record the writer rejects leaves no delete files.
+  const prepared = await prepareAppend({ tableUrl, metadata, records, resolver })
+  const sequenceNumber = BigInt(metadata['last-sequence-number'] ?? 0) + 1n
+  const newManifests = [preparedManifest(prepared, sequenceNumber)]
+  const writtenFiles = [...prepared.writtenFiles]
+  /** @type {DataFile[]} */
+  let deleteFiles = []
+  if (deletes.length) {
+    const partitionMap = new Map(candidates.map(e => [e.data_file.file_path, {
+      partition: e.data_file.partition ?? {}, partitionSpecId: e.partition_spec_id ?? 0,
+    }]))
+    const written = await writePositionDeletes({
+      tableUrl, metadata, schema, deletes, partitionMap, resolver,
+      snapshotId: prepared.snapshotId, sequenceNumber, manifestUuid: uuid4(),
+      codec: resolveParquetCodec(metadata.properties?.['write.parquet.compression-codec']),
+    })
+    deleteFiles = written.deleteFiles
+    newManifests.push(...written.newManifests)
+    writtenFiles.push(...written.writtenFiles)
+  }
+
+  const prevSummary = currentSnapshot(metadata)?.summary
+  const prevTotals = {
+    records: BigInt(prevSummary?.['total-records'] ?? '0'),
+    size: BigInt(prevSummary?.['total-files-size'] ?? '0'),
+    dataFiles: BigInt(prevSummary?.['total-data-files'] ?? '0'),
+    deleteFiles: BigInt(prevSummary?.['total-delete-files'] ?? '0'),
+    posDeletes: BigInt(prevSummary?.['total-position-deletes'] ?? '0'),
+    eqDeletes: BigInt(prevSummary?.['total-equality-deletes'] ?? '0'),
+  }
+  const deleteSize = deleteFiles.reduce((sum, f) => sum + f.file_size_in_bytes, 0n)
+  const posDeletes = BigInt(deletes.length)
+  const addedSize = prepared.addedFilesSize + deleteSize
+  /** @type {Snapshot['summary']} */
+  const summary = {
+    operation: 'overwrite',
+    'added-data-files': String(prepared.addedDataFilesCount),
+    'added-records': String(prepared.recordsCount),
+    'added-delete-files': String(deleteFiles.length),
+    'added-position-deletes': String(posDeletes),
+    'added-files-size': String(addedSize),
+    'total-records': String(prevTotals.records + BigInt(prepared.recordsCount)),
+    'total-files-size': String(prevTotals.size + addedSize),
+    'total-data-files': String(prevTotals.dataFiles + BigInt(prepared.addedDataFilesCount)),
+    'total-delete-files': String(prevTotals.deleteFiles + BigInt(deleteFiles.length)),
+    'total-position-deletes': String(prevTotals.posDeletes + posDeletes),
+    'total-equality-deletes': String(prevTotals.eqDeletes),
+  }
+  const staged = await buildSnapshotUpdate({
+    tableUrl, metadata, resolver,
+    snapshotId: prepared.snapshotId, sequenceNumber, manifestUuid: prepared.manifestUuid,
+    timestampMs: Date.now(), formatVersion: 2, newManifests, summary, writtenFiles,
+  })
+  staged.requirements.push(
     { type: 'assert-current-schema-id', 'current-schema-id': metadata['current-schema-id'] },
     { type: 'assert-default-spec-id', 'default-spec-id': metadata['default-spec-id'] },
-    { type: 'assert-default-sort-order-id', 'default-sort-order-id': metadata['default-sort-order-id'] },
-  ]
-  if (!deletes.length) {
-    const appended = await icebergStageAppend({ tableUrl, metadata, records, resolver })
-    return { ...appended, requirements }
-  }
-  const deleted = await icebergStagePositionDelete({ tableUrl, metadata, deletes, resolver })
-  const appended = await icebergStageAppend({ tableUrl, metadata: applyUpdates(metadata, deleted.updates), records, resolver })
-  return {
-    snapshot: appended.snapshot,
-    requirements,
-    updates: [...deleted.updates, ...appended.updates],
-    writtenFiles: [...deleted.writtenFiles, ...appended.writtenFiles],
-  }
+    { type: 'assert-default-sort-order-id', 'default-sort-order-id': metadata['default-sort-order-id'] }
+  )
+  return staged
 }
 
 /**
@@ -111,7 +148,7 @@ function resolveJoinFields(schema, joinCols) {
 function keyValueValid(value, type) {
   if (type === 'string') return typeof value === 'string'
   if (type === 'long') return typeof value === 'bigint'
-  return Number.isInteger(value)
+  return Number.isInteger(value) && value >= -(2 ** 31) && value < 2 ** 31
 }
 
 /**
@@ -123,9 +160,9 @@ function encodeKey(values) {
 }
 
 /**
- * Find the physical positions of live rows matching an incoming key. Rows
- * are read without applying deletes so each row's index is its parquet
- * position; rows already removed by a position delete are skipped.
+ * Find the physical positions of live rows matching an incoming key, reading
+ * candidate files the same way `icebergRead` does (applicable deletes, field
+ * id projection, partition values and defaults for columns not in the file).
  *
  * @param {object} options
  * @param {TableMetadata} options.metadata
@@ -134,10 +171,10 @@ function encodeKey(values) {
  * @param {Field[]} options.keyFields
  * @param {Record<string, any>[]} options.records
  * @param {Set<string>} options.keys
- * @returns {Promise<{file_path: string, pos: bigint}[]>}
+ * @returns {Promise<{deletes: {file_path: string, pos: bigint}[], candidates: ManifestEntry[]}>}
  */
 async function findMatchingRows({ metadata, resolver, schema, keyFields, records, keys }) {
-  if (normalizeCurrentSnapshotId(metadata['current-snapshot-id']) === null || !records.length) return []
+  if (currentSnapshot(metadata) === undefined || !records.length) return { deletes: [], candidates: [] }
   /** @type {Record<string, {$in: any[]}>} */
   const filter = {}
   for (const field of keyFields) {
@@ -147,36 +184,34 @@ async function findMatchingRows({ metadata, resolver, schema, keyFields, records
   const { dataEntries, deleteEntries } = splitManifestEntries(manifests)
   const candidates = dataEntries.filter(entry =>
     partitionMightMatch(filter, entry, schema, metadata) && fileMightMatch(filter, entry, schema))
-  if (!candidates.length) return []
-  const { positionDeletesMap } = await fetchDeleteMaps(deleteEntries, resolver)
-  const nameMappings = tableNameMappings(metadata)
+  // Only fetch delete files that apply to a candidate.
+  const applicable = deleteEntries.filter(deleteEntry => candidates.some(entry => deleteFileAppliesToDataEntry(
+    entry, deleteEntry, metadata, deleteEntry.data_file.content === 2 ? 'equality' : 'position')))
+  const { positionDeletesMap, equalityDeleteGroups } = await fetchDeleteMaps(applicable, resolver)
+  const wantedColumns = keyFields.map(f => f.name)
 
   const perFile = await Promise.all(candidates.map(async entry => {
-    const { file_path, file_size_in_bytes } = entry.data_file
-    const deleted = applicablePositionDeletes(entry, positionDeletesMap.get(file_path), metadata)
-    const file = await resolver.reader(file_path, Number(file_size_in_bytes))
-    const parquetMetadata = await readParquetMetadata(file)
-    // Resolve physical columns by field id, so renamed columns still match.
-    const fileSchema = fileIcebergSchema(parquetMetadata, schema, nameMappings)
-    const columns = keyFields.map(field => {
-      const physical = fileSchema.fields.find(f => f.id === field.id)
-      if (!physical) throw new Error(`join column ${field.name} not found in data file ${file_path}`)
-      return sanitize(physical.name)
-    })
-    const rows = await parquetReadObjects({ file, metadata: parquetMetadata, columns, compressors, utf8: false })
     /** @type {{file_path: string, pos: bigint}[]} */
-    const matches = []
-    for (let i = 0; i < rows.length; i++) {
-      const pos = BigInt(i)
-      if (deleted.has(pos)) continue
-      // A long column promoted from int stores INT32 values.
-      const values = columns.map((column, c) => {
-        const value = rows[i][column]
-        return keyFields[c].type === 'long' && typeof value === 'number' ? BigInt(value) : value
-      })
-      if (keys.has(encodeKey(values))) matches.push({ file_path, pos })
+    const deletes = []
+    for await (const rows of readDataFile({
+      dataEntry: entry,
+      fileRowStart: 0,
+      fileRowEnd: Number(entry.data_file.record_count),
+      schema, metadata, resolver,
+      rowLineage: false,
+      positionDeletesMap, equalityDeleteGroups, wantedColumns, filter,
+      positions: true,
+    })) {
+      for (const row of rows) {
+        // A long column promoted from int reads as a number.
+        const values = keyFields.map(f => f.type === 'long' && typeof row[f.name] === 'number' ? BigInt(row[f.name]) : row[f.name])
+        if (keys.has(encodeKey(values))) deletes.push({ file_path: entry.data_file.file_path, pos: row._pos })
+      }
     }
-    return matches
+    return deletes
   }))
-  return perFile.flat()
+  /** @type {{file_path: string, pos: bigint}[]} */
+  const deletes = []
+  for (const d of perFile) concat(deletes, d)
+  return { deletes, candidates }
 }
