@@ -1,5 +1,8 @@
 # Icebird Changelog
 
+## [0.9.1]
+ - Internal changes only
+
 ## [0.9.0]
  - New `icebergRewriteManifests` rewrites a table's data manifests into target-size manifests sorted by partition value, without touching data files
  - Commits merge small manifests by default, following the `commit.manifest-merge.enabled`, `commit.manifest.min-count-to-merge`, and `commit.manifest.target-size-bytes` table properties
