@@ -79,7 +79,7 @@ export async function icebergStagePositionDelete({ tableUrl, metadata, deletes, 
   const written = await writePositionDeletes({
     tableUrl, metadata, schema, deletes, partitionMap, resolver, snapshotId, sequenceNumber, manifestUuid, codec,
   })
-  const { deleteFiles, newManifests, changedPartitions } = written
+  const { deleteFiles, newManifests, partitionKeys } = written
 
   // Data totals carry forward; delete totals bump.
   const prevSummary = currentSnapshot(metadata)?.summary
@@ -99,7 +99,7 @@ export async function icebergStagePositionDelete({ tableUrl, metadata, deletes, 
     'added-delete-files': String(deleteFiles.length),
     'added-position-deletes': String(addedPosDeletes),
     'added-files-size': String(addedSize),
-    'changed-partition-count': String(changedPartitions),
+    'changed-partition-count': String(partitionKeys.length),
     'total-records': String(prevTotals.records),
     'total-files-size': String(prevTotals.size + addedSize),
     'total-data-files': String(prevTotals.dataFiles),
@@ -133,7 +133,7 @@ export async function icebergStagePositionDelete({ tableUrl, metadata, deletes, 
  * @param {bigint} options.sequenceNumber
  * @param {string} options.manifestUuid
  * @param {CompressionCodec} [options.codec]
- * @returns {Promise<{deleteFiles: DataFile[], newManifests: Manifest[], changedPartitions: number, writtenFiles: string[]}>}
+ * @returns {Promise<{deleteFiles: DataFile[], newManifests: Manifest[], partitionKeys: string[], writtenFiles: string[]}>}
  */
 export async function writePositionDeletes({
   tableUrl, metadata, schema, deletes, partitionMap, resolver, snapshotId, sequenceNumber, manifestUuid, codec,
@@ -238,7 +238,8 @@ export async function writePositionDeletes({
   return {
     deleteFiles: writtenDeleteFiles.map(f => f.deleteFile),
     newManifests,
-    changedPartitions: groups.size,
+    // `(spec-id, partition tuple)` keys touched, for changed-partition-count.
+    partitionKeys: [...groups.keys()],
     writtenFiles: [...writtenDeleteFiles.map(f => f.path), ...writtenManifestPaths],
   }
 }

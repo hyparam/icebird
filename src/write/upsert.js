@@ -7,7 +7,7 @@ import { readDataFile } from '../read.js'
 import { uuid4 } from '../utils.js'
 import { buildSnapshotUpdate, currentSnapshot } from './snapshot.js'
 import { prepareAppend, preparedManifest, resolveParquetCodec } from './stage.js'
-import { writePositionDeletes } from './stage-position-delete.js'
+import { partitionTupleKey, writePositionDeletes } from './stage-position-delete.js'
 
 /**
  * @import {DataFile, Field, ManifestEntry, Resolver, Schema, Snapshot, StagedUpdate, TableMetadata} from '../../src/types.js'
@@ -64,6 +64,8 @@ export async function icebergStageUpsert({ tableUrl, metadata, records, joinCols
   const writtenFiles = [...prepared.writtenFiles]
   /** @type {DataFile[]} */
   let deleteFiles = []
+  // Distinct (spec-id, partition tuple) across new data and delete files.
+  const partitionKeys = new Set(prepared.dataFilePartitions.map(p => `${prepared.partitionSpecId}|${partitionTupleKey(p)}`))
   if (deletes.length) {
     const partitionMap = new Map(candidates.map(e => [e.data_file.file_path, {
       partition: e.data_file.partition ?? {}, partitionSpecId: e.partition_spec_id ?? 0,
@@ -74,6 +76,7 @@ export async function icebergStageUpsert({ tableUrl, metadata, records, joinCols
       codec: resolveParquetCodec(metadata.properties?.['write.parquet.compression-codec']),
     })
     deleteFiles = written.deleteFiles
+    for (const key of written.partitionKeys) partitionKeys.add(key)
     newManifests.push(...written.newManifests)
     writtenFiles.push(...written.writtenFiles)
   }
@@ -97,6 +100,7 @@ export async function icebergStageUpsert({ tableUrl, metadata, records, joinCols
     'added-records': String(prepared.recordsCount),
     'added-delete-files': String(deleteFiles.length),
     'added-position-deletes': String(posDeletes),
+    'changed-partition-count': String(partitionKeys.size),
     'added-files-size': String(addedSize),
     'total-records': String(prevTotals.records + BigInt(prepared.recordsCount)),
     'total-files-size': String(prevTotals.size + addedSize),

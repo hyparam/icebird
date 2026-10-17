@@ -147,6 +147,7 @@ export async function prepareAppend({ tableUrl, metadata, records, resolver, sor
     manifestLength,
     partitionSpecId: partitionSpec['spec-id'],
     partitions,
+    dataFilePartitions: writtenDataFiles.map(f => f.dataFile.partition),
     addedDataFilesCount: writtenDataFiles.length,
     addedRowCount,
     addedFilesSize,

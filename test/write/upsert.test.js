@@ -84,6 +84,7 @@ describe('icebergUpsert', () => {
     const first = await icebergUpsert({ catalog, tableUrl, records: [{ id: 2n, name: 'B' }, { id: 4n, name: 'd' }] })
     expect(first.snapshots?.map(s => s.summary.operation)).toEqual(['append', 'overwrite'])
     expect(first.snapshots?.[1].summary['added-position-deletes']).toBe('1')
+    expect(first.snapshots?.[1].summary['changed-partition-count']).toBe('1')
 
     // id 3 is at physical position 2 of the first file but logical index 1.
     const second = await icebergUpsert({ catalog, tableUrl, joinCols: ['id'], records: [{ id: 3n, name: 'C' }] })
@@ -183,6 +184,8 @@ describe('icebergUpsert', () => {
       catalog, tableUrl, joinCols: ['region', 'id'], records: [{ region: 'eu', id: 1n, tag: 'z' }, { region: 'eu', id: 2n, tag: 'z' }],
     })
     expect(keyed.snapshots?.at(-1)?.summary['added-position-deletes']).toBe('3')
+    // Data and delete files all land in region=eu.
+    expect(keyed.snapshots?.at(-1)?.summary['changed-partition-count']).toBe('1')
     expect(await icebergRead({ tableUrl, metadata: keyed, resolver })).toEqual([
       { region: 'eu', id: 1n, tag: 'z' },
       { region: 'eu', id: 2n, tag: 'z' },

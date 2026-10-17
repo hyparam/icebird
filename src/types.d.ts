@@ -361,6 +361,8 @@ export interface PreparedAppend {
   manifestLength: bigint
   partitionSpecId: number
   partitions: FieldSummary[]
+  /** Partition tuple of each written data file, under `partitionSpecId`. */
+  dataFilePartitions: Record<string, any>[]
   addedDataFilesCount: number
   addedRowCount: bigint
   addedFilesSize: bigint
