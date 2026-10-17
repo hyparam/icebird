@@ -15,7 +15,8 @@ import {
 } from './stage.js'
 
 /**
- * @import {DataFile, Manifest, ManifestEntry, PartitionSpec, Resolver, Snapshot, StagedUpdate, TableMetadata} from '../../src/types.js'
+ * @import {CompressionCodec} from 'hyparquet'
+ * @import {DataFile, Manifest, ManifestEntry, PartitionSpec, Resolver, Schema, Snapshot, StagedUpdate, TableMetadata} from '../../src/types.js'
  */
 
 /**
@@ -54,7 +55,6 @@ export async function icebergStagePositionDelete({ tableUrl, metadata, deletes, 
   if (!Array.isArray(deletes) || !deletes.length) {
     throw new Error('deletes must be a non-empty array')
   }
-  const writerFn = resolver.writer
   if (metadata['format-version'] !== 2 && metadata['format-version'] !== 3) {
     throw new Error(`unsupported format-version: ${metadata['format-version']}`)
   }
@@ -75,8 +75,72 @@ export async function icebergStagePositionDelete({ tableUrl, metadata, deletes, 
   checkWriteFormat(metadata.properties?.['write.format.default'])
   const codec = resolveParquetCodec(metadata.properties?.['write.parquet.compression-codec'])
 
-  // 1. Group deletes by the target file's historical (spec-id, partition).
   const partitionMap = await findDataFilePartitions(metadata, resolver)
+  const written = await writePositionDeletes({
+    tableUrl, metadata, schema, deletes, partitionMap, resolver, snapshotId, sequenceNumber, manifestUuid, codec,
+  })
+  const { deleteFiles, newManifests, changedPartitions } = written
+
+  // Data totals carry forward; delete totals bump.
+  const prevSummary = currentSnapshot(metadata)?.summary
+  const prevTotals = {
+    records: BigInt(prevSummary?.['total-records'] ?? '0'),
+    size: BigInt(prevSummary?.['total-files-size'] ?? '0'),
+    dataFiles: BigInt(prevSummary?.['total-data-files'] ?? '0'),
+    deleteFiles: BigInt(prevSummary?.['total-delete-files'] ?? '0'),
+    posDeletes: BigInt(prevSummary?.['total-position-deletes'] ?? '0'),
+    eqDeletes: BigInt(prevSummary?.['total-equality-deletes'] ?? '0'),
+  }
+  const addedSize = deleteFiles.reduce((sum, f) => sum + f.file_size_in_bytes, 0n)
+  const addedPosDeletes = deleteFiles.reduce((sum, f) => sum + f.record_count, 0n)
+  /** @type {Snapshot['summary']} */
+  const summary = {
+    operation: 'delete',
+    'added-delete-files': String(deleteFiles.length),
+    'added-position-deletes': String(addedPosDeletes),
+    'added-files-size': String(addedSize),
+    'changed-partition-count': String(changedPartitions),
+    'total-records': String(prevTotals.records),
+    'total-files-size': String(prevTotals.size + addedSize),
+    'total-data-files': String(prevTotals.dataFiles),
+    'total-delete-files': String(prevTotals.deleteFiles + BigInt(deleteFiles.length)),
+    'total-position-deletes': String(prevTotals.posDeletes + addedPosDeletes),
+    'total-equality-deletes': String(prevTotals.eqDeletes),
+  }
+  return await buildSnapshotUpdate({
+    tableUrl, metadata, resolver,
+    snapshotId, sequenceNumber, manifestUuid, timestampMs, formatVersion,
+    newManifests,
+    summary,
+    writtenFiles: written.writtenFiles,
+  })
+}
+
+/**
+ * Write parquet position-delete files and their delete manifests for one
+ * snapshot. Deletes are grouped by their target file's historical
+ * `(spec-id, partition)`; one delete file is written per group and one delete
+ * manifest per partition spec touched.
+ *
+ * @param {object} options
+ * @param {string} options.tableUrl
+ * @param {TableMetadata} options.metadata
+ * @param {Schema} options.schema - Current schema.
+ * @param {{file_path: string, pos: bigint|number}[]} options.deletes
+ * @param {Map<string, { partition: Record<string, any>, partitionSpecId: number }>} options.partitionMap - Target data files by path.
+ * @param {Resolver} options.resolver
+ * @param {bigint} options.snapshotId
+ * @param {bigint} options.sequenceNumber
+ * @param {string} options.manifestUuid
+ * @param {CompressionCodec} [options.codec]
+ * @returns {Promise<{deleteFiles: DataFile[], newManifests: Manifest[], changedPartitions: number, writtenFiles: string[]}>}
+ */
+export async function writePositionDeletes({
+  tableUrl, metadata, schema, deletes, partitionMap, resolver, snapshotId, sequenceNumber, manifestUuid, codec,
+}) {
+  const writerFn = /** @type {NonNullable<Resolver['writer']>} */ (resolver.writer)
+  const formatVersion = /** @type {2|3} */ (metadata['format-version'])
+  // 1. Group deletes by the target file's historical (spec-id, partition).
   /** @type {Map<string, { specId: number, partition: Record<string, any>, deletes: typeof deletes }>} */
   const groups = new Map()
   for (const d of deletes) {
@@ -171,40 +235,12 @@ export async function icebergStagePositionDelete({ tableUrl, metadata, deletes, 
     manifestIndex++
   }
 
-  // 4. Build summary and assemble the StagedUpdate. Data totals carry forward;
-  //    delete totals bump.
-  const prevSummary = currentSnapshot(metadata)?.summary
-  const prevTotals = {
-    records: BigInt(prevSummary?.['total-records'] ?? '0'),
-    size: BigInt(prevSummary?.['total-files-size'] ?? '0'),
-    dataFiles: BigInt(prevSummary?.['total-data-files'] ?? '0'),
-    deleteFiles: BigInt(prevSummary?.['total-delete-files'] ?? '0'),
-    posDeletes: BigInt(prevSummary?.['total-position-deletes'] ?? '0'),
-    eqDeletes: BigInt(prevSummary?.['total-equality-deletes'] ?? '0'),
-  }
-  const addedSize = writtenDeleteFiles.reduce((sum, f) => sum + f.deleteFile.file_size_in_bytes, 0n)
-  const addedPosDeletes = writtenDeleteFiles.reduce((sum, f) => sum + f.deleteFile.record_count, 0n)
-  /** @type {Snapshot['summary']} */
-  const summary = {
-    operation: 'delete',
-    'added-delete-files': String(writtenDeleteFiles.length),
-    'added-position-deletes': String(addedPosDeletes),
-    'added-files-size': String(addedSize),
-    'changed-partition-count': String(groups.size),
-    'total-records': String(prevTotals.records),
-    'total-files-size': String(prevTotals.size + addedSize),
-    'total-data-files': String(prevTotals.dataFiles),
-    'total-delete-files': String(prevTotals.deleteFiles + BigInt(writtenDeleteFiles.length)),
-    'total-position-deletes': String(prevTotals.posDeletes + addedPosDeletes),
-    'total-equality-deletes': String(prevTotals.eqDeletes),
-  }
-  return await buildSnapshotUpdate({
-    tableUrl, metadata, resolver,
-    snapshotId, sequenceNumber, manifestUuid, timestampMs, formatVersion,
+  return {
+    deleteFiles: writtenDeleteFiles.map(f => f.deleteFile),
     newManifests,
-    summary,
+    changedPartitions: groups.size,
     writtenFiles: [...writtenDeleteFiles.map(f => f.path), ...writtenManifestPaths],
-  })
+  }
 }
 
 /**

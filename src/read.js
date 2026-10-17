@@ -152,6 +152,7 @@ export async function icebergRead({
  * @param {string[]} [options.wantedColumns] - iceberg field names to emit; if undefined, emit all current-schema fields
  * @param {number} [options.rowGroupConcurrency] - Number of retained parquet ranges to read concurrently while preserving yield order. Defaults to 1.
  * @param {ParquetQueryFilter} [options.filter] - Predicate keyed by iceberg field name. Column names are remapped to physical parquet names per-file; the filter is dropped for this file if any referenced column has no parquet column (e.g. iceberg-added column with a default value).
+ * @param {boolean} [options.positions] - Add each row's physical position in the file as `_pos`.
  * @param {AbortSignal} [options.signal]
  * @returns {AsyncGenerator<Array<Record<string, any>>>} batches of rows, one per retained parquet range
  */
@@ -168,6 +169,7 @@ export async function* readDataFile({
   wantedColumns,
   rowGroupConcurrency = 1,
   filter,
+  positions,
   signal,
 }) {
   const { data_file, sequence_number, partition_spec_id } = dataEntry
@@ -385,6 +387,7 @@ export async function* readDataFile({
         if (wantedSet && !wantedSet.has('_row_id')) delete mapped._row_id
         if (wantedSet && !wantedSet.has('_last_updated_sequence_number')) delete mapped._last_updated_sequence_number
       }
+      if (positions) mapped._pos = pos
       batch.push(mapped)
     }
     return batch

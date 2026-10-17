@@ -177,24 +177,7 @@ export async function stageSnapshotForAppend({ tableUrl, metadata, prepared, res
   if (!resolver?.writer) throw new Error('resolver.writer is required')
   const sequenceNumber = BigInt(metadata['last-sequence-number'] ?? 0) + 1n
   const timestampMs = Date.now()
-
-  /** @type {Manifest} */
-  const newManifest = {
-    manifest_path: prepared.manifestPath,
-    manifest_length: prepared.manifestLength,
-    partition_spec_id: prepared.partitionSpecId,
-    content: 0,
-    sequence_number: sequenceNumber,
-    min_sequence_number: sequenceNumber,
-    added_snapshot_id: prepared.snapshotId,
-    added_files_count: prepared.addedDataFilesCount,
-    existing_files_count: 0,
-    deleted_files_count: 0,
-    added_rows_count: prepared.addedRowCount,
-    existing_rows_count: 0n,
-    deleted_rows_count: 0n,
-    partitions: prepared.partitions,
-  }
+  const newManifest = preparedManifest(prepared, sequenceNumber)
 
   const prevSummary = currentSnapshot(metadata)?.summary
   const prevTotals = {
@@ -232,6 +215,32 @@ export async function stageSnapshotForAppend({ tableUrl, metadata, prepared, res
     // manifest list (added inside buildSnapshotUpdate) is added here.
     writtenFiles: [],
   })
+}
+
+/**
+ * Manifest list record for a prepared append's data manifest.
+ *
+ * @param {PreparedAppend} prepared
+ * @param {bigint} sequenceNumber
+ * @returns {Manifest}
+ */
+export function preparedManifest(prepared, sequenceNumber) {
+  return {
+    manifest_path: prepared.manifestPath,
+    manifest_length: prepared.manifestLength,
+    partition_spec_id: prepared.partitionSpecId,
+    content: 0,
+    sequence_number: sequenceNumber,
+    min_sequence_number: sequenceNumber,
+    added_snapshot_id: prepared.snapshotId,
+    added_files_count: prepared.addedDataFilesCount,
+    existing_files_count: 0,
+    deleted_files_count: 0,
+    added_rows_count: prepared.addedRowCount,
+    existing_rows_count: 0n,
+    deleted_rows_count: 0n,
+    partitions: prepared.partitions,
+  }
 }
 
 /**

@@ -200,6 +200,7 @@ import {
   icebergRewriteManifests,
   icebergSetRef,
   icebergUpdateSchema,
+  icebergUpsert,
 } from 'icebird'
 
 // `urlResolver()` ships with a `writer` (HTTP PUT) and `deleter` (HTTP DELETE);
@@ -225,6 +226,10 @@ await icebergDelete({
   catalog, tableUrl,
   deletes: [{ file_path: 's3://.../data/abc.parquet', pos: 0 }],
 })
+
+// upsert — replaces rows whose join columns match, inserts the rest (v2 tables);
+// joinCols defaults to the schema's identifier fields
+await icebergUpsert({ catalog, tableUrl, records: [{ id: 1n, name: 'bob' }], joinCols: ['id'] })
 
 // snapshot management
 await icebergSetRef({ catalog, tableUrl, ref: 'main', snapshotId })
@@ -256,6 +261,8 @@ await icebergRewrite({ catalog, tableUrl, targetFileRows: 1_000_000, partitionSp
 ```
 
 A rewrite is not retried on a concurrent commit (it would risk dropping rows another writer appended meanwhile); on conflict it throws and should be re-run against fresh metadata.
+
+Like a rewrite, an upsert is not retried: its deletes are bound to the snapshot it scanned, so on conflict it throws and should be re-run. Staged files are kept after a failed commit, since the commit may have succeeded. Join columns must be top-level `int`, `long`, or `string` fields.
 
 ### Manifest maintenance
 
