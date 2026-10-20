@@ -1,5 +1,8 @@
 # Icebird Changelog
 
+## [0.9.2]
+ - New `icebergUpsert` replaces rows matching on join columns and inserts the rest, committed as a single overwrite snapshot
+
 ## [0.9.1]
  - Internal changes only
 
