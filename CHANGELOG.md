@@ -3,6 +3,7 @@
 ## [Unreleased]
  - `icebergUpsert` and `icebergStageUpsert` accept `matchCols` and a MERGE-style `whenMatched` condition that can skip a matched record, evaluated against the snapshot the commit asserts
  - An upsert whose `whenMatched` skips every record creates no snapshot: `icebergUpsert` returns the loaded metadata unchanged and `icebergStageUpsert` returns `undefined`
+ - Upserts read `matchCols` only for row groups that hold a matching key
  - `icebergUpsert` and `icebergStageUpsert` accept `concurrency` to limit how many candidate data files are read at once
 
 ## [0.9.2]

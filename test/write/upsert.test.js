@@ -1,3 +1,4 @@
+import { parquetMetadata } from 'hyparquet'
 import { describe, expect, it, vi } from 'vitest'
 import { fileCatalog } from '../../src/catalog/file.js'
 import { icebergManifests } from '../../src/manifest.js'
@@ -586,5 +587,126 @@ describe('icebergUpsert whenMatched', () => {
       await expect(icebergUpsert({ catalog, tableUrl, records: [{ id: 1n, name: 'b' }], ...options })).rejects.toThrow(error)
     }
     expect(new Set(files.keys())).toEqual(before)
+  })
+
+  it('reads matchCols only for row groups that hold a matching key', async () => {
+    const tableUrl = 'http://test/upsert-when-matched-late'
+    const { resolver, files } = memResolver()
+    /** @type {Map<string, [number, number][]>} */
+    const slices = new Map()
+    const catalog = fileCatalog({
+      resolver: {
+        ...resolver,
+        reader(path, byteLength) {
+          const file = resolver.reader(path, byteLength)
+          if (file instanceof Promise) throw new Error('expected a sync reader')
+          return {
+            byteLength: file.byteLength,
+            slice(start, end) {
+              slices.get(path)?.push([start, end ?? file.byteLength])
+              return file.slice(start, end)
+            },
+          }
+        },
+      },
+    })
+    /** @type {Schema} */
+    const versioned = {
+      type: 'struct',
+      'schema-id': 0,
+      'identifier-field-ids': [],
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        { id: 2, name: 'version', required: false, type: 'long' },
+      ],
+    }
+    /**
+     * Incompressible, so the files outgrow whole-file caching (512 KB).
+     *
+     * @param {number} i
+     * @returns {bigint}
+     */
+    function version(i) {
+      return BigInt(Math.imul(i + 1, 2654435761) >>> 1) << 32n | BigInt(Math.imul(i + 7, 40503) >>> 0)
+    }
+    await icebergCreateTable({ catalog, tableUrl, schema: versioned })
+    // The writer's first row group holds 1000 rows, the second the rest. Ids
+    // are permuted so neither row group can be pruned by its bounds.
+    await icebergAppend({
+      catalog, tableUrl, records: Array.from({ length: 60000 }, (_, i) => ({ id: BigInt(i * 7919 % 60000), version: version(i) })),
+    })
+    // Candidate by bounds for id 100001, but no row matches it.
+    await icebergAppend({
+      catalog, tableUrl, records: Array.from({ length: 50000 }, (_, i) => ({ id: BigInt(100000 + 2 * i), version: version(i) })),
+    })
+    const metadata = await icebergAppend({ catalog, tableUrl, records: [{ id: 23757n, version: 99n }] })
+    const dataFiles = (await icebergManifests({ metadata, resolver })).flatMap(m => m.entries.map(e => e.data_file))
+    const [large, noMatch] = [60000n, 50000n].map(count => {
+      const file = dataFiles.find(f => f.record_count === count)
+      if (!file) throw new Error('data file not found')
+      return file.file_path
+    })
+    for (const path of [large, noMatch]) {
+      expect(files.get(path)?.byteLength).toBeGreaterThan(512 * 1024)
+      slices.set(path, [])
+    }
+
+    /**
+     * @param {string} path
+     * @returns {[number, number][]} byte range of the `version` column chunk in each row group
+     */
+    function versionChunks(path) {
+      const bytes = files.get(path)
+      if (!bytes) throw new Error(`no such file: ${path}`)
+      const buffer = /** @type {ArrayBuffer} */ (bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength))
+      return parquetMetadata(buffer).row_groups.map(rg => {
+        const meta = rg.columns.find(c => c.meta_data?.path_in_schema[0] === 'version')?.meta_data
+        if (!meta) throw new Error('version column not found')
+        const start = Number(meta.dictionary_page_offset ?? meta.data_page_offset)
+        return [start, start + Number(meta.total_compressed_size)]
+      })
+    }
+    /**
+     * Range reads beyond the footer prefetch, which ends at the end of the file.
+     *
+     * @param {string} path
+     * @returns {[number, number][]}
+     */
+    function rangeReads(path) {
+      const size = files.get(path)?.byteLength
+      return (slices.get(path) ?? []).filter(([, end]) => end !== size)
+    }
+    /**
+     * @param {string} path
+     * @param {[number, number]} chunk
+     * @returns {boolean}
+     */
+    function chunkRead(path, [start, end]) {
+      return rangeReads(path).some(([s, e]) => s < end && e > start)
+    }
+    const largeChunks = versionChunks(large)
+    expect(largeChunks.length).toBe(2)
+
+    /** @type {any[]} */
+    const calls = []
+    await icebergUpsert({
+      catalog, tableUrl, joinCols: ['id'], matchCols: ['version'],
+      records: [{ id: 23757n, version: 50n }, { id: 100001n, version: 1n }, { id: 200000n, version: 1n }],
+      whenMatched(existingRows, incoming) {
+        calls.push([existingRows, incoming])
+        return false
+      },
+    })
+    // Same rows as a full read of the table.
+    const expected = (await icebergRead({ tableUrl, metadata, resolver })).filter(row => row.id === 23757n)
+    expect(expected).toHaveLength(2)
+    expect(calls).toEqual([[expect.arrayContaining(expected), { id: 23757n, version: 50n }]])
+    expect(calls[0][0]).toHaveLength(2)
+    // The version column is read for the row group holding the match (row 3) only.
+    expect(chunkRead(large, largeChunks[0])).toBe(true)
+    expect(chunkRead(large, largeChunks[1])).toBe(false)
+    // The file without a match reads its join column but no version bytes.
+    expect(rangeReads(noMatch).length).toBeGreaterThan(0)
+    expect(versionChunks(noMatch).some(chunk => chunkRead(noMatch, chunk))).toBe(false)
   })
 })

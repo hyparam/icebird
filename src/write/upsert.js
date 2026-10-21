@@ -1,6 +1,7 @@
+import { cachedAsyncBuffer } from 'hyparquet'
 import { concat } from 'hyparquet/src/utils.js'
 import { deleteFileAppliesToDataEntry } from '../delete.js'
-import { fetchDeleteMaps } from '../fetch.js'
+import { fetchDeleteMaps, readParquetMetadata } from '../fetch.js'
 import { icebergManifests, splitManifestEntries } from '../manifest.js'
 import { fileMightMatch, partitionMightMatch } from '../prune.js'
 import { readDataFile } from '../read.js'
@@ -236,7 +237,8 @@ function encodeKey(values) {
  * candidate files the same way `icebergRead` does (applicable deletes, field
  * id projection, partition values and defaults for columns not in the file).
  * With `matchFields`, each match also carries the row's join and match
- * columns.
+ * columns. Match columns are read in a second pass, only for the row groups
+ * of a file that hold a match.
  *
  * @param {object} options
  * @param {TableMetadata} options.metadata
@@ -266,28 +268,58 @@ async function findMatchingRows({ metadata, resolver, schema, keyFields, matchFi
   const applicable = deleteEntries.filter(deleteEntry => candidates.some(entry => deleteFileAppliesToDataEntry(
     entry, deleteEntry, metadata, deleteEntry.data_file.content === 2 ? 'equality' : 'position')))
   const { positionDeletesMap, equalityDeleteGroups } = await fetchDeleteMaps(applicable, resolver)
-  const rowFields = matchFields && [...new Set([...keyFields, ...matchFields])]
-  const wantedColumns = (rowFields ?? keyFields).map(f => f.name)
+  const keyColumns = keyFields.map(f => f.name)
+  const lateFields = matchFields?.filter(f => !keyFields.includes(f)) ?? []
 
   const perFile = await mapConcurrent(candidates, concurrency, async entry => {
+    const { file_path, file_size_in_bytes, record_count } = entry.data_file
+    // Share one cached buffer between both passes so the footer is fetched once.
+    const file = lateFields.length ? cachedAsyncBuffer(await resolver.reader(file_path, Number(file_size_in_bytes))) : undefined
+    /**
+     * @param {number} fileRowStart
+     * @param {number} fileRowEnd
+     * @param {string[]} wantedColumns
+     * @returns {AsyncGenerator<Record<string, any>[]>}
+     */
+    function read(fileRowStart, fileRowEnd, wantedColumns) {
+      return readDataFile({
+        dataEntry: entry,
+        fileRowStart,
+        fileRowEnd,
+        schema, metadata,
+        resolver: file ? { ...resolver, reader: () => file } : resolver,
+        rowLineage: false,
+        positionDeletesMap, equalityDeleteGroups, wantedColumns, filter,
+        positions: true,
+      })
+    }
+
     /** @type {{key: string, match: MatchedRow}[]} */
     const found = []
-    for await (const rows of readDataFile({
-      dataEntry: entry,
-      fileRowStart: 0,
-      fileRowEnd: Number(entry.data_file.record_count),
-      schema, metadata, resolver,
-      rowLineage: false,
-      positionDeletesMap, equalityDeleteGroups, wantedColumns, filter,
-      positions: true,
-    })) {
+    for await (const rows of read(0, Number(record_count), keyColumns)) {
       for (const row of rows) {
-        const key = encodeKey(keyFields.map(f => promoteLong(row[f.name], f)))
+        const values = keyFields.map(f => promoteLong(row[f.name], f))
+        const key = encodeKey(values)
         if (!keys.has(key)) continue
         /** @type {Record<string, any>} */
-        const values = {}
-        for (const field of rowFields ?? []) values[field.name] = promoteLong(row[field.name], field)
-        found.push({ key, match: { file_path: entry.data_file.file_path, pos: row._pos, row: values } })
+        const matched = {}
+        if (matchFields) {
+          for (let i = 0; i < keyFields.length; i++) matched[keyFields[i].name] = values[i]
+        }
+        found.push({ key, match: { file_path, pos: row._pos, row: matched } })
+      }
+    }
+    if (!file || !found.length) return found
+
+    const byPos = new Map(found.map(({ match }) => [match.pos, match.row]))
+    const { row_groups } = await readParquetMetadata(file)
+    for (const [start, end] of rowGroupRanges(row_groups, found.map(({ match }) => Number(match.pos)))) {
+      // Join columns are read for the filter anyway, and keep the projection non-empty.
+      for await (const rows of read(start, end, [...keyColumns, ...lateFields.map(f => f.name)])) {
+        for (const row of rows) {
+          const matched = byPos.get(row._pos)
+          if (matched) for (const field of lateFields) matched[field.name] = promoteLong(row[field.name], field)
+        }
       }
     }
     return found
@@ -300,6 +332,30 @@ async function findMatchingRows({ metadata, resolver, schema, keyFields, matchFi
     }
   }
   return { matches, candidates }
+}
+
+/**
+ * Group ascending row positions into one `[start, end)` range per row group.
+ *
+ * @param {{num_rows: bigint}[]} rowGroups
+ * @param {number[]} positions
+ * @returns {[number, number][]}
+ */
+function rowGroupRanges(rowGroups, positions) {
+  /** @type {[number, number][]} */
+  const ranges = []
+  let groupStart = 0
+  let i = 0
+  for (const { num_rows } of rowGroups) {
+    const groupEnd = groupStart + Number(num_rows)
+    if (i < positions.length && positions[i] < groupEnd) {
+      const start = positions[i]
+      while (i < positions.length && positions[i] < groupEnd) i++
+      ranges.push([start, positions[i - 1] + 1])
+    }
+    groupStart = groupEnd
+  }
+  return ranges
 }
 
 /**
