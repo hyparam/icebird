@@ -232,6 +232,90 @@ describe('icebergUpsert', () => {
     expect([...files.keys()].filter(path => !appended.has(path) && path.includes('-deletes'))).toEqual([])
   })
 
+  it('gives the same result at any concurrency, with at most that many candidate reads in flight', async () => {
+    /**
+     * @param {number | undefined} concurrency
+     * @returns {Promise<{calls: any[], maxInFlight: number, summary: Record<string, any>, rows: Record<string, any>[]}>}
+     */
+    async function run(concurrency) {
+      const tableUrl = 'http://test/upsert-concurrency'
+      const { resolver } = memResolver()
+      // Candidate data files with a range read in flight.
+      /** @type {Map<string, number>} */
+      const inFlight = new Map()
+      let maxInFlight = 0
+      /**
+       * @param {string} path
+       * @param {() => ArrayBuffer | Promise<ArrayBuffer>} fn
+       * @returns {Promise<ArrayBuffer>}
+       */
+      async function track(path, fn) {
+        inFlight.set(path, (inFlight.get(path) ?? 0) + 1)
+        maxInFlight = Math.max(maxInFlight, inFlight.size)
+        await new Promise(resolve => setTimeout(resolve, 1))
+        const bytes = await fn()
+        const count = (inFlight.get(path) ?? 1) - 1
+        if (count) inFlight.set(path, count)
+        else inFlight.delete(path)
+        return bytes
+      }
+      /** @type {Resolver} */
+      const instrumented = {
+        ...resolver,
+        async reader(path, byteLength) {
+          const file = await resolver.reader(path, byteLength)
+          if (!path.includes('/data/') || path.includes('-deletes')) return file
+          return { byteLength: file.byteLength, slice: (start, end) => track(path, () => file.slice(start, end)) }
+        },
+      }
+      const catalog = fileCatalog({ resolver: instrumented })
+      await icebergCreateTable({ catalog, tableUrl, schema: { ...schema, 'identifier-field-ids': [] } })
+      await icebergAppend({ catalog, tableUrl, records: [{ id: 1n, name: 'a' }, { id: 2n, name: 'a' }] })
+      await icebergAppend({ catalog, tableUrl, records: [{ id: 1n, name: 'b' }, { id: 3n, name: 'b' }] })
+      await icebergAppend({ catalog, tableUrl, records: [{ id: 2n, name: 'c' }, { id: 3n, name: 'c' }] })
+      maxInFlight = 0
+
+      /** @type {any[]} */
+      const calls = []
+      const metadata = await icebergUpsert({
+        catalog, tableUrl, joinCols: ['id'], matchCols: ['name'], concurrency,
+        records: [{ id: 1n, name: 'x' }, { id: 2n, name: 'x' }, { id: 3n, name: 'x' }, { id: 4n, name: 'x' }],
+        whenMatched(existingRows, incoming) {
+          calls.push([existingRows, incoming])
+          return incoming.id !== 3n
+        },
+      })
+      // File sizes vary with the random file names stored in delete files.
+      const summary = { ...metadata.snapshots?.at(-1)?.summary }
+      delete summary['added-files-size']
+      delete summary['total-files-size']
+      return {
+        calls,
+        maxInFlight,
+        summary,
+        rows: byId(await icebergRead({ tableUrl, metadata, resolver })),
+      }
+    }
+
+    const sequential = await run(1)
+    const unlimited = await run(undefined)
+    expect(sequential.maxInFlight).toBe(1)
+    expect(unlimited.maxInFlight).toBeGreaterThan(1)
+    expect(sequential.calls).toEqual(unlimited.calls)
+    expect(sequential.summary).toEqual(unlimited.summary)
+    expect(sequential.rows).toEqual(unlimited.rows)
+    expect(sequential.rows.map(r => `${r.id}${r.name}`)).toEqual(['1x', '2x', '3b', '3c', '4x'])
+
+    const { resolver } = memResolver()
+    const catalog = fileCatalog({ resolver })
+    const tableUrl = 'http://test/upsert-concurrency-invalid'
+    await icebergCreateTable({ catalog, tableUrl, schema })
+    for (const concurrency of [0, -1, 1.5, Infinity, NaN, '2']) {
+      await expect(icebergUpsert({ catalog, tableUrl, records: [{ id: 1n }], concurrency: /** @type {any} */ (concurrency) }))
+        .rejects.toThrow(/concurrency must be a positive integer/)
+    }
+  })
+
   it('throws on a concurrent commit rather than duplicating rows', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
     const tableUrl = 'http://test/upsert-conflict'

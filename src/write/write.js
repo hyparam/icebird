@@ -192,9 +192,10 @@ class NothingToRewriteError extends Error {}
  * @param {string[]} [options.joinCols] - Defaults to the schema's identifier fields.
  * @param {string[]} [options.matchCols] - Extra columns read for matched rows and passed to `whenMatched`.
  * @param {UpsertWhenMatched} [options.whenMatched] - Return false to skip a matched record.
+ * @param {number} [options.concurrency] - Candidate data files read at once; defaults to all.
  * @returns {Promise<TableMetadata>}
  */
-export async function icebergUpsert({ catalog, namespace, table, tableUrl, resolver, records, joinCols, matchCols, whenMatched }) {
+export async function icebergUpsert({ catalog, namespace, table, tableUrl, resolver, records, joinCols, matchCols, whenMatched, concurrency }) {
   const ctx = await loadTable({ catalog, namespace, table, tableUrl, resolver })
   const staged = await icebergStageUpsert({
     tableUrl: ctx.tableUrl,
@@ -203,6 +204,7 @@ export async function icebergUpsert({ catalog, namespace, table, tableUrl, resol
     joinCols,
     matchCols,
     whenMatched,
+    concurrency,
     resolver: requireResolver(ctx.resolver, 'icebergUpsert'),
   })
   if (!staged) return ctx.metadata

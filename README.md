@@ -281,6 +281,8 @@ Like a rewrite, an upsert is not retried: its deletes are bound to the snapshot 
 
 The condition is evaluated in the upsert's own scan, against the snapshot the commit asserts, so a concurrent writer causes a commit conflict rather than a decision on stale rows. `icebergUpsert` still returns the table metadata, so collect skipped records inside `whenMatched`, as above. If every record is skipped, nothing is written or committed, no snapshot is created, and the loaded metadata is returned unchanged.
 
+An upsert reads all candidate data files at once by default. Pass `concurrency` (a positive integer; `1` reads them one after another) to bound memory and in-flight requests, for example on Lambda, edge runtimes, or in browsers. The result does not depend on it.
+
 ### Manifest maintenance
 
 Every commit writes new manifests. Like Java's default `MergeAppend`, commits also merge small manifests so the manifest list stays bounded. Merging is on by default and follows the standard table properties:

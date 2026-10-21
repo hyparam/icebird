@@ -48,10 +48,11 @@ import { partitionTupleKey, writePositionDeletes } from './stage-position-delete
  * @param {string[]} [options.joinCols] - Defaults to the schema's identifier fields.
  * @param {string[]} [options.matchCols] - Extra columns read for matched rows and passed to `whenMatched`.
  * @param {UpsertWhenMatched} [options.whenMatched] - Return false to skip a matched record.
+ * @param {number} [options.concurrency] - Candidate data files read at once; defaults to all.
  * @param {Resolver} options.resolver - Resolver with a writer method.
  * @returns {Promise<StagedUpdate | undefined>}
  */
-export async function icebergStageUpsert({ tableUrl, metadata, records, joinCols, matchCols, whenMatched, resolver }) {
+export async function icebergStageUpsert({ tableUrl, metadata, records, joinCols, matchCols, whenMatched, concurrency, resolver }) {
   if (metadata['format-version'] !== 2) {
     throw new Error(`upsert supports format-version 2 only, got ${metadata['format-version']}`)
   }
@@ -60,6 +61,9 @@ export async function icebergStageUpsert({ tableUrl, metadata, records, joinCols
   const keyFields = resolveJoinFields(schema, joinCols)
   const matchFields = resolveMatchFields(schema, matchCols)
   if (whenMatched !== undefined && typeof whenMatched !== 'function') throw new Error('whenMatched must be a function')
+  if (concurrency !== undefined && !(Number.isInteger(concurrency) && concurrency >= 1)) {
+    throw new Error('concurrency must be a positive integer')
+  }
   /** @type {string[]} */
   const recordKeys = []
   /** @type {Set<string>} */
@@ -79,7 +83,7 @@ export async function icebergStageUpsert({ tableUrl, metadata, records, joinCols
   }
 
   const { matches, candidates } = await findMatchingRows({
-    metadata, resolver, schema, keyFields, records, keys,
+    metadata, resolver, schema, keyFields, records, keys, concurrency,
     // Without a condition, matched rows only need their positions.
     matchFields: whenMatched ? matchFields : undefined,
   })
@@ -242,9 +246,10 @@ function encodeKey(values) {
  * @param {Field[]} [options.matchFields] - Extra columns to return for each matched row.
  * @param {Record<string, any>[]} options.records
  * @param {Set<string>} options.keys
+ * @param {number} [options.concurrency]
  * @returns {Promise<{matches: Map<string, MatchedRow[]>, candidates: ManifestEntry[]}>}
  */
-async function findMatchingRows({ metadata, resolver, schema, keyFields, matchFields, records, keys }) {
+async function findMatchingRows({ metadata, resolver, schema, keyFields, matchFields, records, keys, concurrency }) {
   /** @type {Map<string, MatchedRow[]>} */
   const matches = new Map()
   if (currentSnapshot(metadata) === undefined || !records.length) return { matches, candidates: [] }
@@ -264,7 +269,7 @@ async function findMatchingRows({ metadata, resolver, schema, keyFields, matchFi
   const rowFields = matchFields && [...new Set([...keyFields, ...matchFields])]
   const wantedColumns = (rowFields ?? keyFields).map(f => f.name)
 
-  const perFile = await Promise.all(candidates.map(async entry => {
+  const perFile = await mapConcurrent(candidates, concurrency, async entry => {
     /** @type {{key: string, match: MatchedRow}[]} */
     const found = []
     for await (const rows of readDataFile({
@@ -286,7 +291,7 @@ async function findMatchingRows({ metadata, resolver, schema, keyFields, matchFi
       }
     }
     return found
-  }))
+  })
   for (const found of perFile) {
     for (const { key, match } of found) {
       const list = matches.get(key)
@@ -306,4 +311,29 @@ async function findMatchingRows({ metadata, resolver, schema, keyFields, matchFi
  */
 function promoteLong(value, field) {
   return field.type === 'long' && typeof value === 'number' ? BigInt(value) : value
+}
+
+/**
+ * Like `Promise.all(items.map(fn))`, with at most `concurrency` calls in
+ * flight. Results keep the input order.
+ *
+ * @template T, R
+ * @param {T[]} items
+ * @param {number | undefined} concurrency - Defaults to all at once.
+ * @param {(item: T) => Promise<R>} fn
+ * @returns {Promise<R[]>}
+ */
+async function mapConcurrent(items, concurrency, fn) {
+  if (concurrency === undefined || concurrency >= items.length) return await Promise.all(items.map(fn))
+  /** @type {R[]} */
+  const results = new Array(items.length)
+  let next = 0
+  async function worker() {
+    while (next < items.length) {
+      const i = next++
+      results[i] = await fn(items[i])
+    }
+  }
+  await Promise.all(Array.from({ length: concurrency }, worker))
+  return results
 }
