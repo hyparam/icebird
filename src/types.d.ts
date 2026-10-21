@@ -347,6 +347,15 @@ export interface StagedUpdate extends StagedCommit {
 }
 
 /**
+ * MERGE-style condition for an upsert's matched rows. Called once per
+ * incoming record whose join key matches at least one live row, with every
+ * such row (join columns plus `matchCols`). Return `true` to replace them,
+ * or `false` to skip the record: it is not appended and its matched rows are
+ * not deleted.
+ */
+export type UpsertWhenMatched = (existingRows: Record<string, any>[], incoming: Record<string, any>) => boolean
+
+/**
  * Output of `prepareAppend`. Captures everything that does NOT depend on the
  * eventually-committed snapshot's sequence number or parent: the data files,
  * the manifest, and the assigned snapshot id. `stageSnapshotForAppend` consumes

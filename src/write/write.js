@@ -11,7 +11,7 @@ import { prepareRewriteManifests, stageSnapshotForRewriteManifests } from './rew
 import { icebergStageUpsert } from './upsert.js'
 
 /**
- * @import {Catalog, IcebergTransaction, Lister, PartitionSpec, Resolver, Schema, Snapshot, SortOrder, StagedCommit, StagedUpdate, TableMetadata, TableRequirement, TableUpdate} from '../../src/types.js'
+ * @import {Catalog, IcebergTransaction, Lister, PartitionSpec, Resolver, Schema, Snapshot, SortOrder, StagedCommit, StagedUpdate, TableMetadata, TableRequirement, TableUpdate, UpsertWhenMatched} from '../../src/types.js'
  */
 
 const DEFAULT_RETRY = Object.freeze({
@@ -167,8 +167,15 @@ class NothingToRewriteError extends Error {}
  * Upsert rows by key in one call: replace every live row whose `joinCols`
  * values match an incoming record and insert the rest, committed as one
  * `overwrite` snapshot holding the position deletes and the new data.
- * Incoming records always win. See {@link icebergStageUpsert} for the supported tables and
- * join columns.
+ * See {@link icebergStageUpsert} for the supported tables and join columns.
+ *
+ * Incoming records win unless `whenMatched` says otherwise: it sees every live
+ * row matching a record's key (join columns plus `matchCols`) and returns
+ * `false` to skip that record, leaving its rows untouched. The decision is
+ * made against the snapshot the commit asserts. Collect skipped records in
+ * `whenMatched` itself. When every record is skipped, nothing is written or
+ * committed, no snapshot is created, and the loaded metadata is returned
+ * unchanged.
  *
  * Like {@link icebergRewrite}, an upsert is NOT retried: its deletes are bound
  * to the snapshot it scanned. On conflict the commit error surfaces and the
@@ -183,17 +190,24 @@ class NothingToRewriteError extends Error {}
  * @param {Resolver} [options.resolver]
  * @param {Record<string, any>[]} options.records
  * @param {string[]} [options.joinCols] - Defaults to the schema's identifier fields.
+ * @param {string[]} [options.matchCols] - Extra columns read for matched rows and passed to `whenMatched`.
+ * @param {UpsertWhenMatched} [options.whenMatched] - Return false to skip a matched record.
+ * @param {number} [options.concurrency] - Candidate data files read at once; defaults to all.
  * @returns {Promise<TableMetadata>}
  */
-export async function icebergUpsert({ catalog, namespace, table, tableUrl, resolver, records, joinCols }) {
+export async function icebergUpsert({ catalog, namespace, table, tableUrl, resolver, records, joinCols, matchCols, whenMatched, concurrency }) {
   const ctx = await loadTable({ catalog, namespace, table, tableUrl, resolver })
   const staged = await icebergStageUpsert({
     tableUrl: ctx.tableUrl,
     metadata: ctx.metadata,
     records,
     joinCols,
+    matchCols,
+    whenMatched,
+    concurrency,
     resolver: requireResolver(ctx.resolver, 'icebergUpsert'),
   })
+  if (!staged) return ctx.metadata
   // Single commit attempt: see the doc comment on why an upsert must not retry.
   return await commitStaged(catalog, { namespace, table }, ctx, staged)
 }

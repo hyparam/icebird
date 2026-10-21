@@ -1,6 +1,7 @@
+import { cachedAsyncBuffer } from 'hyparquet'
 import { concat } from 'hyparquet/src/utils.js'
 import { deleteFileAppliesToDataEntry } from '../delete.js'
-import { fetchDeleteMaps } from '../fetch.js'
+import { fetchDeleteMaps, readParquetMetadata } from '../fetch.js'
 import { icebergManifests, splitManifestEntries } from '../manifest.js'
 import { fileMightMatch, partitionMightMatch } from '../prune.js'
 import { readDataFile } from '../read.js'
@@ -10,7 +11,7 @@ import { prepareAppend, preparedManifest, resolveParquetCodec } from './stage.js
 import { partitionTupleKey, writePositionDeletes } from './stage-position-delete.js'
 
 /**
- * @import {DataFile, Field, ManifestEntry, Resolver, Schema, Snapshot, StagedUpdate, TableMetadata} from '../../src/types.js'
+ * @import {DataFile, Field, ManifestEntry, Resolver, Schema, Snapshot, StagedUpdate, TableMetadata, UpsertWhenMatched} from '../../src/types.js'
  */
 
 /**
@@ -26,21 +27,46 @@ import { partitionTupleKey, writePositionDeletes } from './stage-position-delete
  * fields; every record needs a non-null value for each, and no two records
  * may share a key.
  *
+ * `whenMatched` makes the replacement conditional, like SQL
+ * `MERGE ... WHEN MATCHED AND <cond> THEN UPDATE`. It is called once per
+ * record whose key matches live rows, with all of them (join columns plus
+ * `matchCols`, read like `icebergRead` reads them, with `long` columns as
+ * bigint) and the record. Returning `false` skips the record: it is not
+ * appended and its matched rows are not deleted. Unmatched records are always
+ * inserted. The decision is made in the same scan, against the snapshot the
+ * commit asserts, so a concurrent writer causes a commit conflict rather than
+ * a stale decision. `matchCols` must be top-level primitive fields of the
+ * current schema (not struct, list, map, or variant).
+ *
+ * When `whenMatched` skips every record, nothing is written and the result is
+ * `undefined` rather than a `StagedUpdate`: there is no snapshot to commit.
+ * Skipped records are not listed on the result; collect them in `whenMatched`.
+ *
  * @param {object} options
  * @param {string} options.tableUrl
  * @param {TableMetadata} options.metadata
  * @param {Record<string, any>[]} options.records
  * @param {string[]} [options.joinCols] - Defaults to the schema's identifier fields.
+ * @param {string[]} [options.matchCols] - Extra columns read for matched rows and passed to `whenMatched`.
+ * @param {UpsertWhenMatched} [options.whenMatched] - Return false to skip a matched record.
+ * @param {number} [options.concurrency] - Candidate data files read at once; defaults to all.
  * @param {Resolver} options.resolver - Resolver with a writer method.
- * @returns {Promise<StagedUpdate>}
+ * @returns {Promise<StagedUpdate | undefined>}
  */
-export async function icebergStageUpsert({ tableUrl, metadata, records, joinCols, resolver }) {
+export async function icebergStageUpsert({ tableUrl, metadata, records, joinCols, matchCols, whenMatched, concurrency, resolver }) {
   if (metadata['format-version'] !== 2) {
     throw new Error(`upsert supports format-version 2 only, got ${metadata['format-version']}`)
   }
   const schema = metadata.schemas.find(s => s['schema-id'] === metadata['current-schema-id'])
   if (!schema) throw new Error('current schema not found in metadata')
   const keyFields = resolveJoinFields(schema, joinCols)
+  const matchFields = resolveMatchFields(schema, matchCols)
+  if (whenMatched !== undefined && typeof whenMatched !== 'function') throw new Error('whenMatched must be a function')
+  if (concurrency !== undefined && !(Number.isInteger(concurrency) && concurrency >= 1)) {
+    throw new Error('concurrency must be a positive integer')
+  }
+  /** @type {string[]} */
+  const recordKeys = []
   /** @type {Set<string>} */
   const keys = new Set()
   for (const record of records) {
@@ -54,11 +80,32 @@ export async function icebergStageUpsert({ tableUrl, metadata, records, joinCols
     const key = encodeKey(keyFields.map(f => record[f.name]))
     if (keys.has(key)) throw new Error(`duplicate join key in records: ${key}`)
     keys.add(key)
+    recordKeys.push(key)
   }
 
-  const { deletes, candidates } = await findMatchingRows({ metadata, resolver, schema, keyFields, records, keys })
+  const { matches, candidates } = await findMatchingRows({
+    metadata, resolver, schema, keyFields, records, keys, concurrency,
+    // Without a condition, matched rows only need their positions.
+    matchFields: whenMatched ? matchFields : undefined,
+  })
+  /** @type {{file_path: string, pos: bigint}[]} */
+  const deletes = []
+  /** @type {Record<string, any>[]} */
+  const accepted = []
+  for (let i = 0; i < records.length; i++) {
+    const matched = matches.get(recordKeys[i])
+    if (matched && whenMatched) {
+      const replace = whenMatched(matched.map(m => m.row), records[i])
+      if (typeof replace !== 'boolean') throw new Error(`whenMatched must return a boolean, got ${typeof replace}`)
+      if (!replace) continue
+    }
+    if (matched) concat(deletes, matched)
+    accepted.push(records[i])
+  }
+  if (records.length && !accepted.length) return undefined
+
   // Write the data first: a record the writer rejects leaves no delete files.
-  const prepared = await prepareAppend({ tableUrl, metadata, records, resolver })
+  const prepared = await prepareAppend({ tableUrl, metadata, records: accepted, resolver })
   const sequenceNumber = BigInt(metadata['last-sequence-number'] ?? 0) + 1n
   const newManifests = [preparedManifest(prepared, sequenceNumber)]
   const writtenFiles = [...prepared.writtenFiles]
@@ -145,6 +192,24 @@ function resolveJoinFields(schema, joinCols) {
 }
 
 /**
+ * @param {Schema} schema
+ * @param {string[] | undefined} matchCols
+ * @returns {Field[]}
+ */
+function resolveMatchFields(schema, matchCols) {
+  if (matchCols === undefined) return []
+  if (!Array.isArray(matchCols)) throw new Error('matchCols must be an array of column names')
+  return matchCols.map(name => {
+    const field = schema.fields.find(f => f.name === name)
+    if (!field) throw new Error(`match column not found in current schema: ${name}`)
+    if (typeof field.type !== 'string' || field.type === 'variant') {
+      throw new Error(`unsupported match column type for ${name}: ${JSON.stringify(field.type)}`)
+    }
+    return field
+  })
+}
+
+/**
  * @param {any} value
  * @param {Field['type']} type
  * @returns {boolean}
@@ -164,21 +229,32 @@ function encodeKey(values) {
 }
 
 /**
+ * @typedef {{file_path: string, pos: bigint, row: Record<string, any>}} MatchedRow
+ */
+
+/**
  * Find the physical positions of live rows matching an incoming key, reading
  * candidate files the same way `icebergRead` does (applicable deletes, field
  * id projection, partition values and defaults for columns not in the file).
+ * With `matchFields`, each match also carries the row's join and match
+ * columns. Match columns are read in a second pass, only for the row groups
+ * of a file that hold a match.
  *
  * @param {object} options
  * @param {TableMetadata} options.metadata
  * @param {Resolver} options.resolver
  * @param {Schema} options.schema
  * @param {Field[]} options.keyFields
+ * @param {Field[]} [options.matchFields] - Extra columns to return for each matched row.
  * @param {Record<string, any>[]} options.records
  * @param {Set<string>} options.keys
- * @returns {Promise<{deletes: {file_path: string, pos: bigint}[], candidates: ManifestEntry[]}>}
+ * @param {number} [options.concurrency]
+ * @returns {Promise<{matches: Map<string, MatchedRow[]>, candidates: ManifestEntry[]}>}
  */
-async function findMatchingRows({ metadata, resolver, schema, keyFields, records, keys }) {
-  if (currentSnapshot(metadata) === undefined || !records.length) return { deletes: [], candidates: [] }
+async function findMatchingRows({ metadata, resolver, schema, keyFields, matchFields, records, keys, concurrency }) {
+  /** @type {Map<string, MatchedRow[]>} */
+  const matches = new Map()
+  if (currentSnapshot(metadata) === undefined || !records.length) return { matches, candidates: [] }
   /** @type {Record<string, {$in: any[]}>} */
   const filter = {}
   for (const field of keyFields) {
@@ -192,30 +268,128 @@ async function findMatchingRows({ metadata, resolver, schema, keyFields, records
   const applicable = deleteEntries.filter(deleteEntry => candidates.some(entry => deleteFileAppliesToDataEntry(
     entry, deleteEntry, metadata, deleteEntry.data_file.content === 2 ? 'equality' : 'position')))
   const { positionDeletesMap, equalityDeleteGroups } = await fetchDeleteMaps(applicable, resolver)
-  const wantedColumns = keyFields.map(f => f.name)
+  const keyColumns = keyFields.map(f => f.name)
+  const lateFields = matchFields?.filter(f => !keyFields.includes(f)) ?? []
 
-  const perFile = await Promise.all(candidates.map(async entry => {
-    /** @type {{file_path: string, pos: bigint}[]} */
-    const deletes = []
-    for await (const rows of readDataFile({
-      dataEntry: entry,
-      fileRowStart: 0,
-      fileRowEnd: Number(entry.data_file.record_count),
-      schema, metadata, resolver,
-      rowLineage: false,
-      positionDeletesMap, equalityDeleteGroups, wantedColumns, filter,
-      positions: true,
-    })) {
+  const perFile = await mapConcurrent(candidates, concurrency, async entry => {
+    const { file_path, file_size_in_bytes, record_count } = entry.data_file
+    // Share one cached buffer between both passes so the footer is fetched once.
+    const file = lateFields.length ? cachedAsyncBuffer(await resolver.reader(file_path, Number(file_size_in_bytes))) : undefined
+    /**
+     * @param {number} fileRowStart
+     * @param {number} fileRowEnd
+     * @param {string[]} wantedColumns
+     * @returns {AsyncGenerator<Record<string, any>[]>}
+     */
+    function read(fileRowStart, fileRowEnd, wantedColumns) {
+      return readDataFile({
+        dataEntry: entry,
+        fileRowStart,
+        fileRowEnd,
+        schema, metadata,
+        resolver: file ? { ...resolver, reader: () => file } : resolver,
+        rowLineage: false,
+        positionDeletesMap, equalityDeleteGroups, wantedColumns, filter,
+        positions: true,
+      })
+    }
+
+    /** @type {{key: string, match: MatchedRow}[]} */
+    const found = []
+    for await (const rows of read(0, Number(record_count), keyColumns)) {
       for (const row of rows) {
-        // A long column promoted from int reads as a number.
-        const values = keyFields.map(f => f.type === 'long' && typeof row[f.name] === 'number' ? BigInt(row[f.name]) : row[f.name])
-        if (keys.has(encodeKey(values))) deletes.push({ file_path: entry.data_file.file_path, pos: row._pos })
+        const values = keyFields.map(f => promoteLong(row[f.name], f))
+        const key = encodeKey(values)
+        if (!keys.has(key)) continue
+        /** @type {Record<string, any>} */
+        const matched = {}
+        if (matchFields) {
+          for (let i = 0; i < keyFields.length; i++) matched[keyFields[i].name] = values[i]
+        }
+        found.push({ key, match: { file_path, pos: row._pos, row: matched } })
       }
     }
-    return deletes
-  }))
-  /** @type {{file_path: string, pos: bigint}[]} */
-  const deletes = []
-  for (const d of perFile) concat(deletes, d)
-  return { deletes, candidates }
+    if (!file || !found.length) return found
+
+    const byPos = new Map(found.map(({ match }) => [match.pos, match.row]))
+    const { row_groups } = await readParquetMetadata(file)
+    for (const [start, end] of rowGroupRanges(row_groups, found.map(({ match }) => Number(match.pos)))) {
+      // Join columns are read for the filter anyway, and keep the projection non-empty.
+      for await (const rows of read(start, end, [...keyColumns, ...lateFields.map(f => f.name)])) {
+        for (const row of rows) {
+          const matched = byPos.get(row._pos)
+          if (matched) for (const field of lateFields) matched[field.name] = promoteLong(row[field.name], field)
+        }
+      }
+    }
+    return found
+  })
+  for (const found of perFile) {
+    for (const { key, match } of found) {
+      const list = matches.get(key)
+      if (list) list.push(match)
+      else matches.set(key, [match])
+    }
+  }
+  return { matches, candidates }
+}
+
+/**
+ * Group ascending row positions into one `[start, end)` range per row group.
+ *
+ * @param {{num_rows: bigint}[]} rowGroups
+ * @param {number[]} positions
+ * @returns {[number, number][]}
+ */
+function rowGroupRanges(rowGroups, positions) {
+  /** @type {[number, number][]} */
+  const ranges = []
+  let groupStart = 0
+  let i = 0
+  for (const { num_rows } of rowGroups) {
+    const groupEnd = groupStart + Number(num_rows)
+    if (i < positions.length && positions[i] < groupEnd) {
+      const start = positions[i]
+      while (i < positions.length && positions[i] < groupEnd) i++
+      ranges.push([start, positions[i - 1] + 1])
+    }
+    groupStart = groupEnd
+  }
+  return ranges
+}
+
+/**
+ * A long column promoted from int reads as a number.
+ *
+ * @param {any} value
+ * @param {Field} field
+ * @returns {any}
+ */
+function promoteLong(value, field) {
+  return field.type === 'long' && typeof value === 'number' ? BigInt(value) : value
+}
+
+/**
+ * Like `Promise.all(items.map(fn))`, with at most `concurrency` calls in
+ * flight. Results keep the input order.
+ *
+ * @template T, R
+ * @param {T[]} items
+ * @param {number | undefined} concurrency - Defaults to all at once.
+ * @param {(item: T) => Promise<R>} fn
+ * @returns {Promise<R[]>}
+ */
+async function mapConcurrent(items, concurrency, fn) {
+  if (concurrency === undefined || concurrency >= items.length) return await Promise.all(items.map(fn))
+  /** @type {R[]} */
+  const results = new Array(items.length)
+  let next = 0
+  async function worker() {
+    while (next < items.length) {
+      const i = next++
+      results[i] = await fn(items[i])
+    }
+  }
+  await Promise.all(Array.from({ length: concurrency }, worker))
+  return results
 }
