@@ -456,8 +456,19 @@ describe('icebergUpsert whenMatched', () => {
     const before = new Set(files.keys())
 
     const records = [{ id: 1n, name: 'A' }, { id: 2n, name: 'B' }]
-    const metadata = await icebergUpsert({ catalog, tableUrl, records, whenMatched: () => false })
+    /** @type {Record<string, any>[]} */
+    const skipped = []
+    const metadata = await icebergUpsert({
+      catalog, tableUrl, records,
+      whenMatched: (_rows, incoming) => {
+        skipped.push(incoming)
+        return false
+      },
+    })
+    expect(skipped).toEqual(records)
     expect(metadata).toEqual(loaded)
+    expect(metadata['current-snapshot-id']).toBe(loaded['current-snapshot-id'])
+    // No data, delete, manifest, or metadata file was written.
     expect(new Set(files.keys())).toEqual(before)
     expect(await icebergStageUpsert({ tableUrl, metadata, resolver, records, whenMatched: () => false })).toBeUndefined()
     expect(new Set(files.keys())).toEqual(before)

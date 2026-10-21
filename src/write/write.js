@@ -172,8 +172,10 @@ class NothingToRewriteError extends Error {}
  * Incoming records win unless `whenMatched` says otherwise: it sees every live
  * row matching a record's key (join columns plus `matchCols`) and returns
  * `false` to skip that record, leaving its rows untouched. The decision is
- * made against the snapshot the commit asserts. When every record is skipped,
- * nothing is committed and the loaded metadata is returned unchanged.
+ * made against the snapshot the commit asserts. Collect skipped records in
+ * `whenMatched` itself. When every record is skipped, nothing is written or
+ * committed, no snapshot is created, and the loaded metadata is returned
+ * unchanged.
  *
  * Like {@link icebergRewrite}, an upsert is NOT retried: its deletes are bound
  * to the snapshot it scanned. On conflict the commit error surfaces and the

@@ -35,8 +35,11 @@ import { partitionTupleKey, writePositionDeletes } from './stage-position-delete
  * inserted. The decision is made in the same scan, against the snapshot the
  * commit asserts, so a concurrent writer causes a commit conflict rather than
  * a stale decision. `matchCols` must be top-level primitive fields of the
- * current schema (not struct, list, map, or variant). Returns undefined, with
- * nothing written, when `whenMatched` skips every record.
+ * current schema (not struct, list, map, or variant).
+ *
+ * When `whenMatched` skips every record, nothing is written and the result is
+ * `undefined` rather than a `StagedUpdate`: there is no snapshot to commit.
+ * Skipped records are not listed on the result; collect them in `whenMatched`.
  *
  * @param {object} options
  * @param {string} options.tableUrl
