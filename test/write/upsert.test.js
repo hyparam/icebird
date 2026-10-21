@@ -12,7 +12,7 @@ import { icebergAppend, icebergCreateTable, icebergUpdateSchema, icebergUpsert }
 import { memResolver } from '../helpers.js'
 
 /**
- * @import {Resolver, Schema, TableMetadata} from '../../src/types.js'
+ * @import {Resolver, Schema, TableMetadata, UpsertWhenMatched} from '../../src/types.js'
  */
 
 /** @type {Schema} */
@@ -242,6 +242,7 @@ describe('icebergUpsert', () => {
 
     // Stage an upsert against m1, then let a concurrent append commit first.
     const upsert = await icebergStageUpsert({ tableUrl, metadata: m1, resolver, joinCols: ['id'], records: [{ id: 1n, name: 'b' }] })
+    if (!upsert) throw new Error('staged upsert required')
     const a2 = await icebergStageAppend({ tableUrl, metadata: m1, records: [{ id: 2n, name: 'c' }], resolver })
     const m2 = await fileCatalogCommit({ tableUrl, metadata: m1, staged: a2, resolver })
 
@@ -288,5 +289,207 @@ describe('icebergUpsert', () => {
     expect(metadata.snapshots?.map(s => s.summary.operation)).toEqual(['append', 'overwrite', 'append'])
     expect([...before].every(path => files.has(path))).toBe(true)
     expect(await icebergRead({ tableUrl, metadata, resolver })).toEqual([{ id: 1n, name: 'b' }])
+  })
+})
+
+describe('icebergUpsert whenMatched', () => {
+  /** @type {Schema} */
+  const events = {
+    type: 'struct',
+    'schema-id': 0,
+    'identifier-field-ids': [1],
+    fields: [
+      { id: 1, name: 'id', required: true, type: 'long' },
+      { id: 2, name: 'name', required: false, type: 'string' },
+      { id: 3, name: 'updated_at', required: false, type: 'timestamptz' },
+    ],
+  }
+
+  it('skips both the delete and the append when whenMatched returns false', async () => {
+    const tableUrl = 'http://test/upsert-when-matched'
+    const { resolver } = memResolver()
+    const catalog = fileCatalog({ resolver })
+    await icebergCreateTable({ catalog, tableUrl, schema })
+    await icebergAppend({ catalog, tableUrl, records: [{ id: 1n, name: 'a' }, { id: 2n, name: 'b' }] })
+
+    const whenMatched = vi.fn(/** @type {UpsertWhenMatched} */ ((_rows, incoming) => incoming.id !== 1n))
+    const skipped = await icebergUpsert({
+      catalog, tableUrl, whenMatched, records: [{ id: 1n, name: 'A' }, { id: 2n, name: 'B' }, { id: 3n, name: 'c' }],
+    })
+    // Called only for matched records, with the join columns of each live row.
+    expect(whenMatched.mock.calls).toEqual([
+      [[{ id: 1n }], { id: 1n, name: 'A' }],
+      [[{ id: 2n }], { id: 2n, name: 'B' }],
+    ])
+    expect(byId(await icebergRead({ tableUrl, metadata: skipped, resolver }))).toEqual([
+      { id: 1n, name: 'a' },
+      { id: 2n, name: 'B' },
+      { id: 3n, name: 'c' },
+    ])
+
+    const replaced = await icebergUpsert({ catalog, tableUrl, whenMatched: () => true, records: [{ id: 1n, name: 'A' }] })
+    expect(replaced.snapshots?.at(-1)?.summary['added-position-deletes']).toBe('1')
+    expect(byId(await icebergRead({ tableUrl, metadata: replaced, resolver }))).toEqual([
+      { id: 1n, name: 'A' },
+      { id: 2n, name: 'B' },
+      { id: 3n, name: 'c' },
+    ])
+  })
+
+  it('keeps the newer row: skips older, replaces newer, inserts unmatched in one commit', async () => {
+    const tableUrl = 'http://test/upsert-newer-wins'
+    const { resolver } = memResolver()
+    const catalog = fileCatalog({ resolver })
+    await icebergCreateTable({ catalog, tableUrl, schema: events })
+    const seeded = await icebergAppend({
+      catalog, tableUrl, records: [
+        { id: 1n, name: 'a', updated_at: new Date('2026-01-01T10:00:00Z') },
+        { id: 2n, name: 'b', updated_at: new Date('2026-01-01T10:00:00Z') },
+      ],
+    })
+
+    const upserted = await icebergUpsert({
+      catalog, tableUrl,
+      matchCols: ['updated_at'],
+      whenMatched: (existingRows, incoming) => existingRows.every(row => incoming.updated_at > row.updated_at),
+      records: [
+        { id: 1n, name: 'old', updated_at: new Date('2026-01-01T09:00:00Z') },
+        { id: 2n, name: 'new', updated_at: new Date('2026-01-01T11:00:00Z') },
+        { id: 3n, name: 'c', updated_at: new Date('2026-01-01T08:00:00Z') },
+      ],
+    })
+    expect(upserted.snapshots?.length).toBe((seeded.snapshots?.length ?? 0) + 1)
+    expect(byId(await icebergRead({ tableUrl, metadata: upserted, resolver }))).toEqual([
+      { id: 1n, name: 'a', updated_at: new Date('2026-01-01T10:00:00Z') },
+      { id: 2n, name: 'new', updated_at: new Date('2026-01-01T11:00:00Z') },
+      { id: 3n, name: 'c', updated_at: new Date('2026-01-01T08:00:00Z') },
+    ])
+    // Counts reflect the two accepted records and the one delete written.
+    expect(upserted.snapshots?.at(-1)?.summary).toMatchObject({
+      operation: 'overwrite',
+      'added-data-files': '1',
+      'added-records': '2',
+      'added-delete-files': '1',
+      'added-position-deletes': '1',
+      'total-records': '4',
+      'total-data-files': '2',
+      'total-delete-files': '1',
+      'total-position-deletes': '1',
+    })
+  })
+
+  it('passes every live matched row, and none that are already deleted', async () => {
+    const tableUrl = 'http://test/upsert-when-matched-rows'
+    const { resolver } = memResolver()
+    const catalog = fileCatalog({ resolver })
+    await icebergCreateTable({ catalog, tableUrl, schema: { ...schema, 'identifier-field-ids': [] } })
+    await icebergAppend({ catalog, tableUrl, records: [{ id: 1n, name: 'a' }, { id: 2n, name: 'b' }] })
+    await icebergAppend({ catalog, tableUrl, records: [{ id: 1n, name: 'x' }] })
+
+    /** @type {Record<string, any>[][]} */
+    const seen = []
+    /**
+     * @param {Record<string, any>[]} existingRows
+     * @returns {boolean}
+     */
+    function whenMatched(existingRows) {
+      seen.push(existingRows)
+      return true
+    }
+    await icebergUpsert({ catalog, tableUrl, joinCols: ['id'], matchCols: ['name'], whenMatched, records: [{ id: 1n, name: 'c' }] })
+    const second = await icebergUpsert({
+      catalog, tableUrl, joinCols: ['id'], matchCols: ['name'], whenMatched, records: [{ id: 1n, name: 'd' }],
+    })
+    expect(seen.map(rows => [...rows].sort((a, b) => a.name < b.name ? -1 : 1))).toEqual([
+      [{ id: 1n, name: 'a' }, { id: 1n, name: 'x' }],
+      [{ id: 1n, name: 'c' }],
+    ])
+    expect(byId(await icebergRead({ tableUrl, metadata: second, resolver }))).toEqual([
+      { id: 1n, name: 'd' },
+      { id: 2n, name: 'b' },
+    ])
+  })
+
+  it('reads match columns missing from older files as null, and promoted ints as bigint', async () => {
+    const tableUrl = 'http://test/upsert-when-matched-evolution'
+    const { resolver } = memResolver()
+    const catalog = fileCatalog({ resolver })
+    /** @type {Schema} */
+    const base = {
+      type: 'struct',
+      'schema-id': 0,
+      'identifier-field-ids': [1],
+      fields: [
+        { id: 1, name: 'id', required: true, type: 'long' },
+        { id: 2, name: 'version', required: false, type: 'int' },
+      ],
+    }
+    await icebergCreateTable({ catalog, tableUrl, schema: base })
+    await icebergAppend({ catalog, tableUrl, records: [{ id: 1n, version: 5 }] })
+    await icebergUpdateSchema({
+      catalog, tableUrl,
+      schema: {
+        ...base,
+        fields: [
+          base.fields[0],
+          { ...base.fields[1], type: 'long' },
+          { id: 3, name: 'updated_at', required: false, type: 'timestamptz' },
+        ],
+      },
+    })
+
+    const whenMatched = vi.fn(() => false)
+    const metadata = await icebergUpsert({
+      catalog, tableUrl, matchCols: ['version', 'updated_at'], whenMatched,
+      records: [{ id: 1n, version: 6n, updated_at: new Date('2026-01-01T00:00:00Z') }],
+    })
+    expect(whenMatched).toHaveBeenCalledWith([{ id: 1n, version: 5n, updated_at: null }], expect.anything())
+    expect(await icebergRead({ tableUrl, metadata, resolver })).toEqual([{ id: 1n, version: 5, updated_at: null }])
+  })
+
+  it('makes no commit when every record is skipped', async () => {
+    const tableUrl = 'http://test/upsert-all-skipped'
+    const { resolver, files } = memResolver()
+    const catalog = fileCatalog({ resolver })
+    await icebergCreateTable({ catalog, tableUrl, schema })
+    const loaded = await icebergAppend({ catalog, tableUrl, records: [{ id: 1n, name: 'a' }, { id: 2n, name: 'b' }] })
+    const before = new Set(files.keys())
+
+    const records = [{ id: 1n, name: 'A' }, { id: 2n, name: 'B' }]
+    const metadata = await icebergUpsert({ catalog, tableUrl, records, whenMatched: () => false })
+    expect(metadata).toEqual(loaded)
+    expect(new Set(files.keys())).toEqual(before)
+    expect(await icebergStageUpsert({ tableUrl, metadata, resolver, records, whenMatched: () => false })).toBeUndefined()
+    expect(new Set(files.keys())).toEqual(before)
+  })
+
+  it('rejects invalid matchCols and whenMatched before writing any file', async () => {
+    const tableUrl = 'http://test/upsert-when-matched-invalid'
+    const { resolver, files } = memResolver()
+    const catalog = fileCatalog({ resolver })
+    await icebergCreateTable({
+      catalog, tableUrl,
+      schema: {
+        ...schema,
+        fields: [...schema.fields, {
+          id: 3, name: 'tags', required: false, type: { type: 'list', 'element-id': 4, 'element-required': false, element: 'string' },
+        }],
+      },
+    })
+    await icebergAppend({ catalog, tableUrl, records: [{ id: 1n, name: 'a', tags: null }] })
+    const before = new Set(files.keys())
+
+    /** @type {[any, RegExp][]} */
+    const cases = [
+      [{ matchCols: ['missing'] }, /match column not found in current schema: missing/],
+      [{ matchCols: ['tags'] }, /unsupported match column type for tags/],
+      [{ matchCols: 'name' }, /matchCols must be an array/],
+      [{ whenMatched: 'newer' }, /whenMatched must be a function/],
+      [{ whenMatched: () => undefined }, /whenMatched must return a boolean, got undefined/],
+    ]
+    for (const [options, error] of cases) {
+      await expect(icebergUpsert({ catalog, tableUrl, records: [{ id: 1n, name: 'b' }], ...options })).rejects.toThrow(error)
+    }
+    expect(new Set(files.keys())).toEqual(before)
   })
 })

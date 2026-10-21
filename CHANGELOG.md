@@ -1,5 +1,8 @@
 # Icebird Changelog
 
+## [Unreleased]
+ - `icebergUpsert` and `icebergStageUpsert` accept `matchCols` and a MERGE-style `whenMatched` condition that can skip a matched record, evaluated against the snapshot the commit asserts
+
 ## [0.9.2]
  - New `icebergUpsert` replaces rows matching on join columns and inserts the rest, committed as a single overwrite snapshot
 
