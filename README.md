@@ -231,6 +231,19 @@ await icebergDelete({
 // joinCols defaults to the schema's identifier fields
 await icebergUpsert({ catalog, tableUrl, records: [{ id: 1n, name: 'bob' }], joinCols: ['id'] })
 
+// conditional upsert — newer wins: skip a record when a stored row is newer,
+// collecting the skipped records in the callback
+const skipped = []
+await icebergUpsert({
+  catalog, tableUrl, records, joinCols: ['id'],
+  matchCols: ['updated_at'], // extra columns read for matched rows
+  whenMatched: (existingRows, incoming) => {
+    const replace = existingRows.every(row => incoming.updated_at >= row.updated_at)
+    if (!replace) skipped.push(incoming)
+    return replace
+  },
+})
+
 // snapshot management
 await icebergSetRef({ catalog, tableUrl, ref: 'main', snapshotId })
 await icebergExpireSnapshots({ catalog, tableUrl, snapshotIds: [oldSnapshotId] })
@@ -263,6 +276,12 @@ await icebergRewrite({ catalog, tableUrl, targetFileRows: 1_000_000, partitionSp
 A rewrite is not retried on a concurrent commit (it would risk dropping rows another writer appended meanwhile); on conflict it throws and should be re-run against fresh metadata.
 
 Like a rewrite, an upsert is not retried: its deletes are bound to the snapshot it scanned, so on conflict it throws and should be re-run. Staged files are kept after a failed commit, since the commit may have succeeded. Join columns must be top-level `int`, `long`, or `string` fields.
+
+`whenMatched` works like SQL `MERGE ... WHEN MATCHED AND <cond> THEN UPDATE`, for example to drop out-of-order events. It is called once per incoming record whose key matches live rows, with all of those rows (join columns plus `matchCols`) and the record. Returning `false` skips the record: it is not appended and its rows are not deleted. Unmatched records are always inserted. Null and tie handling is up to the callback. Match columns may be any top-level primitive column; `long` values are bigints. They are read in a second pass, only for the row groups that hold a matching key.
+
+The condition is evaluated in the upsert's own scan, against the snapshot the commit asserts, so a concurrent writer causes a commit conflict rather than a decision on stale rows. `icebergUpsert` still returns the table metadata, so collect skipped records inside `whenMatched`, as above. If every record is skipped, nothing is written or committed, no snapshot is created, and the loaded metadata is returned unchanged.
+
+An upsert reads all candidate data files at once by default. Pass `concurrency` (a positive integer; `1` reads them one after another) to bound memory and in-flight requests, for example on Lambda, edge runtimes, or in browsers. The result does not depend on it.
 
 ### Manifest maintenance
 
