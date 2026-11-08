@@ -1,6 +1,6 @@
 import { typeName } from '../schema.js'
 import { computeGeoBounds, isGeoType } from './geospatial.js'
-import { compareWriteValues, serializeValue } from './serde.js'
+import { serializeValue, writeComparator } from './serde.js'
 
 /**
  * @import {FieldSummary, IcebergType, Schema} from '../../src/types.js'
@@ -67,6 +67,7 @@ export function computeColumnStats(records, schema) {
     let max
     const isFloat = type === 'float' || type === 'double'
     const trackBounds = hasComparableBounds(field.type)
+    const cmp = trackBounds ? writeComparator(field.type) : undefined
     const writeDefault = field['write-default']
     for (const record of records) {
       let v = record[field.name]
@@ -79,9 +80,11 @@ export function computeColumnStats(records, schema) {
         nans++
         continue
       }
-      if (trackBounds) {
-        if (min === undefined || compareWriteValues(v, min, field.type) < 0) min = v
-        if (max === undefined || compareWriteValues(v, max, field.type) > 0) max = v
+      if (cmp) {
+        // min <= max always holds, so a new minimum can't also be a new maximum.
+        if (min === undefined) min = max = v
+        else if (cmp(v, min) < 0) min = v
+        else if (cmp(v, max) > 0) max = v
       }
     }
     value_counts[field.id] = BigInt(records.length)
@@ -128,7 +131,7 @@ function hasComparableBounds(type) {
 export function computeFieldSummary(values, type) {
   const name = typeName(type)
   const isFloat = name === 'float' || name === 'double'
-  const trackBounds = hasComparableBounds(type)
+  const cmp = hasComparableBounds(type) ? writeComparator(type) : undefined
   let containsNull = false
   let containsNan = false
   let min
@@ -142,9 +145,10 @@ export function computeFieldSummary(values, type) {
       containsNan = true
       continue
     }
-    if (trackBounds) {
-      if (min === undefined || compareWriteValues(v, min, type) < 0) min = v
-      if (max === undefined || compareWriteValues(v, max, type) > 0) max = v
+    if (cmp) {
+      if (min === undefined) min = max = v
+      else if (cmp(v, min) < 0) min = v
+      else if (cmp(v, max) > 0) max = v
     }
   }
   /** @type {FieldSummary} */
