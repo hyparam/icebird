@@ -1,5 +1,8 @@
 # Icebird Changelog
 
+## [0.9.5]
+ - Faster sorting and stats computation on writes, especially for string columns
+
 ## [0.9.4]
  - SQL `LIKE` prefix filters on string columns now prune data files
 
