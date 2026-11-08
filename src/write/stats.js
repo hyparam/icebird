@@ -1,6 +1,7 @@
 import { typeName } from '../schema.js'
 import { computeGeoBounds, isGeoType } from './geospatial.js'
-import { serializeValue, writeComparator } from './serde.js'
+import { writeComparator } from '../compare.js'
+import { serializeValue } from './serde.js'
 
 /**
  * @import {FieldSummary, IcebergType, Schema} from '../../src/types.js'

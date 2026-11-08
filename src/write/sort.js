@@ -1,4 +1,4 @@
-import { writeComparator } from './serde.js'
+import { writeComparator } from '../compare.js'
 import { applyTransform, transformResultType } from './transform.js'
 
 /**
