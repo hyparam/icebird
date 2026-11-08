@@ -1,4 +1,4 @@
-import { collect, readBatchColumn, valueAt } from 'squirreling'
+import { collect, executeSql, readBatchColumn, valueAt } from 'squirreling'
 import { describe, expect, it, vi } from 'vitest'
 import { ByteWriter, parquetWrite } from 'hyparquet-writer'
 import { fileCatalogCommit } from '../../src/write/commit.js'
@@ -130,6 +130,53 @@ describe('#20 file-level bounds pruning (icebird-written)', () => {
 
     expect(out.length).toBe(30)
     expect(dataFilesRead()).toBe(3)
+  })
+})
+
+describe('LIKE prefix pruning', () => {
+  /** @type {Schema} */
+  const schema = {
+    type: 'struct',
+    'schema-id': 0,
+    fields: [
+      { id: 1, name: 's', required: false, type: 'string' },
+      { id: 2, name: 'v', required: false, type: 'int' },
+    ],
+  }
+
+  /**
+   * Three files with disjoint string prefixes and int ranges.
+   *
+   * @returns {Promise<{ tableUrl: string, resolver: Resolver, dataFilesRead: () => number }>}
+   */
+  async function buildTable() {
+    vi.spyOn(Date, 'now').mockReturnValue(1700000000000)
+    const tableUrl = 'mem://like-prefix'
+    const { resolver: memR } = memResolver()
+    let metadata = await icebergCreate({ tableUrl, resolver: memR, schema })
+    for (const [i, word] of ['apple', 'banana', 'cherry'].entries()) {
+      const records = []
+      for (let j = 0; j < 5; j++) records.push({ s: `${word}-${j}`, v: i * 100 + j })
+      const staged = await icebergStageAppend({ tableUrl, metadata, records, resolver: memR })
+      metadata = await fileCatalogCommit({ tableUrl, metadata, staged, resolver: memR })
+    }
+    const { resolver, dataFilesRead } = countingResolver({ reader: memR.reader })
+    return { tableUrl, resolver, dataFilesRead }
+  }
+
+  it('opens only the file whose string bounds can match a LIKE prefix', async () => {
+    const { tableUrl, resolver, dataFilesRead } = await buildTable()
+    const t = await icebergDataSource({ tableUrl, resolver })
+    const rows = await collect(executeSql({ tables: { t }, query: 'SELECT s FROM t WHERE s LIKE \'banana-%\'' }))
+    expect(rows.map(r => r.s).sort()).toEqual(['banana-0', 'banana-1', 'banana-2', 'banana-3', 'banana-4'])
+    expect(dataFilesRead()).toBe(1)
+  })
+
+  it('keeps LIKE on a non-string column exact', async () => {
+    const { tableUrl, resolver } = await buildTable()
+    const t = await icebergDataSource({ tableUrl, resolver })
+    const rows = await collect(executeSql({ tables: { t }, query: 'SELECT v FROM t WHERE v LIKE \'10%\'' }))
+    expect(rows.map(r => r.v).sort()).toEqual([100, 101, 102, 103, 104])
   })
 })
 

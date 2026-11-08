@@ -103,7 +103,9 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
     fields: schema.fields.map(field => ({
       id: field.id,
       name: field.name,
-      dataType: { type: 'unknown' },
+      // Typing strings lets squirreling add the range implied by
+      // `LIKE 'prefix%'`, which file bounds and parquet statistics can prune.
+      dataType: field.type === 'string' ? { type: 'string' } : { type: 'unknown' },
       nullable: !field.required,
     })),
   }
