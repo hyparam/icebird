@@ -1,6 +1,7 @@
 import { typeName } from './schema.js'
 import { applyTransform, transformResultType } from './write/transform.js'
-import { compare, deserializeValue } from './write/serde.js'
+import { compare } from './compare.js'
+import { deserializeValue } from './write/serde.js'
 
 /**
  * Partition-level scan pruning. Given a hyparquet query filter (keyed by

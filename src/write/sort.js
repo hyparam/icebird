@@ -1,4 +1,4 @@
-import { compareWriteValues } from './serde.js'
+import { writeComparator } from '../compare.js'
 import { applyTransform, transformResultType } from './transform.js'
 
 /**
@@ -30,7 +30,7 @@ export function buildSortComparator(sortOrder, schema) {
       name: sourceField.name,
       transform: sf.transform,
       sourceType: sourceField.type,
-      resultType: transformResultType(sf.transform, sourceField.type),
+      cmp: writeComparator(transformResultType(sf.transform, sourceField.type)),
       desc: sf.direction === 'desc',
       nullsFirst: sf['null-order'] === 'nulls-first',
     }
@@ -40,7 +40,7 @@ export function buildSortComparator(sortOrder, schema) {
     for (const f of fields) {
       const ka = sortKey(a[f.name], f.transform, f.sourceType)
       const kb = sortKey(b[f.name], f.transform, f.sourceType)
-      const c = compareKeys(ka, kb, f.resultType, f.desc, f.nullsFirst)
+      const c = compareKeys(ka, kb, f.cmp, f.desc, f.nullsFirst)
       if (c !== 0) return c
     }
     return 0
@@ -69,12 +69,12 @@ function sortKey(value, transform, sourceType) {
  *
  * @param {any} ka
  * @param {any} kb
- * @param {IcebergType} resultType
+ * @param {(a: any, b: any) => number} cmp comparator for the transform's result type
  * @param {boolean} desc
  * @param {boolean} nullsFirst
  * @returns {number}
  */
-function compareKeys(ka, kb, resultType, desc, nullsFirst) {
+function compareKeys(ka, kb, cmp, desc, nullsFirst) {
   const aNull = ka === null || ka === undefined
   const bNull = kb === null || kb === undefined
   if (aNull && bNull) return 0
@@ -90,6 +90,6 @@ function compareKeys(ka, kb, resultType, desc, nullsFirst) {
     return desc ? -c : c
   }
 
-  const c = compareWriteValues(ka, kb, resultType)
+  const c = cmp(ka, kb)
   return desc ? -c : c
 }

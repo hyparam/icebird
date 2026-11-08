@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { compare, deserializeValue, serializeValue } from '../src/write/serde.js'
+import { compare } from '../src/compare.js'
+import { deserializeValue, serializeValue } from '../src/write/serde.js'
 
 /**
  * @import {IcebergType} from '../src/types.js'

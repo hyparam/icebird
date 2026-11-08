@@ -119,3 +119,23 @@ function bigintToFixedBytes(value, size, label) {
   }
   return bytes
 }
+
+/**
+ * @param {any} value
+ * @returns {bigint}
+ */
+export function timestampToMicros(value) {
+  return typeof value === 'bigint' ? value
+    : value instanceof Date ? BigInt(value.getTime()) * 1000n
+      : BigInt(value)
+}
+
+/**
+ * @param {any} value
+ * @returns {bigint}
+ */
+export function timestampToNanos(value) {
+  return typeof value === 'bigint' ? value
+    : value instanceof Date ? BigInt(value.getTime()) * 1000000n
+      : BigInt(value)
+}
