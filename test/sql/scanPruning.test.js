@@ -433,6 +433,18 @@ describe('timestamp predicate pushdown on a day-partitioned table', () => {
     return { rows, dataFilesRead: dataFilesRead() }
   }
 
+  it('prunes days for a bare string bound as it does for a TIMESTAMP literal', async () => {
+    const { rows, dataFilesRead } = await query('message_created_at >= \'2026-08-06T00:00:00Z\'')
+    expect(rows.map(r => r.id)).toEqual([6n, 7n, 8n])
+    expect(dataFilesRead).toBe(1)
+  })
+
+  it('prunes days for a bare date-only string BETWEEN', async () => {
+    const { rows, dataFilesRead } = await query('message_created_at BETWEEN \'2026-08-05\' AND \'2026-08-05T23:59:59Z\'')
+    expect(rows.map(r => r.id)).toEqual([3n, 4n, 5n])
+    expect(dataFilesRead).toBe(1)
+  })
+
   it('skips files from days that cannot match a >= TIMESTAMP predicate', async () => {
     const { rows, dataFilesRead } = await query('message_created_at >= TIMESTAMP \'2026-08-06T00:00:00Z\'')
     expect(rows.map(r => r.id)).toEqual([6n, 7n, 8n])
