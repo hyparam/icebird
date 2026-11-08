@@ -7,7 +7,7 @@ import { decimalToUnscaled, parseDecimalType, timestampToMicros, timestampToNano
  * `src/write/sort.js`). `comparator` and `writeComparator` resolve a type to a
  * comparator once, for loops that compare many values of one column.
  *
- * @import {IcebergType} from './types.js'
+ * @import {IcebergType} from '../src/types.js'
  */
 
 /**
