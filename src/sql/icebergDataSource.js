@@ -9,10 +9,10 @@ import { whereToParquetFilter } from './whereFilter.js'
 import { pruneTopKFiles, scanTopKFiles } from './topK.js'
 
 /**
- * @import {AsyncDataSource, ExprNode, PrepareScan, RelationSchema, ScanOptions, ScanResults, SqlPrimitive} from 'squirreling'
+ * @import {AsyncDataSource, ExprNode, PrepareScan, RelationSchema, ScanOptions, ScanResults, SqlPrimitive, SqlType} from 'squirreling'
  * @import {ScanColumnResults} from 'squirreling/src/types.js'
  * @import {ParquetQueryFilter} from 'hyparquet'
- * @import {Lister, Manifest, ManifestEntry, Resolver, TableMetadata} from '../../src/types.js'
+ * @import {Field, Lister, Manifest, ManifestEntry, Resolver, TableMetadata} from '../../src/types.js'
  */
 
 /**
@@ -103,9 +103,7 @@ export async function icebergDataSource({ tableUrl, metadataFileName, metadata, 
     fields: schema.fields.map(field => ({
       id: field.id,
       name: field.name,
-      // Typing strings lets squirreling add the range implied by
-      // `LIKE 'prefix%'`, which file bounds and parquet statistics can prune.
-      dataType: field.type === 'string' ? { type: 'string' } : { type: 'unknown' },
+      dataType: sqlType(field.type),
       nullable: !field.required,
     })),
   }
@@ -515,4 +513,22 @@ function liveEntries(perManifest) {
     }
   }
   return out
+}
+
+const DATE_TYPES = new Set(['date', 'timestamp', 'timestamptz', 'timestamp_ns', 'timestamptz_ns'])
+
+/**
+ * The SQL type squirreling should assume for an Iceberg field. Typing strings
+ * lets squirreling add the range implied by `LIKE 'prefix%'`; typing dates and
+ * timestamps lets it cast a string literal compared with them to TIMESTAMP
+ * before the predicate reaches pruning. Other types stay unknown: a promoted
+ * `int` to `long` column can still yield numbers from old files.
+ *
+ * @param {Field['type']} type
+ * @returns {SqlType}
+ */
+function sqlType(type) {
+  if (type === 'string') return { type: 'string' }
+  if (typeof type === 'string' && DATE_TYPES.has(type)) return { type: 'date' }
+  return { type: 'unknown' }
 }
