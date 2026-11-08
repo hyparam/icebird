@@ -1,5 +1,8 @@
 # Icebird Changelog
 
+## [0.9.4]
+ - SQL `LIKE` prefix filters on string columns now prune data files
+
 ## [0.9.3]
  - Internal changes only
 
