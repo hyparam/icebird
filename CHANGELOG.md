@@ -1,5 +1,8 @@
 # Icebird Changelog
 
+## [0.9.7]
+ - SQL filters comparing date and timestamp columns to string literals now prune data files
+
 ## [0.9.6]
  - Fix broken `IcebergType` import in published compare.d.ts types
 
