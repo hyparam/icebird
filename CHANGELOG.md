@@ -1,5 +1,8 @@
 # Icebird Changelog
 
+## [0.9.6]
+ - Fix broken `IcebergType` import in published compare.d.ts types
+
 ## [0.9.5]
  - Faster sorting and stats computation on writes, especially for string columns
 
