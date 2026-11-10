@@ -1,5 +1,8 @@
 # Icebird Changelog
 
+## [0.9.8]
+ - Faster SQL `IN`, `EXISTS`, and scalar subqueries, planned as joins
+
 ## [0.9.7]
  - SQL filters comparing date and timestamp columns to string literals now prune data files
 
