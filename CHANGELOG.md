@@ -1,5 +1,8 @@
 # Icebird Changelog
 
+## [0.9.9]
+ - Export `streamRowBatches` for incremental consumption of query results
+
 ## [0.9.8]
  - Faster SQL `IN`, `EXISTS`, and scalar subqueries, planned as joins
 
