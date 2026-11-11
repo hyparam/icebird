@@ -133,6 +133,11 @@ const result = await icebergQuery({
 const rows = await collect(result)
 ```
 
+For incremental consumption, Icebird also exports
+`streamRowBatches(result, { batchRows: 1024 })`, which yields chunks of resolved
+row objects without collecting the entire output. It honors the signal
+supplied to `icebergQuery`; breaking iteration closes the source.
+
 ## Amazon S3 Tables
 
 Read-only support for [Amazon S3 Tables](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-tables-tables.html) lives in the optional `icebird/s3tables` subpath. The main `icebird` export has **no AWS dependency**, and requests are signed with icebird's own SigV4 implementation. The only optional dependency is `@aws-sdk/credential-providers`, used to resolve the default AWS credential chain — and even that is imported lazily, so passing explicit credentials needs no AWS SDK at all.

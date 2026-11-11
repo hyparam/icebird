@@ -9,4 +9,4 @@ export { icebergLatestVersion, icebergListVersions, icebergMetadata, loadLatestF
 export { icebergManifests } from './manifest.js'
 export { icebergDataSource } from './sql/icebergDataSource.js'
 export { icebergQuery } from './sql/icebergQuery.js'
-export { collect } from 'squirreling'
+export { collect, streamRowBatches } from 'squirreling'
