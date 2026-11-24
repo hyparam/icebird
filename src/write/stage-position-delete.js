@@ -3,6 +3,7 @@ import { validateSchemaForVersion } from '../schema.js'
 import { bytesToHex, uuid4 } from '../utils.js'
 import { writePositionDeleteFile } from './delete-file.js'
 import { writeDeleteManifest } from './manifest.js'
+import { normalizeDayPartition } from './partition.js'
 import {
   buildPartitionSummaries,
   buildSnapshotUpdate,
@@ -146,7 +147,10 @@ export async function writePositionDeletes({
   for (const d of deletes) {
     const found = partitionMap.get(d.file_path)
     if (!found) throw new Error(`target data file not found in current snapshot: ${d.file_path}`)
-    const { partition, partitionSpecId: specId } = found
+    const specId = found.partitionSpecId
+    const spec = metadata['partition-specs'].find(s => s['spec-id'] === specId)
+    if (!spec) throw new Error(`partition spec ${specId} not found in metadata`)
+    const partition = normalizeDayPartition(found.partition, spec)
     const key = `${specId}|${partitionTupleKey(partition)}`
     let group = groups.get(key)
     if (!group) {

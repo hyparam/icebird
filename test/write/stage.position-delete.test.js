@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { avroMetadata, avroRead, avroWrite } from '../../src/avro/index.js'
 import { fileCatalog } from '../../src/catalog/file.js'
 import { fetchAvroRecords } from '../../src/fetch.js'
 import { fileCatalogCommit } from '../../src/write/commit.js'
@@ -6,11 +7,13 @@ import { icebergCreate } from '../../src/create.js'
 import { icebergManifests } from '../../src/manifest.js'
 import { icebergRead } from '../../src/read.js'
 import { icebergStagePositionDelete, partitionTupleKey } from '../../src/write/stage-position-delete.js'
+import { writeManifestList } from '../../src/write/manifest-list.js'
 import { icebergStageAppend } from '../../src/write/stage.js'
-import { icebergAppend, icebergCreateTable, icebergDelete } from '../../src/write/write.js'
+import { icebergAppend, icebergCreateTable, icebergDelete, icebergUpsert } from '../../src/write/write.js'
 import { memResolver } from '../helpers.js'
 
 /**
+ * @import {AvroRecord} from '../../src/avro/types.js'
  * @import {Schema} from '../../src/types.js'
  */
 
@@ -61,6 +64,47 @@ describe('icebergStagePositionDelete', () => {
       lower_bound: lowerBytes,
       upper_bound: upperBytes,
     }])
+  })
+
+  it('upserts into a table with Avro date-encoded day partitions', async () => {
+    const { resolver, lister } = memResolver()
+    const catalog = fileCatalog({ resolver, lister, conditionalCommits: true })
+    const tableUrl = 'http://test/avro-day-delete'
+    await icebergCreateTable({
+      catalog, tableUrl,
+      schema: { ...schema, fields: [...schema.fields, { id: 3, name: 'created', type: 'timestamp', required: false }] },
+      partitionSpec: { 'spec-id': 0, fields: [{ 'source-id': 3, 'field-id': 1000, name: 'created_day', transform: 'day' }] },
+    })
+    const created = new Date('1969-12-31T12:00:00Z')
+    const metadata = await icebergAppend({ catalog, tableUrl, records: [{ id: 1n, name: 'before', created }] })
+    const snapshot = metadata.snapshots?.find(s => s['snapshot-id'] === metadata['current-snapshot-id'])
+    if (!snapshot?.['manifest-list']) throw new Error('snapshot required')
+    const manifests = await fetchAvroRecords(snapshot['manifest-list'], resolver)
+    const manifest = manifests[0]
+    const file = await resolver.reader(manifest.manifest_path)
+    const reader = { view: new DataView(await file.slice(0, file.byteLength)), offset: 0 }
+    const header = avroMetadata(reader)
+    const records = await avroRead({ reader, ...header })
+    const avroSchema = /** @type {AvroRecord} */ (header.metadata['avro.schema'])
+    const dataFile = /** @type {AvroRecord} */ (avroSchema.fields.find(f => f.name === 'data_file')?.type)
+    const partition = /** @type {AvroRecord} */ (dataFile.fields.find(f => f.name === 'partition')?.type)
+    // Match the Avro representation written by PyIceberg.
+    partition.fields[0].type = ['null', { type: 'int', logicalType: 'date' }]
+    if (!resolver.writer) throw new Error('writer required')
+    const writer = resolver.writer(manifest.manifest_path)
+    await avroWrite({ writer, schema: avroSchema, records, metadata: { 'partition-spec-id': '0' } })
+    manifest.manifest_length = BigInt(writer.offset)
+    await writeManifestList({
+      writer: resolver.writer(snapshot['manifest-list']), manifests,
+      snapshotId: BigInt(snapshot['snapshot-id']), sequenceNumber: BigInt(metadata['last-sequence-number'] ?? 0),
+    })
+    const [entry] = (await icebergManifests({ metadata, resolver })).flatMap(m => m.entries)
+    expect(entry.data_file.partition.created_day).toEqual(new Date('1969-12-31T00:00:00Z'))
+
+    const updated = await icebergUpsert({ catalog, tableUrl, records: [{ id: 1n, name: 'after', created }], joinCols: ['id'] })
+    expect(await icebergRead({ tableUrl, metadata: updated, resolver })).toEqual([{ id: 1n, name: 'after', created }])
+    const entries = (await icebergManifests({ metadata: updated, resolver })).flatMap(m => m.entries)
+    expect(entries.find(e => e.data_file.content === 1)?.data_file.partition.created_day).toBe(-1)
   })
 
   it('keeps -0.0 and +0.0 distinct in partition tuple keys', () => {
