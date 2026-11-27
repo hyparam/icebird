@@ -53,10 +53,10 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "hyparquet": "1.33.0",
-    "hyparquet-compressors": "1.1.3",
-    "hyparquet-writer": "0.18.0",
-    "squirreling": "0.17.9"
+    "hyparquet": "^1.33.0",
+    "hyparquet-compressors": "^1.1.3",
+    "hyparquet-writer": "^0.18.0",
+    "squirreling": "^0.17.9"
   },
   "peerDependencies": {
     "@aws-sdk/credential-providers": "^3.0.0"
