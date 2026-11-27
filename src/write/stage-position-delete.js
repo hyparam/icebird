@@ -147,10 +147,7 @@ export async function writePositionDeletes({
   for (const d of deletes) {
     const found = partitionMap.get(d.file_path)
     if (!found) throw new Error(`target data file not found in current snapshot: ${d.file_path}`)
-    const specId = found.partitionSpecId
-    const spec = metadata['partition-specs'].find(s => s['spec-id'] === specId)
-    if (!spec) throw new Error(`partition spec ${specId} not found in metadata`)
-    const partition = normalizeDayPartition(found.partition, spec)
+    const { partition, partitionSpecId: specId } = found
     const key = `${specId}|${partitionTupleKey(partition)}`
     let group = groups.get(key)
     if (!group) {
@@ -311,14 +308,17 @@ export async function findDataFileEntries(metadata, resolver) {
   const out = new Map()
   await Promise.all(manifests.map(async manifest => {
     if (manifest.content !== 0) return
+    const partitionSpecId = manifest.partition_spec_id ?? 0
+    const spec = metadata['partition-specs'].find(s => s['spec-id'] === partitionSpecId)
+    if (!spec) throw new Error(`partition spec ${partitionSpecId} not found in metadata`)
     const entries = await loadManifestEntries(manifest, resolver)
     for (const entry of entries) {
       if (entry.status === 2) continue
       const f = entry.data_file
       if (f.content !== 0) continue
       out.set(f.file_path, {
-        partition: /** @type {Record<string, any>} */ (f.partition ?? {}),
-        partitionSpecId: manifest.partition_spec_id ?? 0,
+        partition: normalizeDayPartition(f.partition ?? {}, spec),
+        partitionSpecId,
         entry,
       })
     }

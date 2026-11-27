@@ -163,6 +163,7 @@ export function partitionSpecJson(partitionSpec) {
  * @returns {Record<string, any>}
  */
 export function partitionToAvroRecord(partition, schema, partitionSpec) {
+  partition = normalizeDayPartition(partition, partitionSpec)
   /** @type {Record<string, any>} */
   const out = {}
   for (const pf of partitionSpec.fields) {

@@ -5,6 +5,7 @@ import { icebergManifests, splitManifestEntries } from '../manifest.js'
 import { fileMightMatch, partitionMightMatch } from '../prune.js'
 import { readDataFile } from '../read.js'
 import { uuid4 } from '../utils.js'
+import { normalizeDayPartition } from './partition.js'
 import { buildSnapshotUpdate, currentSnapshot } from './snapshot.js'
 import { prepareAppend, preparedManifest, resolveParquetCodec } from './stage.js'
 import { partitionTupleKey, writePositionDeletes } from './stage-position-delete.js'
@@ -67,9 +68,13 @@ export async function icebergStageUpsert({ tableUrl, metadata, records, joinCols
   // Distinct (spec-id, partition tuple) across new data and delete files.
   const partitionKeys = new Set(prepared.dataFilePartitions.map(p => `${prepared.partitionSpecId}|${partitionTupleKey(p)}`))
   if (deletes.length) {
-    const partitionMap = new Map(candidates.map(e => [e.data_file.file_path, {
-      partition: e.data_file.partition ?? {}, partitionSpecId: e.partition_spec_id ?? 0,
-    }]))
+    const partitionMap = new Map(candidates.map(e => {
+      const partitionSpecId = e.partition_spec_id ?? 0
+      const spec = metadata['partition-specs'].find(s => s['spec-id'] === partitionSpecId)
+      if (!spec) throw new Error(`partition spec ${partitionSpecId} not found in metadata`)
+      const partition = normalizeDayPartition(e.data_file.partition ?? {}, spec)
+      return [e.data_file.file_path, { partition, partitionSpecId }]
+    }))
     const written = await writePositionDeletes({
       tableUrl, metadata, schema, deletes, partitionMap, resolver,
       snapshotId: prepared.snapshotId, sequenceNumber, manifestUuid: uuid4(),
