@@ -2,6 +2,7 @@ import { fetchManifestEntries } from '../manifest.js'
 import { typeName } from '../schema.js'
 import { uuid4 } from '../utils.js'
 import { writeCarriedManifest } from './manifest.js'
+import { normalizeDayPartition } from './partition.js'
 import { compare } from '../compare.js'
 import { buildPartitionSummaries, buildSnapshotUpdate, currentSnapshot, loadPriorManifests } from './snapshot.js'
 import { newSnapshotId } from './stage.js'
@@ -317,16 +318,8 @@ export async function writeManifestFile({
   resolver, manifestPath, schema, spec, content, entries, snapshotId, sequenceNumber, formatVersion,
 }) {
   if (!resolver.writer) throw new Error('resolver.writer is required')
-  // Some writers encode day transforms with Avro's date logical type.
-  // Decode gives Dates, but our day partition schema and bounds use ordinals.
   entries = entries.map(entry => {
-    const partition = { ...entry.data_file.partition }
-    for (const field of spec.fields) {
-      const value = partition[field.name]
-      if (field.transform === 'day' && value instanceof Date) {
-        partition[field.name] = Math.floor(value.getTime() / 86400000)
-      }
-    }
+    const partition = normalizeDayPartition(entry.data_file.partition, spec)
     return { ...entry, data_file: { ...entry.data_file, partition } }
   })
   const writer = resolver.writer(manifestPath)

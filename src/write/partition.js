@@ -15,6 +15,23 @@ import {
  */
 
 /**
+ * Normalize day partitions decoded from manifests using Avro's date logical type.
+ * @param {Record<string, any>} partition
+ * @param {PartitionSpec} spec
+ * @returns {Record<string, any>}
+ */
+export function normalizeDayPartition(partition, spec) {
+  const normalized = { ...partition }
+  for (const field of spec.fields) {
+    const value = partition[field.name]
+    if (field.transform === 'day' && value instanceof Date) {
+      normalized[field.name] = Math.floor(value.getTime() / 86400000)
+    }
+  }
+  return normalized
+}
+
+/**
  * Group records by their partition tuple. Supports identity, void, bucket[N],
  * truncate[W], year, month, day, and hour transforms.
  *
@@ -146,6 +163,7 @@ export function partitionSpecJson(partitionSpec) {
  * @returns {Record<string, any>}
  */
 export function partitionToAvroRecord(partition, schema, partitionSpec) {
+  partition = normalizeDayPartition(partition, partitionSpec)
   /** @type {Record<string, any>} */
   const out = {}
   for (const pf of partitionSpec.fields) {

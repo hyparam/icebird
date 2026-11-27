@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { avroMetadata, avroRead, avroWrite } from '../../src/avro/index.js'
 import { fileCatalog } from '../../src/catalog/file.js'
 import { fetchAvroRecords } from '../../src/fetch.js'
 import { fileCatalogCommit } from '../../src/write/commit.js'
@@ -6,12 +7,14 @@ import { icebergCreate } from '../../src/create.js'
 import { icebergManifests } from '../../src/manifest.js'
 import { icebergRead } from '../../src/read.js'
 import { icebergStagePositionDelete, partitionTupleKey } from '../../src/write/stage-position-delete.js'
+import { writeManifestList } from '../../src/write/manifest-list.js'
 import { icebergStageAppend } from '../../src/write/stage.js'
-import { icebergAppend, icebergCreateTable, icebergDelete } from '../../src/write/write.js'
+import { icebergAppend, icebergCreateTable, icebergDelete, icebergRewrite, icebergUpsert } from '../../src/write/write.js'
 import { memResolver } from '../helpers.js'
 
 /**
- * @import {Schema} from '../../src/types.js'
+ * @import {AvroRecord} from '../../src/avro/types.js'
+ * @import {Manifest, Schema, TableMetadata} from '../../src/types.js'
  */
 
 /** @type {Schema} */
@@ -23,6 +26,96 @@ const schema = {
     { id: 2, name: 'name', required: false, type: 'string' },
   ],
 }
+
+const before = new Date('1969-12-31T12:00:00Z')
+const after = new Date('1970-01-02T12:00:00Z')
+
+/**
+ * Create a day-partitioned table with one data file per day, then rewrite its
+ * manifest to encode the day partition with Avro's date logical type, as
+ * PyIceberg does.
+ *
+ * @param {string} tableUrl
+ * @param {2|3} [formatVersion]
+ * @returns {Promise<{ catalog: ReturnType<typeof fileCatalog>, resolver: ReturnType<typeof memResolver>['resolver'], metadata: TableMetadata, paths: string[] }>}
+ */
+async function avroDayTable(tableUrl, formatVersion) {
+  const { resolver, lister } = memResolver()
+  const catalog = fileCatalog({ resolver, lister, conditionalCommits: true })
+  await icebergCreateTable({
+    catalog, tableUrl, formatVersion,
+    schema: { ...schema, fields: [...schema.fields, { id: 3, name: 'created', type: 'timestamp', required: false }] },
+    partitionSpec: { 'spec-id': 0, fields: [{ 'source-id': 3, 'field-id': 1000, name: 'created_day', transform: 'day' }] },
+  })
+  const metadata = await icebergAppend({
+    catalog, tableUrl,
+    records: [{ id: 1n, name: 'before', created: before }, { id: 2n, name: 'after', created: after }],
+  })
+  const snapshot = metadata.snapshots?.find(s => s['snapshot-id'] === metadata['current-snapshot-id'])
+  if (!snapshot?.['manifest-list']) throw new Error('snapshot required')
+  const manifests = /** @type {Manifest[]} */ (await fetchAvroRecords(snapshot['manifest-list'], resolver))
+  const manifest = manifests[0]
+  const file = await resolver.reader(manifest.manifest_path)
+  const reader = { view: new DataView(await file.slice(0, file.byteLength)), offset: 0 }
+  const header = avroMetadata(reader)
+  const records = await avroRead({ reader, ...header })
+  const avroSchema = /** @type {AvroRecord} */ (header.metadata['avro.schema'])
+  const dataFile = /** @type {AvroRecord} */ (avroSchema.fields.find(f => f.name === 'data_file')?.type)
+  const partition = /** @type {AvroRecord} */ (dataFile.fields.find(f => f.name === 'partition')?.type)
+  partition.fields[0].type = ['null', { type: 'int', logicalType: 'date' }]
+  if (!resolver.writer) throw new Error('writer required')
+  const writer = resolver.writer(manifest.manifest_path)
+  await avroWrite({
+    writer, schema: avroSchema, records,
+    metadata: { ...header.metadata, schema: JSON.stringify(header.metadata.schema) },
+  })
+  manifest.manifest_length = BigInt(writer.offset)
+  await writeManifestList({
+    writer: resolver.writer(snapshot['manifest-list']), manifests, formatVersion,
+    snapshotId: BigInt(snapshot['snapshot-id']), sequenceNumber: BigInt(metadata['last-sequence-number'] ?? 0),
+  })
+  const entries = (await icebergManifests({ metadata, resolver })).flatMap(m => m.entries)
+  expect(entries.map(e => e.data_file.partition.created_day))
+    .toEqual([new Date('1969-12-31T00:00:00Z'), new Date('1970-01-02T00:00:00Z')])
+  return { catalog, resolver, metadata, paths: entries.map(e => e.data_file.file_path) }
+}
+
+describe('Avro date-encoded day partitions', () => {
+  it('upserts', async () => {
+    const tableUrl = 'http://test/avro-day-upsert'
+    const { catalog, resolver } = await avroDayTable(tableUrl)
+    const updated = await icebergUpsert({ catalog, tableUrl, records: [{ id: 1n, name: 'updated', created: before }], joinCols: ['id'] })
+    const rows = await icebergRead({ tableUrl, metadata: updated, resolver })
+    expect(rows).toHaveLength(2)
+    expect(rows).toEqual(expect.arrayContaining([
+      { id: 1n, name: 'updated', created: before },
+      { id: 2n, name: 'after', created: after },
+    ]))
+    const entries = (await icebergManifests({ metadata: updated, resolver })).flatMap(m => m.entries)
+    expect(entries.find(e => e.data_file.content === 1)?.data_file.partition.created_day).toBe(-1)
+    const snapshot = updated.snapshots?.find(s => s['snapshot-id'] === updated['current-snapshot-id'])
+    expect(snapshot?.summary['changed-partition-count']).toBe('1')
+  })
+
+  it.each(/** @type {const} */ ([2, 3]))('deletes from a v%i table', async formatVersion => {
+    const tableUrl = `http://test/avro-day-delete-v${formatVersion}`
+    const { catalog, resolver, paths } = await avroDayTable(tableUrl, formatVersion)
+    const deleted = await icebergDelete({ catalog, tableUrl, deletes: [{ file_path: paths[0], pos: 0n }] })
+    // v3 reads also carry row lineage columns
+    expect(await icebergRead({ tableUrl, metadata: deleted, resolver })).toMatchObject([{ id: 2n, name: 'after', created: after }])
+    const entries = (await icebergManifests({ metadata: deleted, resolver })).flatMap(m => m.entries)
+    expect(entries.find(e => e.data_file.content === 1)?.data_file.partition.created_day).toBe(-1)
+  })
+
+  it('rewrites one file and carries the other', async () => {
+    const tableUrl = 'http://test/avro-day-rewrite'
+    const { catalog, resolver, paths } = await avroDayTable(tableUrl)
+    const rewritten = await icebergRewrite({ catalog, tableUrl, files: [paths[0]] })
+    expect(await icebergRead({ tableUrl, metadata: rewritten, resolver })).toHaveLength(2)
+    const entries = (await icebergManifests({ metadata: rewritten, resolver })).flatMap(m => m.entries)
+    expect(entries.map(e => e.data_file.partition.created_day).sort()).toEqual([-1, 1])
+  })
+})
 
 describe('icebergStagePositionDelete', () => {
   it('preserves UUID partition bounds in a position-delete manifest', async () => {

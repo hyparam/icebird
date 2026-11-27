@@ -3,6 +3,7 @@ import { validateSchemaForVersion } from '../schema.js'
 import { bytesToHex, uuid4 } from '../utils.js'
 import { writePositionDeleteFile } from './delete-file.js'
 import { writeDeleteManifest } from './manifest.js'
+import { normalizeDayPartition } from './partition.js'
 import {
   buildPartitionSummaries,
   buildSnapshotUpdate,
@@ -307,14 +308,17 @@ export async function findDataFileEntries(metadata, resolver) {
   const out = new Map()
   await Promise.all(manifests.map(async manifest => {
     if (manifest.content !== 0) return
+    const partitionSpecId = manifest.partition_spec_id ?? 0
+    const spec = metadata['partition-specs'].find(s => s['spec-id'] === partitionSpecId)
+    if (!spec) throw new Error(`partition spec ${partitionSpecId} not found in metadata`)
     const entries = await loadManifestEntries(manifest, resolver)
     for (const entry of entries) {
       if (entry.status === 2) continue
       const f = entry.data_file
       if (f.content !== 0) continue
       out.set(f.file_path, {
-        partition: /** @type {Record<string, any>} */ (f.partition ?? {}),
-        partitionSpecId: manifest.partition_spec_id ?? 0,
+        partition: normalizeDayPartition(f.partition ?? {}, spec),
+        partitionSpecId,
         entry,
       })
     }
