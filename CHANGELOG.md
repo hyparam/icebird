@@ -1,5 +1,8 @@
 # Icebird Changelog
 
+## [0.9.10]
+ - Fix position deletes, deletion vectors, and manifest rewrites failing with `union branch not found` on day-partitioned tables
+
 ## [0.9.9]
  - Export `streamRowBatches` for incremental consumption of query results
 
